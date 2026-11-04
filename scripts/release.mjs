@@ -9,6 +9,17 @@ import { goEnv } from "./build.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
+/** Replace a completed release file atomically and clean partial copies on failure. */
+function publishFile(source, destination) {
+  const pending = `${destination}.tmp`;
+  try {
+    fs.copyFileSync(source, pending);
+    fs.renameSync(pending, destination);
+  } finally {
+    fs.rmSync(pending, { force: true });
+  }
+}
+
 /** Build the requested platform and package its application with distribution notices. */
 function release() {
   const target = process.argv[2] || goEnv("GOHOSTOS");
@@ -32,7 +43,6 @@ function release() {
   const outputDirectory = path.join(root, "build", "releases");
   fs.mkdirSync(outputDirectory, { recursive: true });
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "quillweave-release-"));
-  const pending = path.join(outputDirectory, `.${name}.zip.tmp`);
   try {
     const staging = path.join(temporary, name);
     fs.mkdirSync(staging);
@@ -51,19 +61,37 @@ function release() {
     } else {
       execFileSync("zip", ["-q", "-r", archive, name], { cwd: temporary });
     }
-    fs.copyFileSync(archive, pending);
-    fs.renameSync(pending, path.join(outputDirectory, `${name}.zip`));
-    const archives = fs.readdirSync(outputDirectory)
-      .filter((file) => file.startsWith(`Quillweave-${version}-`) && file.endsWith(".zip"))
+    if (target === "darwin") {
+      const diskContents = path.join(temporary, "disk-image");
+      fs.mkdirSync(diskContents);
+      fs.cpSync(path.join(staging, "Quillweave.app"), path.join(diskContents, "Quillweave.app"), { recursive: true });
+      fs.symlinkSync("/Applications", path.join(diskContents, "Applications"));
+      for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.txt"])
+        fs.copyFileSync(path.join(root, file), path.join(diskContents, file));
+      const diskImage = path.join(temporary, `${name}.dmg`);
+      execFileSync("hdiutil", ["create", "-quiet", "-volname", "Quillweave", "-srcfolder", diskContents, "-fs", "HFS+", "-format", "UDZO", diskImage], { stdio: "inherit" });
+      publishFile(diskImage, path.join(outputDirectory, `${name}.dmg`));
+    } else {
+      publishFile(path.join(staging, "Quillweave.exe"), path.join(outputDirectory, `${name}.exe`));
+    }
+    publishFile(archive, path.join(outputDirectory, `${name}.zip`));
+    publishFile(path.join(root, "LICENSE"), path.join(outputDirectory, "LICENSE.txt"));
+    publishFile(path.join(root, "THIRD_PARTY_NOTICES.txt"), path.join(outputDirectory, "THIRD_PARTY_NOTICES.txt"));
+    const assets = fs.readdirSync(outputDirectory)
+      .filter((file) =>
+        (file.startsWith(`Quillweave-${version}-`) && /\.(zip|dmg|exe)$/.test(file)) ||
+        ["LICENSE.txt", "THIRD_PARTY_NOTICES.txt"].includes(file),
+      )
       .sort();
-    const checksums = archives.map((file) => {
+    const checksums = assets.map((file) => {
       const digest = createHash("sha256").update(fs.readFileSync(path.join(outputDirectory, file))).digest("hex");
       return `${digest}  ${file}`;
     });
-    fs.writeFileSync(path.join(outputDirectory, "SHA256SUMS.txt"), checksums.join("\n") + "\n");
-    console.log(`Release archive: ${path.join(outputDirectory, `${name}.zip`)}`);
+    const checksumFile = path.join(temporary, "SHA256SUMS.txt");
+    fs.writeFileSync(checksumFile, checksums.join("\n") + "\n");
+    publishFile(checksumFile, path.join(outputDirectory, "SHA256SUMS.txt"));
+    console.log(`Release files: ${path.join(outputDirectory, name)}.*`);
   } finally {
-    fs.rmSync(pending, { force: true });
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 }

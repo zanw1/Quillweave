@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// generate writes Windows version, user-permission, and DPI resources for temporary build use.
+// generate writes Windows metadata and distribution notices for temporary build use.
 func generate(output, arch, productVersion string) error {
 	target, ok := map[string]winres.Arch{"amd64": winres.ArchAMD64, "arm64": winres.ArchARM64}[arch]
 	if !ok {
@@ -39,6 +39,15 @@ func generate(output, arch, productVersion string) error {
 	resources := winres.ResourceSet{}
 	resources.SetVersionInfo(metadata)
 	resources.SetManifest(winres.AppManifest{Identity: winres.AssemblyIdentity{Name: platform.ApplicationID, Version: numbers}, ExecutionLevel: winres.AsInvoker, DPIAwareness: winres.DPIPerMonitorV2, UseCommonControlsV6: true, LongPathAware: true})
+	for _, name := range []string{"LICENSE", "THIRD_PARTY_NOTICES.txt"} {
+		content, err := os.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if err := resources.Set(winres.RT_RCDATA, winres.Name(name), winres.LCIDNeutral, content); err != nil {
+			return err
+		}
+	}
 	file, err := os.Create(output)
 	if err != nil {
 		return err

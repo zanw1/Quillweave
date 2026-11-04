@@ -51,14 +51,16 @@ Choose a provider preset, edit its endpoint and model, and assign profiles to in
 
 ## Download and run
 
-Open [Releases](https://github.com/zanw1/Quillweave/releases) and choose the archive for your platform.
+Open [Releases](https://github.com/zanw1/Quillweave/releases) and choose the download for your platform.
 
-| Platform | Archive | Requirements |
+| Platform | Primary download | Requirements |
 |---|---|---|
-| macOS Apple Silicon | `Quillweave-<version>-macos-arm64.zip` | macOS 13 or later |
-| Windows x64 | `Quillweave-<version>-windows-amd64.zip` | Windows 10/11 and [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2) |
+| macOS Apple Silicon | `Quillweave-<version>-macos-arm64.dmg` | macOS 13 or later |
+| Windows x64 | `Quillweave-<version>-windows-amd64.exe` | Windows 10/11 and [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2) |
 
-Extract the complete archive. On macOS, move `Quillweave.app` to Applications. On Windows, open `Quillweave.exe`. Each archive includes the project license and third-party notices. Release assets also include `SHA256SUMS.txt` for integrity checks.
+On Windows, download the EXE and open it directly. On macOS, open the DMG and drag `Quillweave.app` to the Applications shortcut. A macOS `.app` is a bundle directory, so the disk image carries its complete structure in one downloadable file.
+
+Optional ZIP packages are also available. The DMG and ZIP packages include the project license and third-party notices. The standalone Windows EXE embeds those notices as resources. `LICENSE.txt`, `THIRD_PARTY_NOTICES.txt`, and `SHA256SUMS.txt` are also attached to the release.
 
 The current desktop packages are preview builds. macOS uses ad-hoc signing. Developer ID signing and Apple notarization are pending. For first-run approval of a downloaded preview, follow [Apple's app-opening instructions](https://support.apple.com/en-us/102445). Local Windows package verification covers cross-compilation. The release workflow is configured to build on a Windows runner, with interactive Windows acceptance still pending. Linux builds require their own GTK/WebKit toolchain.
 
@@ -119,14 +121,14 @@ npm run bundle
 npm run bundle:windows
 ```
 
-Native applications are written to `build/bin/`. To create versioned release archives with license notices and checksums, run these commands on macOS.
+Native applications are written to `build/bin/`. To create the DMG, standalone Windows EXE, optional ZIP packages, and checksums, run these commands on macOS.
 
 ```sh
 npm run release -- darwin arm64
 npm run release -- windows amd64
 ```
 
-On Windows, run `npm run release -- windows amd64`. macOS applications are built on macOS. Release archives and `SHA256SUMS.txt` are written to `build/releases/`. Temporary packaging files are cleaned on success or failure.
+On Windows, run `npm run release -- windows amd64`. macOS applications are built on macOS. Release files are written to `build/releases/`. Temporary packaging files are cleaned on success or failure.
 
 ## Publish a release
 
@@ -145,7 +147,7 @@ gh repo create zanw1/Quillweave --public --source=. --remote=origin --push
 
 </details>
 
-The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, packages the applications, calculates SHA-256 checksums, and creates a **draft prerelease** with both archives attached.
+The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, creates the DMG and standalone EXE, calculates SHA-256 checksums, and creates a **draft prerelease** with these files, optional ZIP packages, and license notices attached.
 
 The tag must match `package.json`. The current version uses `v0.3.0`.
 
@@ -167,9 +169,9 @@ Git ignores `build/bin/`, `build/releases/`, `data/`, `node_modules/`, `frontend
 | Clean checkout and `npm ci` | Dependencies install from the lockfile |
 | `npm run build` | Production frontend is available for Go embedding |
 | Type checks, Go tests, and vet | All configured checks pass |
-| macOS arm64 packaging | Versioned ZIP contains the signed app and license notices |
-| Windows amd64 packaging | Versioned ZIP contains the GUI executable and license notices |
-| `SHA256SUMS.txt` verification | Every listed archive matches its digest |
+| macOS arm64 packaging | DMG contains the signed app, Applications shortcut, and license notices, with a ZIP also provided |
+| Windows amd64 packaging | Standalone GUI EXE embeds license notices, with a ZIP also provided |
+| `SHA256SUMS.txt` verification | Every listed release file matches its digest |
 | Tag differs from the package version | Packaging stops before building |
 | A platform build fails | Draft release job waits for both successful builds |
 | Rerun an existing draft tag | Draft assets are replaced with the successful build |

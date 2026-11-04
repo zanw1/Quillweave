@@ -49,7 +49,12 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-${{ matrix.target }}-${{ matrix.arch }}
-          path: build/releases/*.zip
+          path: |
+            build/releases/*.zip
+            build/releases/*.dmg
+            build/releases/*.exe
+            build/releases/LICENSE.txt
+            build/releases/THIRD_PARTY_NOTICES.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -74,14 +79,18 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
-          sha256sum ./*.zip | sed 's|  ./|  |' > SHA256SUMS.txt
+          version="${RELEASE_TAG#v}"
+          mac="Quillweave-${version}-macos-arm64"
+          windows="Quillweave-${version}-windows-amd64"
+          assets=("$mac.dmg" "$windows.exe" "$mac.zip" "$windows.zip" LICENSE.txt THIRD_PARTY_NOTICES.txt)
+          for asset in "${assets[@]}"; do test -f "$asset"; done
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
           if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/quillweave-release-state"; then
             test "$(cat "$RUNNER_TEMP/quillweave-release-state")" = true
-            gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber
+            gh release upload "$RELEASE_TAG" "${assets[@]}" SHA256SUMS.txt --clobber
           else
-            gh release create "$RELEASE_TAG" ./*.zip SHA256SUMS.txt \
+            gh release create "$RELEASE_TAG" "${assets[@]}" SHA256SUMS.txt \
               --verify-tag --draft --prerelease \
               --title "Quillweave $RELEASE_TAG" \
-              --notes "Preview desktop release for macOS Apple Silicon and Windows x64. Includes MIT and third-party license notices. macOS uses ad-hoc signing. Review the checksums and test both applications before publishing."
+              --notes "Preview desktop release. Download the macOS Apple Silicon DMG or Windows x64 EXE. ZIP packages and license notices are also attached. The Windows EXE embeds the license notices. macOS uses ad-hoc signing. Review the checksums and test both applications before publishing."
           fi
