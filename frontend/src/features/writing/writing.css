@@ -1,0 +1,60 @@
+.writing-parameters {
+  margin: 24px 0;
+  padding: 22px;
+  background: #f7f9ff;
+  border: 1px solid #e5ecfa;
+  border-radius: 9px;
+}
+.writing-parameters label {
+  color: #60789d;
+  font-size: 12px;
+}
+.writing-parameters select,
+.writing-parameters input {
+  width: 100%;
+}
+.writing-parameters small {
+  font-size: 10px;
+}
+.chapter-word-target {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  color: #7b90ae;
+  font-weight: 400;
+}
+.chapter-word-target input {
+  font-size: 10px;
+  width: 110px;
+  max-width: 110px;
+  padding: 5px 7px;
+}
+.manuscript-meta {
+  flex-wrap: wrap;
+}
+@media (max-width: 700px) {
+  .writing-parameters {
+    padding: 17px;
+  }
+  .chapter-word-target {
+    width: 100%;
+  }
+  .chapter-word-target input {
+    width: 120px;
+  }
+}
+.outline-review .outline-input {
+  min-height: min(38vh, 340px);
+}
+
+.outline-review details {
+  margin: 14px 0;
+}
+
+.outline-review pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

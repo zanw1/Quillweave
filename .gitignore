@@ -1,0 +1,14 @@
+node_modules/
+frontend/dist/
+data/
+.DS_Store
+__pycache__/
+*.pyc
+build/bin/
+build/releases/
+参考/
+.env
+.env.*
+!.env.example
+*.log
+*.syso

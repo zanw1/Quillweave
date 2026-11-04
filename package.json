@@ -1,0 +1,24 @@
+{
+  "name": "quillweave",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=frontend",
+    "build": "npm run build --workspace=frontend",
+    "check": "npm run check --workspace=frontend",
+    "backend": "go run ./cmd/preview",
+    "desktop": "node scripts/desktop.mjs",
+    "bundle": "node scripts/build.mjs",
+    "test": "go test ./internal/core ./internal/preview ./internal/platform",
+    "test:core": "go test ./internal/core",
+    "bundle:windows": "node scripts/build.mjs windows",
+    "test:race": "go test -race ./internal/core ./internal/preview ./internal/platform",
+    "check:go": "go vet ./...",
+    "release": "node scripts/release.mjs"
+  },
+  "license": "MIT"
+}
