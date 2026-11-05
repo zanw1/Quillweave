@@ -16,7 +16,7 @@ const legacyPovLabels: Record<string, string> = {
   "\u5168\u77e5\u89c6\u89d2": "Omniscient",
 };
 
-/** Share writing controls between project creation and planning using backend style presets. */
+/** Edit revisable writing defaults inside a project using backend style presets. */
 export function WritingParameters({
   value,
   onChange,

@@ -1,11 +1,26 @@
 import { t } from "../lib/i18n";
-import { useEffect, useRef, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import {
   IconX,
   IconArrowRight,
   IconFileText,
   IconAlertCircle,
 } from "@tabler/icons-react";
+
+const StreamdownResponse = lazy(() => import("./MarkdownResponse"));
+
+/** Load Markdown rendering only for AI output and preserve plain text while the chunk loads. */
+export function MarkdownResponse(props: {
+  text: string;
+  streaming?: boolean;
+  incomplete?: boolean;
+}) {
+  return (
+    <Suspense fallback={<div className="answer-text">{props.text}</div>}>
+      <StreamdownResponse {...props} />
+    </Suspense>
+  );
+}
 
 /** Share visual hierarchy and disabled behavior across lightweight buttons. */
 export function Button({

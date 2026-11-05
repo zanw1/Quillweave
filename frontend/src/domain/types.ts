@@ -126,6 +126,24 @@ export interface ProviderConfig {
   thinking_mode?: string;
   reasoning_effort?: string;
   api_version?: string;
+  model_limits?: ModelLimits;
+}
+export interface ModelLimits {
+  context_window_tokens?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+}
+export interface ModelMetadata {
+  id: string;
+  name: string;
+  limits: ModelLimits;
+  temperature_supported?: boolean;
+  reasoning_efforts?: string[];
+}
+export interface DiscoveredModel {
+  id: string;
+  name: string;
+  limits: ModelLimits;
 }
 export interface ProviderPreset {
   id: string;
@@ -143,6 +161,11 @@ export interface ProviderPreset {
 export interface ProviderCatalog {
   checked_at: string;
   presets: ProviderPreset[];
+  model_metadata: Record<string, ModelMetadata>;
+  model_aliases: Record<string, string>;
+  catalog_source: string;
+  catalog_version: string;
+  resource_limits: { max_output_tokens: number; max_context_chars: number };
 }
 export interface ModelProfile {
   id: string;

@@ -10,7 +10,14 @@ import {
 } from "@tabler/icons-react";
 import { api, contentHash, date, message, wordCount } from "../../lib/api";
 import { Assistant } from "../assistant/Assistant";
-import { Badge, Button, Empty, ErrorBox, Modal } from "../../components/ui";
+import {
+  Badge,
+  Button,
+  Empty,
+  ErrorBox,
+  MarkdownResponse,
+  Modal,
+} from "../../components/ui";
 import { WritingParameters } from "./WritingParameters";
 import { ProjectModels } from "../settings/models";
 import type { Chapter, Job, Project } from "../../domain/types";
@@ -127,7 +134,7 @@ export function Writing({
             <div>
               <strong>{c.title}</strong>
               <small>
-                {wordCount(c.body).toLocaleString()}{" "}{t("characters ·")}{" "}
+                {wordCount(c.body).toLocaleString()} {t("characters ·")}{" "}
                 {c.status === "final" ? t("Final") : t("Draft")}
               </small>
             </div>
@@ -159,7 +166,9 @@ export function Writing({
         <div className="fill">
           <Empty
             title={t("Your story begins with chapter one")}
-            detail={t("Write a few sentences, or explore your ideas in Story planning.")}
+            detail={t(
+              "Write a few sentences, or explore your ideas in Story planning.",
+            )}
           >
             <Button primary onClick={() => setAdding(true)}>
               <IconPlus size={17} />
@@ -195,7 +204,10 @@ export function Writing({
                 max={50000}
                 step={100}
                 value={targetWords}
-                placeholder={t("Inherit {0} characters", project.default_chapter_words)}
+                placeholder={t(
+                  "Inherit {0} characters",
+                  project.default_chapter_words,
+                )}
                 onChange={(event) => setTargetWords(event.target.value)}
               />
             </label>
@@ -350,7 +362,9 @@ function Editor({
       <section className="editor-panel">
         <header className="editor-toolbar">
           <div>
-            <span>{t("Chapter")}{" "}{chapter.number}</span>
+            <span>
+              {t("Chapter")} {chapter.number}
+            </span>
             <Badge tone={dirty ? "amber" : "green"}>
               {dirty ? t("Unsaved") : t("Saved locally")}
             </Badge>
@@ -402,7 +416,7 @@ function Editor({
         <div className="editor-scroll">
           <div className="manuscript">
             <div className="manuscript-eyebrow">
-              {t("CHAPTER")}{" "}{String(chapter.number).padStart(2, "0")}
+              {t("CHAPTER")} {String(chapter.number).padStart(2, "0")}
             </div>
             <input
               className="chapter-title-input"
@@ -462,7 +476,9 @@ function Editor({
                   onChange={(e) =>
                     setDraft({ ...draft, synopsis: e.target.value })
                   }
-                  placeholder={t("Character goals, obstacles, choices, consequences…")}
+                  placeholder={t(
+                    "Character goals, obstacles, choices, consequences…",
+                  )}
                 />
               </label>
             )}
@@ -510,7 +526,9 @@ function Editor({
             {!chapter.versions.length ? (
               <Empty
                 title={t("No earlier versions yet")}
-                detail={t("Editing and saving a chapter retains its previous version.")}
+                detail={t(
+                  "Editing and saving a chapter retains its previous version.",
+                )}
               />
             ) : (
               <>
@@ -522,8 +540,9 @@ function Editor({
                   >
                     {[...chapter.versions].reverse().map((v, index) => (
                       <option key={v.id} value={v.id}>
-                        {t("Version")}{" "}{chapter.versions.length - index} ·{" "}
-                        {date(v.created_at)} · {wordCount(v.body)}{" "}{t("characters")}
+                        {t("Version")} {chapter.versions.length - index} ·{" "}
+                        {date(v.created_at)} · {wordCount(v.body)}{" "}
+                        {t("characters")}
                       </option>
                     ))}
                   </select>
@@ -539,7 +558,9 @@ function Editor({
                   </div>
                 </div>
                 <div className="modal-actions">
-                  <Button onClick={() => setHistory(false)}>{t("Close")}</Button>
+                  <Button onClick={() => setHistory(false)}>
+                    {t("Close")}
+                  </Button>
                   <Button primary onClick={restore}>
                     {t("Restore this version and retain the current version")}
                   </Button>
@@ -563,6 +584,12 @@ export function Planning({
   onProject: (p: Project) => void;
   onSettings: () => void;
 }) {
+  const exploring =
+    !project.chapters.length &&
+    !project.premise.trim() &&
+    !project.outline.trim();
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const showDetails = !exploring || detailsOpen;
   const draftKey = `quillweave-plan-${project.id}`;
   const [draft, setDraft] = useState(() => {
     const fallback = {
@@ -646,6 +673,7 @@ export function Planning({
     )
       return;
     setDraft((previous) => ({ ...previous, [key]: job.text }));
+    setDetailsOpen(true);
   }
   /** Apply an edited proposal to the local outline draft after explicit review. */
   function acceptOutline() {
@@ -666,77 +694,123 @@ export function Planning({
       return;
     }
     setDraft((previous) => ({ ...previous, outline: outlineReview.text }));
+    setDetailsOpen(true);
     setOutlineReview(null);
   }
   return (
-    <div className="planning-layout">
+    <div className={`planning-layout${exploring ? " planning-exploring" : ""}`}>
       <section className="planning-content">
         <div className="section-title">
           <div>
-            <p className="eyebrow">{t("STORY BIBLE")}</p>
-            <h1>{t("Plan your story")}</h1>
+            <p className="eyebrow">
+              {t(exploring ? "A PLACE TO BEGIN" : "STORY BIBLE")}
+            </p>
+            <h1>
+              {t(
+                exploring
+                  ? "Find your story, one conversation at a time"
+                  : "Plan your story",
+              )}
+            </h1>
             <p>
-              {t("Discuss the story, generate an outline, then review and apply it to your draft.")}
+              {t(
+                exploring
+                  ? "No genre, plot, or length to decide now. Start with what interests you; the details can grow from the conversation."
+                  : "Discuss the story, generate an outline, then review and apply it to your draft.",
+              )}
             </p>
           </div>
-          <Button primary disabled={busy} onClick={save}>
-            <IconDeviceFloppy size={17} />
-            {t("Save story bible")}
-          </Button>
+          {exploring && (
+            <button
+              type="button"
+              className="button"
+              aria-expanded={detailsOpen}
+              aria-controls={`story-details-${project.id}`}
+              onClick={() => setDetailsOpen((open) => !open)}
+            >
+              {t(
+                detailsOpen
+                  ? "Hide story details"
+                  : "Story details · edit later",
+              )}
+            </button>
+          )}
+          {showDetails && (
+            <Button primary disabled={busy} onClick={save}>
+              <IconDeviceFloppy size={17} />
+              {t("Save story bible")}
+            </Button>
+          )}
         </div>
         {error && <ErrorBox>{error}</ErrorBox>}
-        <div className="form-grid">
+        <div
+          className="planning-details"
+          id={`story-details-${project.id}`}
+          hidden={!showDetails}
+        >
+          {exploring && (
+            <p className="field-hint">
+              {t(
+                "These settings are optional while exploring. Chapter length and viewpoint are editable defaults, not commitments.",
+              )}
+            </p>
+          )}
+          <div className="form-grid">
+            <label>
+              {t("Project title")}
+              <input
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              />
+            </label>
+            <label>
+              {t("Genre")}
+              <input
+                value={draft.genre}
+                onChange={(e) => setDraft({ ...draft, genre: e.target.value })}
+              />
+            </label>
+          </div>
+          <WritingParameters
+            value={draft}
+            onChange={(patch) => setDraft({ ...draft, ...patch })}
+          />
           <label>
-            {t("Project title")}
-            <input
-              value={draft.title}
-              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+            {t("Core premise")}
+            <textarea
+              className="large-input"
+              value={draft.premise}
+              onChange={(e) => setDraft({ ...draft, premise: e.target.value })}
+              placeholder={t("Who wants what, and what stands in the way?")}
             />
           </label>
           <label>
-            {t("Genre")}
-            <input
-              value={draft.genre}
-              onChange={(e) => setDraft({ ...draft, genre: e.target.value })}
+            {t("Narrative style and boundaries")}
+            <textarea
+              value={draft.style}
+              onChange={(e) => setDraft({ ...draft, style: e.target.value })}
+              placeholder={t(
+                "Viewpoint, language, and the style you want to preserve…",
+              )}
             />
           </label>
+          <label>
+            {t("Story outline")}
+            <textarea
+              className="outline-input"
+              aria-label={t("Story outline")}
+              value={draft.outline}
+              onChange={(e) => setDraft({ ...draft, outline: e.target.value })}
+              placeholder={t("Expand a paragraph into a causal chapter plan…")}
+            />
+          </label>
+          <ProjectModels project={project} onProject={onProject} />
         </div>
-        <WritingParameters
-          value={draft}
-          onChange={(patch) => setDraft({ ...draft, ...patch })}
-        />
-        <label>
-          {t("Core premise")}
-          <textarea
-            className="large-input"
-            value={draft.premise}
-            onChange={(e) => setDraft({ ...draft, premise: e.target.value })}
-            placeholder={t("Who wants what, and what stands in the way?")}
-          />
-        </label>
-        <label>
-          {t("Narrative style and boundaries")}
-          <textarea
-            value={draft.style}
-            onChange={(e) => setDraft({ ...draft, style: e.target.value })}
-            placeholder={t("Viewpoint, language, and the style you want to preserve…")}
-          />
-        </label>
-        <label>
-          {t("Story outline")}
-          <textarea
-            className="outline-input"
-            aria-label={t("Story outline")}
-            value={draft.outline}
-            onChange={(e) => setDraft({ ...draft, outline: e.target.value })}
-            placeholder={t("Expand a paragraph into a causal chapter plan…")}
-          />
-        </label>
-        <ProjectModels project={project} onProject={onProject} />
       </section>
       <Assistant
         project={project}
         initialAction="ask"
+        exploring={exploring}
         onSettings={onSettings}
         onRefresh={async () =>
           onProject(await api("get_project", { project_id: project.id }))
@@ -752,11 +826,15 @@ export function Planning({
         >
           <div className="modal-content outline-review">
             <p>
-              {t("Edit the proposal below, then apply it to the story outline draft. Save the story bible when you are ready.")}
+              {t(
+                "Edit the proposal below, then apply it to the story outline draft. Save the story bible when you are ready.",
+              )}
             </p>
             <details>
               <summary>{t("Current outline")}</summary>
-              <pre>{outlineReview.base || t("No outline yet.")}</pre>
+              <MarkdownResponse
+                text={outlineReview.base || t("No outline yet.")}
+              />
             </details>
             <label>
               {t("Proposed outline")}
@@ -775,7 +853,9 @@ export function Planning({
             </label>
             {outlineReview.error && <ErrorBox>{outlineReview.error}</ErrorBox>}
             <div className="modal-actions">
-              <Button onClick={() => setOutlineReview(null)}>{t("Cancel")}</Button>
+              <Button onClick={() => setOutlineReview(null)}>
+                {t("Cancel")}
+              </Button>
               <Button primary onClick={acceptOutline}>
                 {t("Use as outline draft")}
               </Button>

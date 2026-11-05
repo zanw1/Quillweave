@@ -21,8 +21,8 @@ func validateConfig(config ProviderConfig) (string, error) {
 	if strings.TrimSpace(config.Model) == "" {
 		return "", errors.New("Enter the full model ID supplied by your provider")
 	}
-	if config.MaxTokens < 256 || config.MaxTokens > 32768 || config.TimeoutSeconds < 10 || config.TimeoutSeconds > 3600 || config.ContextChars < 4000 || config.ContextChars > 200000 {
-		return "", errors.New("Output budget must be 256–32,768 tokens, context 4,000–200,000 characters, and timeout 10–3,600 seconds")
+	if err := validateModelBudgets(config); err != nil {
+		return "", err
 	}
 	if err := validateProviderOptions(config); err != nil {
 		return "", err

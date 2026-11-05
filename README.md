@@ -66,17 +66,25 @@ The current desktop packages are preview builds. macOS uses ad-hoc signing. Deve
 
 ## First steps
 
-1. Open the sample, or select **Start a new story**.
-2. Set the premise, writing style, viewpoint, and default chapter length in **Story planning**.
+1. Open the sample, or select **Start a new story**. A working title is optional; leave it blank to create an untitled workspace.
+2. An unplanned project opens with an idea-exploration conversation. Start without a genre or plot, then open **Story details · edit later** when you want to name the story or choose its premise, viewpoint, and chapter-length defaults. Those defaults do not constrain an undecided story's initial discussion.
 3. Write offline, or open **Model settings** to add a provider preset, enter an API key when required by the provider, and choose a default model or task-specific profiles. Local Ollama can use an empty key.
 4. In Story planning, discuss your ideas and choose **Generate outline from discussion**. Edit the proposal in **Review outline**, use it as an outline draft, and save the story bible.
 5. In a chapter, use **Compile Wiki** to extract evidence and compile story memory. Review the quotes and their interpretation before confirming them.
 
 Use the language selector in the top bar to switch between **English** and **中文**. The selection is saved for this browser or desktop WebView. Switching languages retains the current page and unsaved drafts. Application-owned AI instructions use English, and an explicit author language request controls creative output.
 
+AI replies use Streamdown with CJK support for streamed Markdown, including headings, lists, quotes, tables, and code blocks. Completed history uses static rendering; interrupted output retains incomplete-Markdown handling. Copying or applying a reply uses its original Markdown source. Remote image references open only after an author action. Mathematical typesetting and Mermaid rendering plugins are not enabled.
+
 ### Models and privacy
 
-The preset catalog covers OpenAI, Anthropic, Google Gemini, DeepSeek, Alibaba Cloud Bailian, Volcengine Ark, Zhipu, Moonshot/Kimi, MiniMax, xAI, and local Ollama. The app supports Chat Completions, Responses, Anthropic Messages, Gemini Interactions, Gemini Generate Content, and Ollama Chat.
+Model profiles separate the actual service provider from the template used to add a new profile. **Fetch models** uses the current connection and API-key draft without saving it; text-model results can be searched and selected, and manual model IDs remain supported. Discovery uses native model-list endpoints for OpenAI-compatible APIs, Anthropic, Gemini, and Ollama. Some services do not expose a model list; use their model or deployment ID in that case.
+
+Model token capacities are displayed separately from the local context character budget. Known output limits are enforced per model; custom deployments can override them. The character budget controls local story-context assembly and is not a token count. The service enforces its real context window. Output budgets include reasoning where the provider counts it. Application resource guards remain independent of advertised model capacities.
+
+Portable model metadata is bundled from the MIT-licensed `@cherrystudio/provider-registry` version `0.3.5`, retaining its copyright notice in [LICENSE](LICENSE). It is metadata, not proof that a model is enabled for an account or supported by an adapter. No Cherry Studio desktop code or Node runtime is required. Refresh the pinned snapshot with `python3 scripts/update_model_catalog.py --version <exact-version>`; the updater verifies archive integrity and the package's actual MIT license before replacing the data.
+
+The preset catalog covers OpenAI, Anthropic, Google Gemini, DeepSeek, Alibaba Cloud Bailian, Volcengine Ark, Zhipu, Moonshot/Kimi, MiniMax, xAI, local Ollama, and OpenRouter. Selecting a provider fills the profile name, Base URL, protocol, example model, and provider options together. Duplicate names receive a numeric suffix. OpenRouter defaults to `https://openrouter.ai/api/v1` and retains complete `provider/model` IDs when listing or requesting models. The app supports Chat Completions, Responses, Anthropic Messages, Gemini Interactions, Gemini Generate Content, and Ollama Chat.
 
 Model selection follows **project override → global task route → default profile**. Wiki extraction and memory compilation can use different models. Connection tests send a short request and may incur provider charges.
 
@@ -149,11 +157,11 @@ gh repo create zanw1/Quillweave --public --source=. --remote=origin --push
 
 The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, creates the DMG and standalone EXE, calculates SHA-256 checksums, and creates a **draft prerelease** with these files, optional ZIP packages, and license notices attached.
 
-The tag must match `package.json`. The current version uses `v0.3.0`.
+The tag must match `package.json`. The current version uses `v3.0.1`.
 
 ```sh
-git tag -a v0.3.0 -m "Quillweave v0.3.0"
-git push origin v0.3.0
+git tag -a v3.0.1 -m "Quillweave v3.0.1"
+git push origin v3.0.1
 ```
 
 Open the repository's **Actions** tab and wait for **Build release** to finish. Open **Releases**, review the draft's notes and assets, test the downloaded applications, and select **Publish release**. A workflow rerun can replace assets on the draft. Published releases require a new version.

@@ -93,6 +93,48 @@ func TestEnglishPromptsAndLegacyViewpoints(t *testing.T) {
 	assert(t, strings.Contains(jsonText(prompt.Messages), "Third-person limited") && !han.MatchString(jsonText(prompt.Messages)), "A legacy viewpoint did not receive an English prompt label")
 }
 
+// TestUndecidedStoryDiscussionDefersWritingDefaults keeps brainstorming open while later settings remain editable.
+func TestUndecidedStoryDiscussionDefersWritingDefaults(t *testing.T) {
+	engine := testEngine(t)
+	project := invoke[Project](t, engine, "create_project", map[string]any{"title": "Untitled story", "genre": "", "premise": ""})
+	assert(t, project.Genre == "" && project.Premise == "" && len(project.Chapters) == 0, "Creation invented a story before discussion")
+	prompt, err := prepareAI(&project, AIRequest{ProjectID: project.ID, Action: "ask", Instruction: "I want to write, but I do not have an idea yet."}, 24000)
+	assert(t, err == nil, "An undecided project could not start a discussion")
+	text := jsonText(prompt.Messages)
+	assert(t, strings.Contains(text, "one or two easy questions") && !strings.Contains(text, "Target chapter length is about") && !strings.Contains(text, "Narrative viewpoint:"), "Application defaults constrained brainstorming")
+	updated := invoke[Project](t, engine, "update_project", map[string]any{
+		"project_id": project.ID, "revision": project.Revision, "title": "The lighthouse letters", "genre": "Mystery", "premise": "A keeper finds a letter from her future self.", "style": "Quiet suspense", "outline": "The letter arrives before the storm.",
+		"writing_style": "mystery", "default_chapter_words": 4200, "narrative_pov": "First person",
+	})
+	assert(t, updated.ID == project.ID && updated.Genre == "Mystery" && updated.DefaultChapterWords == 4200 && updated.NarrativePov == "First person", "Story details could not be decided after creation")
+	outline, err := prepareAI(&updated, AIRequest{ProjectID: updated.ID, Action: "outline", Instruction: "Outline the story we discussed."}, 24000)
+	assert(t, err == nil && strings.Contains(jsonText(outline.Messages), "4200") && strings.Contains(jsonText(outline.Messages), "Narrative viewpoint: First person"), "Later writing settings were absent from a concrete planning task")
+}
+
+// TestUndecidedStoryDiscussionStreamsBeforeSetup verifies a real local model request with no premise or genre.
+func TestUndecidedStoryDiscussionStreamsBeforeSetup(t *testing.T) {
+	engine := testEngine(t)
+	project := invoke[Project](t, engine, "create_project", map[string]any{"title": "Untitled story", "genre": "", "premise": ""})
+	server := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			writer.WriteHeader(400)
+			return
+		}
+		text := jsonText(body)
+		assert(t, strings.Contains(text, "undecided story") && !strings.Contains(text, "Target chapter length is about"), "The outgoing request required premature writing decisions")
+		fmt.Fprint(writer, streamPayload("What kinds of stories or feelings have stayed with you recently?"))
+	})
+	config := defaultProvider()
+	config.BaseURL, config.Model = server.URL, "brainstorm-fixture"
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": project.ID, "chapter_id": "", "action": "ask", "instruction": "I have no idea yet."}))
+	assert(t, job.Status == "done" && strings.Contains(job.Text, "feelings"), "Discussion did not complete for an undecided project")
+	saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, saved.Genre == "" && saved.Premise == "" && saved.Outline == "", "Brainstorming silently committed model proposals as story facts")
+}
+
 // testEngine creates a temporary database and closes workers before cleanup.
 func testEngine(t *testing.T) *Engine {
 	t.Helper()

@@ -249,6 +249,8 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 	case "test_model":
 		id := args.optionalString("profile_id")
 		return engine.testModel(id)
+	case "list_provider_models":
+		return engine.discoverModels(raw)
 	case "get_job":
 		id := args.text("job_id")
 		engine.jobsMu.Lock()
@@ -628,7 +630,7 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 	case "writing_presets":
 		return writingPresets(), nil
 	case "provider_presets":
-		return map[string]any{"checked_at": ProviderDocsDate, "presets": providerPresets()}, nil
+		return providerCatalog(), nil
 	case "prepare_ai":
 		var request AIRequest
 		if decodeJSON(raw, &request) != nil {

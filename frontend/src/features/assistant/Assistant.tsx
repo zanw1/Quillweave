@@ -18,6 +18,7 @@ import {
   ErrorBox,
   Modal,
   Suggestion,
+  MarkdownResponse,
 } from "../../components/ui";
 import {
   actions,
@@ -36,6 +37,7 @@ interface Props {
   chapter?: Chapter;
   source?: Source;
   initialAction?: string;
+  exploring?: boolean;
   seed?: string;
   onSettings: () => void;
   onRefresh: () => Promise<void>;
@@ -47,12 +49,31 @@ const conversationActions = ["ask", "architecture", "outline"];
 const outlineInstruction =
   "Create a complete chapter-by-chapter outline from our discussion and the current story bible. Include the premise, character arcs, act progression, and each chapter's viewpoint, goal, obstacle, choice, consequence, and clues. Identify assumptions and open questions.";
 
+const explorationSuggestions = [
+  {
+    label: "Help me find an idea",
+    instruction:
+      "I don't have a story idea yet. Help me discover what I would enjoy writing. Start with one or two easy questions about stories, emotions, or situations I like. Don't ask me to decide a genre, title, length, viewpoint, or complete plot yet.",
+  },
+  {
+    label: "I have a small spark",
+    instruction:
+      "I have a vague image, character, mood, or situation in mind. Ask me about that small spark and help me explore it, one question at a time, without requiring a finished story setup.",
+  },
+  {
+    label: "Explore a few possibilities",
+    instruction:
+      "Offer three brief, different story seeds to react to. Keep them open-ended, explain what might be interesting about each, and let me choose or combine them before developing a plot or outline.",
+  },
+];
+
 /** Stream proposals into the conversation for explicit author review. */
 export function Assistant({
   project,
   chapter,
   source,
   initialAction = "ask",
+  exploring = false,
   seed = "",
   onSettings,
   onRefresh,
@@ -72,6 +93,7 @@ export function Assistant({
   const [showHistory, setShowHistory] = useState(false);
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const planning = !chapter && !source && !!onApply;
+  const exploratory = planning && exploring;
   const availableActions = chapter
     ? ["ask", "continue", "rewrite", "review", "wiki"]
     : source
@@ -301,14 +323,16 @@ export function Assistant({
           .map((run) => (
             <div className="conversation discussion-turn" key={run.id}>
               <div className="user-message">
-                <span>{t("Author ·")}{" "}{t(actions[run.action])}</span>
+                <span>
+                  {t("Author ·")} {t(actions[run.action])}
+                </span>
                 <p>{run.instruction}</p>
               </div>
               <div className="answer-heading">
                 <IconSparkles size={17} />
                 <span>Quillweave</span>
               </div>
-              <div className="answer-text">{run.text}</div>
+              <MarkdownResponse text={run.text} />
             </div>
           ))}
         {!job ? (
@@ -316,83 +340,114 @@ export function Assistant({
             <div className="soft-icon">
               <IconSparkles size={27} stroke={1.5} />
             </div>
-            <p className="eyebrow">{t("Write the next part")}</p>
-            <h2>
-              {t("What happens")}
-              <br />
-              {t("next?")}
-            </h2>
-            <p>
-              {t("Explore a turn, discover a motivation,")}
-              <br />
-              {t("or put an idea into words.")}
-            </p>
-            <div className="suggestions">
-              <Suggestion
-                onClick={() => {
-                  setAction("ask");
-                  setInstruction(
-                    "Suggest three directions for the current plot and explain the cost of each.",
-                  );
-                }}
-              >
-                {t("Explore the next turn")}
-              </Suggestion>
-              {chapter ? (
-                <Suggestion
-                  onClick={() => {
-                    setAction("review");
-                    setInstruction(
-                      "Check whether the characters' actions fit their motivations, citing the source text.",
-                    );
-                  }}
-                >
-                  {t("Review character motivation")}
-                </Suggestion>
-              ) : (
-                <Suggestion
-                  onClick={() => {
-                    setAction("architecture");
-                    setInstruction(
-                      "Use the current ideas to propose character goals, obstacles, and world rules.",
-                    );
-                  }}
-                >
-                  {t("Develop characters and setting")}
-                </Suggestion>
-              )}
-              {chapter || source ? (
-                <Suggestion
-                  onClick={() => {
-                    setAction("wiki");
-                    setInstruction("");
-                  }}
-                >
-                  {source
-                    ? t("Compile this source into the Wiki")
-                    : t("Track this chapter's characters and clues")}
-                </Suggestion>
-              ) : (
-                <Suggestion
-                  onClick={() => {
-                    setAction("outline");
-                    setInstruction(
-                      "Expand the current story setup into a chapter outline, with goals, obstacles, and consequences.",
-                    );
-                  }}
-                >
-                  {t("Create a chapter outline")}
-                </Suggestion>
-              )}
-            </div>
+            {exploratory ? (
+              <>
+                <p className="eyebrow">{t("Start wherever you are")}</p>
+                <h2>{t("No idea yet? We can start there.")}</h2>
+                <p>
+                  {t(
+                    "A mood, a character, something you enjoy — or simply wanting to write. We can discover the rest together.",
+                  )}
+                </p>
+                <div className="suggestions">
+                  {explorationSuggestions.map((item) => (
+                    <Suggestion
+                      key={item.label}
+                      onClick={() => {
+                        setAction("ask");
+                        setInstruction(t(item.instruction));
+                      }}
+                    >
+                      {t(item.label)}
+                    </Suggestion>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">{t("Write the next part")}</p>
+                <h2>
+                  {t("What happens")}
+                  <br />
+                  {t("next?")}
+                </h2>
+                <p>
+                  {t("Explore a turn, discover a motivation,")}
+                  <br />
+                  {t("or put an idea into words.")}
+                </p>
+                <div className="suggestions">
+                  <Suggestion
+                    onClick={() => {
+                      setAction("ask");
+                      setInstruction(
+                        "Suggest three directions for the current plot and explain the cost of each.",
+                      );
+                    }}
+                  >
+                    {t("Explore the next turn")}
+                  </Suggestion>
+                  {chapter ? (
+                    <Suggestion
+                      onClick={() => {
+                        setAction("review");
+                        setInstruction(
+                          "Check whether the characters' actions fit their motivations, citing the source text.",
+                        );
+                      }}
+                    >
+                      {t("Review character motivation")}
+                    </Suggestion>
+                  ) : (
+                    <Suggestion
+                      onClick={() => {
+                        setAction("architecture");
+                        setInstruction(
+                          "Use the current ideas to propose character goals, obstacles, and world rules.",
+                        );
+                      }}
+                    >
+                      {t("Develop characters and setting")}
+                    </Suggestion>
+                  )}
+                  {chapter || source ? (
+                    <Suggestion
+                      onClick={() => {
+                        setAction("wiki");
+                        setInstruction("");
+                      }}
+                    >
+                      {source
+                        ? t("Compile this source into the Wiki")
+                        : t("Track this chapter's characters and clues")}
+                    </Suggestion>
+                  ) : (
+                    <Suggestion
+                      onClick={() => {
+                        setAction("outline");
+                        setInstruction(
+                          "Expand the current story setup into a chapter outline, with goals, obstacles, and consequences.",
+                        );
+                      }}
+                    >
+                      {t("Create a chapter outline")}
+                    </Suggestion>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="conversation">
             <div className="user-message">
-              <span>{t("Author ·")}{" "}{t(actions[job.action])}</span>
+              <span>
+                {t("Author ·")} {t(actions[job.action])}
+              </span>
               <p>
                 {job.instruction ||
-                  t("Analyze the complete source and organize character trajectories and clues.")}
+                  t(
+                    "Analyze the complete source and organize character trajectories and clues.",
+                  )}
               </p>
             </div>
             <div className="answer-heading">
@@ -421,17 +476,25 @@ export function Assistant({
                 <IconBook2 size={25} />
                 <h3>{t(job.progress)}</h3>
                 <p>
-                  {t("Review each claim and its interpretation in the Character Wiki. Quotes link back to the source.")}
+                  {t(
+                    "Review each claim and its interpretation in the Character Wiki. Quotes link back to the source.",
+                  )}
                 </p>
                 <details>
                   <summary>{t("View raw analysis")}</summary>
                   <pre>{job.text || t("Waiting for the model…")}</pre>
                 </details>
               </div>
+            ) : job.text ? (
+              <MarkdownResponse
+                text={job.text}
+                streaming={running}
+                incomplete={
+                  job.status === "cancelled" || job.status === "error"
+                }
+              />
             ) : (
-              <div className="answer-text">
-                {job.text || t("Preparing context…")}
-              </div>
+              <p className="answer-text">{t("Preparing context…")}</p>
             )}
             {job.error && <ErrorBox>{job.error}</ErrorBox>}
             {job.status === "done" && (
@@ -478,7 +541,7 @@ export function Assistant({
                 className="context-link"
                 onClick={() => setContext(job.prompt)}
               >
-                {t("Used")}{" "}{job.prompt.context.length}{" "}{t("source excerpts")}{" "}
+                {t("Used")} {job.prompt.context.length} {t("source excerpts")}{" "}
                 <IconChevronDown size={14} />
               </button>
             )}
@@ -499,7 +562,12 @@ export function Assistant({
           </label>
         )}
         {error && <ErrorBox>{error}</ErrorBox>}
-        {source && <p className="composer-note">{t("Source:")}{source.title}</p>}
+        {source && (
+          <p className="composer-note">
+            {t("Source:")}
+            {source.title}
+          </p>
+        )}
         <div className="composer-toolbar">
           <select
             aria-label={t("AI action")}
@@ -525,15 +593,27 @@ export function Assistant({
         </div>
         {planning && (
           <p className="composer-note">
-            {t("Discuss your story, generate an outline, then review and apply it. The last three completed turns are included in the context.")}
+            {t(
+              exploratory
+                ? "Nothing needs to be decided before we talk. Ideas stay as proposals until you choose to save them as story details."
+                : "Discuss your story, generate an outline, then review and apply it. The last three completed turns are included in the context.",
+            )}
           </p>
         )}
         <textarea
           aria-label={t("Writing request")}
           placeholder={
             action === "wiki"
-              ? t("Compile the source using this project's tracking focus. You can edit the focus in Story memory.")
-              : t("Describe your idea or the writing question you want to explore…")
+              ? t(
+                  "Compile the source using this project's tracking focus. You can edit the focus in Story memory.",
+                )
+              : exploratory
+                ? t(
+                    "You can start with: I want to write, but I don't know what yet…",
+                  )
+                : t(
+                    "Describe your idea or the writing question you want to explore…",
+                  )
           }
           value={action === "wiki" ? "" : instruction}
           onChange={(e) => setInstruction(e.target.value)}
@@ -565,14 +645,23 @@ export function Assistant({
           )}
         </div>
         <p className="composer-note">
-          {t("You review and decide. Content is sent to the model you configure.")}
+          {t(
+            "You review and decide. Content is sent to the model you configure.",
+          )}
         </p>
       </div>
       {context && (
-        <Modal title={t("Request context")} onClose={() => setContext(null)} wide>
+        <Modal
+          title={t("Request context")}
+          onClose={() => setContext(null)}
+          wide
+        >
           <div className="modal-content">
             <p className="muted">
-              {t("Total")}{" "}{context.chars.toLocaleString()}{" "}{t("characters, including the story bible, current chapter, and retrieved evidence below.")}
+              {t("Total")} {context.chars.toLocaleString()}{" "}
+              {t(
+                "characters, including the story bible, current chapter, and retrieved evidence below.",
+              )}
             </p>
             {context.context.map((item) => (
               <details className="context-item" key={item.id}>
@@ -595,10 +684,15 @@ export function Assistant({
         </Modal>
       )}
       {showHistory && (
-        <Modal title={t("AI task history")} onClose={() => setShowHistory(false)}>
+        <Modal
+          title={t("AI task history")}
+          onClose={() => setShowHistory(false)}
+        >
           <div className="modal-content">
             {!runs.length && (
-              <p className="muted">{t("Completed tasks are stored locally.")}</p>
+              <p className="muted">
+                {t("Completed tasks are stored locally.")}
+              </p>
             )}
             {runs.map((run) => (
               <button

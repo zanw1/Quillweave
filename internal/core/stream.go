@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 )
 
-const maxStreamBytes = 4_000_000
-const maxStreamFrameBytes = 2_000_000
+const maxStreamBytes = 32_000_000
+const maxStreamFrameBytes = 8_000_000
 
 type modelOutput struct {
 	Text      string

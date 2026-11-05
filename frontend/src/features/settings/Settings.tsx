@@ -12,6 +12,7 @@ import {
 import { api, message } from "../../lib/api";
 import { Badge, Button, Empty, ErrorBox } from "../../components/ui";
 import { ModelAssignments } from "./models";
+import { ModelPicker, modelEfforts, modelMetadata } from "./ModelPicker";
 import "./settings.css";
 import type {
   ModelProfile,
@@ -141,8 +142,22 @@ export function Settings() {
     (profile) => profile.id === selected,
   );
   const preset = selectedPreset(catalog, profile?.config);
-  const options =
+  const baseOptions =
     preset || customOptions(profile?.config.protocol || "openai", catalog);
+  const metadata = modelMetadata(catalog, profile?.config);
+  const options = {
+    ...baseOptions,
+    temperature_policy:
+      metadata?.temperature_supported === false
+        ? "none"
+        : baseOptions.temperature_policy,
+    reasoning_efforts: modelEfforts(
+      profile?.config.protocol || "openai",
+      baseOptions.reasoning_efforts,
+      metadata?.reasoning_efforts,
+      profile?.config.provider_id,
+    ),
+  };
   const temperatureAllowed =
     !options.temperature_fixed_models?.includes(profile?.config.model || "") &&
     options.temperature_policy !== "none" &&
@@ -167,10 +182,12 @@ export function Settings() {
           .replace("{WorkspaceId}", "")
       : "";
 
-  /** Generate unique names for new or copied profiles. */
-  function uniqueName(stem: string) {
+  /** Generate preset names without treating the profile being renamed as a duplicate. */
+  function uniqueName(stem: string, excludeId = "") {
     const names = new Set(
-      data?.settings.profiles.map((p) => p.name.trim().toLocaleLowerCase()),
+      data?.settings.profiles
+        .filter((p) => p.id !== excludeId)
+        .map((p) => p.name.trim().toLocaleLowerCase()),
     );
     let value = stem,
       index = 2;
@@ -207,13 +224,13 @@ export function Settings() {
           }
         : {
             id,
-            name: uniqueName(template?.name || "Custom profile"),
+            name: uniqueName(t(template?.name || "Custom profile")),
             enabled: true,
             config: template
               ? { ...template.config, api_key: "" }
               : {
                   protocol: "openai",
-                  base_url: "https://api.deepseek.com/v1",
+                  base_url: "",
                   model: "",
                   temperature: 0.7,
                   max_tokens: 4096,
@@ -235,11 +252,22 @@ export function Settings() {
     setNotice("");
   }
 
-  /** Apply a selected preset and reset pending key operations for review. */
-  function applyPreset() {
-    const template = catalog?.presets.find((p) => p.id === newPreset);
-    if (!template || !profile) return;
-    edit({ config: { ...template.config, api_key: "" } });
+  /** Change the actual provider and reset connection-specific credential drafts. */
+  function applyPreset(id: string) {
+    if (!profile) return;
+    const template = catalog?.presets.find((p) => p.id === id);
+    edit({
+      ...(template ? { name: uniqueName(t(template.name), profile.id) } : {}),
+      config: template
+        ? { ...template.config, api_key: "" }
+        : {
+            ...profile.config,
+            provider_id: "",
+            thinking_mode: "auto",
+            reasoning_effort: "",
+            model_limits: undefined,
+          },
+    });
     setUpdates((previous) => {
       const next = { ...previous };
       delete next[profile.id];
@@ -312,9 +340,7 @@ export function Settings() {
         "test_model",
         { profile_id: profile.id },
       );
-      setNotice(
-        `${profile.name}: ${result.message} (${result.elapsed_ms} ms)`,
-      );
+      setNotice(`${profile.name}: ${result.message} (${result.elapsed_ms} ms)`);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -334,7 +360,9 @@ export function Settings() {
           <p className="eyebrow">{t("MODELS FOR EVERY PART OF YOUR STORY")}</p>
           <h1>{t("Model profiles and task routing")}</h1>
           <p>
-            {t("Choose models for planning, writing, review, and knowledge compilation.")}
+            {t(
+              "Choose models for planning, writing, review, and knowledge compilation.",
+            )}
           </p>
         </div>
         <Button
@@ -367,7 +395,8 @@ export function Settings() {
           className={tab === "profiles" ? "active" : ""}
           onClick={() => setTab("profiles")}
         >
-          {t("Model profiles")}{" "}<span>{data?.settings.profiles.length || 0}</span>
+          {t("Model profiles")}{" "}
+          <span>{data?.settings.profiles.length || 0}</span>
         </button>
         <button
           className={tab === "routes" ? "active" : ""}
@@ -381,13 +410,15 @@ export function Settings() {
           <aside className="model-list">
             <div className="provider-preset-controls">
               <label className="provider-preset-picker">
-                {t("Provider preset")}
+                {t("New profile template")}
                 <select
-                  aria-label={t("Provider preset")}
+                  aria-label={t("New profile template")}
                   value={newPreset}
                   onChange={(e) => setNewPreset(e.target.value)}
                 >
-                  {!catalog && <option value="openai">{t("Loading presets…")}</option>}
+                  {!catalog && (
+                    <option value="openai">{t("Loading presets…")}</option>
+                  )}
                   {catalog?.presets.map((p) => (
                     <option key={p.id} value={p.id}>
                       {t(p.name)}
@@ -404,13 +435,10 @@ export function Settings() {
                 <IconPlus size={17} />
                 {t("Add profile")}
               </Button>
-              {profile && newPreset && (
-                <Button disabled={!catalog} onClick={applyPreset}>
-                  {t("Apply to current profile")}
-                </Button>
-              )}
               <p className="provider-catalog-note">
-                {t("Presets supply connection parameters. Choose your key and default model separately.")}
+                {t(
+                  "This template is used only when adding a profile. Edit the active connection on the right.",
+                )}
               </p>
             </div>
             <label className="search">
@@ -457,7 +485,9 @@ export function Settings() {
                   <div>
                     <h2>{profile.name}</h2>
                     <p>
-                      {t("Each profile keeps its endpoint, model, and parameters.")}
+                      {t(
+                        "Each profile keeps its endpoint, model, and parameters.",
+                      )}
                     </p>
                   </div>
                   <div>
@@ -490,8 +520,10 @@ export function Settings() {
                 <div className="provider-summary">
                   <strong>{t(preset?.name || "Custom API")}</strong>
                   <p>
-                    {t(preset?.description ||
-                      "Set the API protocol, endpoint, and model.")}
+                    {t(
+                      preset?.description ||
+                        "Set the API protocol, endpoint, and model.",
+                    )}
                   </p>
                   {preset && (
                     <a href={preset.docs_url} target="_blank" rel="noreferrer">
@@ -499,7 +531,10 @@ export function Settings() {
                     </a>
                   )}
                   {catalog && (
-                    <small>{t("Preset checked on")}{catalog.checked_at}</small>
+                    <small>
+                      {t("Preset checked on")}
+                      {catalog.checked_at}
+                    </small>
                   )}
                 </div>
                 <div className="form-grid">
@@ -512,38 +547,19 @@ export function Settings() {
                     />
                   </label>
                   <label>
-                    {t("Model ID")}
-                    <input
-                      list="provider-model-examples"
-                      aria-label={t("Model ID")}
-                      value={profile.config.model}
-                      onChange={(e) =>
-                        edit({
-                          config: {
-                            ...profile.config,
-                            model: e.target.value,
-                            thinking_mode: "auto",
-                            reasoning_effort: "",
-                            temperature:
-                              options.temperature_policy === "thinking_off" ||
-                              options.temperature_fixed_models?.includes(
-                                e.target.value,
-                              )
-                                ? null
-                                : profile.config.temperature,
-                          },
-                        })
-                      }
-                      placeholder={t("Model ID from the provider")}
-                    />
-                    <datalist id="provider-model-examples">
-                      {preset?.models.map((model) => (
-                        <option key={model} value={model} />
+                    {t("Service provider")}
+                    <select
+                      aria-label={t("Service provider")}
+                      value={preset?.id || ""}
+                      onChange={(event) => applyPreset(event.target.value)}
+                    >
+                      <option value="">{t("Custom compatible profile")}</option>
+                      {catalog.presets.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {t(item.name)}
+                        </option>
                       ))}
-                    </datalist>
-                    <small>
-                      {t("Enter a model or endpoint ID enabled for your account.")}
-                    </small>
+                    </select>
                   </label>
                   <label>
                     {t("API protocol")}
@@ -560,6 +576,7 @@ export function Settings() {
                             reasoning_effort: "",
                             api_version: "",
                             temperature: null,
+                            model_limits: undefined,
                           },
                         })
                       }
@@ -646,7 +663,9 @@ export function Settings() {
                     }
                   />
                   <small>
-                    {t("Include the provider's version path. Changing the endpoint or protocol requires a key check.")}
+                    {t(
+                      "Include the provider's version path. Changing the endpoint or protocol requires a key check.",
+                    )}
                   </small>
                 </label>
                 {profile.config.protocol === "anthropic" && (
@@ -673,7 +692,9 @@ export function Settings() {
                       </option>
                     </select>
                     <small>
-                      {t("The current API uses model-default temperature. Legacy requests follow the selected model's limits.")}
+                      {t(
+                        "The current API uses model-default temperature. Legacy requests follow the selected model's limits.",
+                      )}
                     </small>
                   </label>
                 )}
@@ -722,10 +743,46 @@ export function Settings() {
                   </label>
                 )}
                 <p className="field-hint">
-                  {t("Keys are held in this app process's memory. Local models can use an empty key.")}
+                  {t(
+                    "Keys are held in this app process's memory. Local models can use an empty key.",
+                  )}
                 </p>
+                <ModelPicker
+                  key={profile.id}
+                  profileId={profile.id}
+                  config={profile.config}
+                  catalog={catalog}
+                  examples={preset?.models || []}
+                  keyUpdate={updates[profile.id]}
+                  onLimits={(model_limits) =>
+                    edit({ config: { ...profile.config, model_limits } })
+                  }
+                  onSelect={(model, model_limits) => {
+                    const nextMetadata = modelMetadata(catalog, {
+                      ...profile.config,
+                      model,
+                    });
+                    edit({
+                      config: {
+                        ...profile.config,
+                        model,
+                        model_limits,
+                        thinking_mode: "auto",
+                        reasoning_effort: "",
+                        temperature:
+                          nextMetadata?.temperature_supported === false ||
+                          options.temperature_policy === "thinking_off" ||
+                          options.temperature_fixed_models?.includes(model)
+                            ? null
+                            : profile.config.temperature,
+                      },
+                    });
+                  }}
+                />
                 <div className="settings-divider" />
-                <h3>{t("Generation parameters")}</h3>
+                <h3 className="model-section-heading">
+                  {t("Request parameters")}
+                </h3>
                 {(options.thinking_modes.length > 0 ||
                   options.reasoning_efforts.length > 0) && (
                   <div className="form-grid provider-thinking">
@@ -797,7 +854,9 @@ export function Settings() {
                   </div>
                 )}
                 <p className="field-hint">
-                  {t("Thinking uses the output budget and adds latency. Final answer text is used as prose. Available parameters depend on the selected model.")}
+                  {t(
+                    "Thinking uses the output budget and adds latency. Final answer text is used as prose. Available parameters depend on the selected model.",
+                  )}
                 </p>
                 <div className="form-grid">
                   <label>
@@ -832,7 +891,9 @@ export function Settings() {
                     />
                     {!temperatureAllowed && (
                       <small>
-                        {t("This API or thinking mode uses model-default temperature.")}
+                        {t(
+                          "This API or thinking mode uses model-default temperature.",
+                        )}
                       </small>
                     )}
                   </label>
@@ -840,8 +901,13 @@ export function Settings() {
                     {t("Maximum output tokens")}
                     <input
                       type="number"
-                      min={256}
-                      max={32768}
+                      min={1}
+                      max={Math.min(
+                        profile.config.model_limits?.max_output_tokens ||
+                          metadata?.limits.max_output_tokens ||
+                          catalog.resource_limits.max_output_tokens,
+                        catalog.resource_limits.max_output_tokens,
+                      )}
                       value={profile.config.max_tokens}
                       onChange={(e) =>
                         edit({
@@ -854,11 +920,11 @@ export function Settings() {
                     />
                   </label>
                   <label>
-                    {t("Context character budget")}
+                    {t("Local context budget (characters)")}
                     <input
                       type="number"
-                      min={4000}
-                      max={200000}
+                      min={1}
+                      max={catalog.resource_limits.max_context_chars}
                       value={profile.config.context_chars}
                       onChange={(e) =>
                         edit({
@@ -869,6 +935,11 @@ export function Settings() {
                         })
                       }
                     />
+                    <small>
+                      {t(
+                        "Used to assemble story text locally. Characters are not tokens; the service enforces its actual token window.",
+                      )}
+                    </small>
                   </label>
                   <label>
                     {t("Timeout (seconds)")}
@@ -894,19 +965,25 @@ export function Settings() {
                     onClick={test}
                   >
                     <IconPlayerPlay size={16} />
-                    {testing ? t("Testing…") : t("Test connection and streaming")}
+                    {testing
+                      ? t("Testing…")
+                      : t("Test connection and streaming")}
                   </Button>
                   <span>
                     {dirty
                       ? t("Save your changes before testing.")
-                      : t("Testing sends a short request to this profile and may incur a charge.")}
+                      : t(
+                          "Testing sends a short request to this profile and may incur a charge.",
+                        )}
                   </span>
                 </div>
               </>
             ) : (
               <Empty
                 title={t("Select or add a model profile")}
-                detail={t("Save multiple models or parameter sets for the same service.")}
+                detail={t(
+                  "Save multiple models or parameter sets for the same service.",
+                )}
               />
             )}
           </div>
@@ -921,7 +998,9 @@ export function Settings() {
             <div>
               <h2>{t("Global default and task routing")}</h2>
               <p>
-                {t("Unassigned tasks use the default profile. Each project can override task routing in Story planning.")}
+                {t(
+                  "Unassigned tasks use the default profile. Each project can override task routing in Story planning.",
+                )}
               </p>
             </div>
           </div>
@@ -969,7 +1048,9 @@ export function Settings() {
             }}
           />
           <p className="field-hint">
-            {t("Wiki extraction and memory compilation can use different models. Assign a usable profile to each task.")}
+            {t(
+              "Wiki extraction and memory compilation can use different models. Assign a usable profile to each task.",
+            )}
           </p>
         </section>
       )}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -18,6 +19,247 @@ func nativeConfig(protocol string) ProviderConfig {
 	config := defaultProvider()
 	config.Protocol, config.Model, config.Temperature = protocol, "fixture-model", nil
 	return config
+}
+
+// TestModelBudgetsAndCatalog checks model-specific limits without retaining the historical global 32K cap.
+func TestModelBudgetsAndCatalog(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		model     string
+		output    uint32
+		context   uint64
+		wantError bool
+	}{
+		{"openai-128k", "gpt-6-astra", 128000, 1_000_000, false},
+		{"openai-over-limit", "gpt-6-astra", 128001, 64000, true},
+		{"legacy-32k", "gpt-4.1", 32768, 64000, false},
+		{"legacy-over-limit", "gpt-4.1", 32769, 64000, true},
+		{"custom-128k", "my-deployment", 128000, 1_000_000, false},
+		{"small-output", "my-deployment", 32, 64000, false},
+		{"zero-output", "my-deployment", 0, 64000, true},
+		{"zero-context", "my-deployment", 100, 0, true},
+		{"character-resource-guard", "my-deployment", 100, maxContextCharacters + 1, true},
+		{"output-resource-guard", "my-deployment", maxOutputBudget + 1, 64000, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := nativeConfig("responses")
+			config.Model, config.MaxTokens, config.ContextChars = test.model, test.output, test.context
+			_, err := validateConfig(config)
+			assert(t, (err != nil) == test.wantError, fmt.Sprintf("unexpected model budget result: %v", err))
+		})
+	}
+	config := nativeConfig("responses")
+	config.Model, config.MaxTokens = "custom-deployment", 4097
+	config.ModelLimits = &ModelLimits{ContextWindowTokens: 32000, MaxOutputTokens: 4096}
+	_, err := validateConfig(config)
+	assert(t, err != nil && strings.Contains(err.Error(), "4096"), "Custom deployment output limit was ignored")
+	metadata, found := lookupModel("openai", "gpt-6.1-sol")
+	assert(t, found && metadata.Limits.ContextWindowTokens == 1050000 && metadata.Limits.MaxOutputTokens == 128000, "Canonical lookup lost the model's token limits")
+	temperature := 0.5
+	config.Model, config.Temperature, config.ModelLimits = "gpt-6-astra", &temperature, nil
+	_, err = validateConfig(config)
+	assert(t, err != nil, "A fixed-temperature model accepted explicit sampling")
+	assert(t, !strings.Contains(defaultProvider().BaseURL, "deepseek"), "New default profiles still target an unrelated service")
+}
+
+// TestModelDiscoveryProtocols exercises the real command and native HTTP contracts without a cloud account.
+func TestModelDiscoveryProtocols(t *testing.T) {
+	for _, protocol := range []string{"openai", "responses", "anthropic", "gemini", "gemini_generate", "ollama"} {
+		t.Run(protocol, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests.Add(1)
+				assert(t, request.Method == http.MethodGet && !strings.Contains(request.URL.RawQuery, "draft-key"), "Discovery used the wrong HTTP contract")
+				writer.Header().Set("Content-Type", "application/json")
+				switch protocol {
+				case "anthropic":
+					assert(t, request.URL.Path == "/gateway/v1/models" && request.Header.Get("x-api-key") == "draft-key" && request.Header.Get("Authorization") == "", "Anthropic discovery path or authentication failed")
+					fmt.Fprint(writer, `{"data":[{"id":"claude-fixture","display_name":"Claude Fixture"}],"has_more":false}`)
+				case "gemini", "gemini_generate":
+					assert(t, request.URL.Path == "/gateway/v1beta/models" && request.Header.Get("x-goog-api-key") == "draft-key", "Gemini discovery path or authentication failed")
+					if request.URL.Query().Get("pageToken") == "" {
+						fmt.Fprint(writer, `{"models":[{"name":"models/gemini-fixture","displayName":"Gemini Fixture","inputTokenLimit":1000000,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent"]}],"nextPageToken":"page-two"}`)
+					} else {
+						fmt.Fprint(writer, `{"models":[{"name":"models/gemini-fixture"},{"name":"models/embedding-fixture","supportedGenerationMethods":["embedContent"]}]}`)
+					}
+				case "ollama":
+					assert(t, request.URL.Path == "/gateway/api/tags", "Ollama discovery path failed")
+					fmt.Fprint(writer, `{"models":[{"name":"local-model:latest"},{"name":"local-model:latest"}]}`)
+				default:
+					assert(t, request.URL.Path == "/gateway/v1/models" && request.Header.Get("Authorization") == "Bearer draft-key", "Compatible discovery path or authentication failed")
+					fmt.Fprint(writer, `{"data":[{"id":"gpt-6.1-sol","context_window":1050000,"max_output_tokens":128000},{"id":"gpt-6.1-sol"},{"id":"text-embedding-3-small"},{"bad":"entry"},17]}`)
+				}
+			}))
+			t.Cleanup(server.Close)
+			engine := testEngine(t)
+			before := invoke[settingsResponse](t, engine, "get_model_settings", nil)
+			config := nativeConfig(protocol)
+			config.Model = ""
+			config.BaseURL = server.URL + "/gateway/v1"
+			if strings.HasPrefix(protocol, "gemini") {
+				config.BaseURL = server.URL + "/gateway/v1beta"
+			}
+			if protocol == "ollama" {
+				config.BaseURL = server.URL + "/gateway/api/chat"
+			}
+			if protocol == "anthropic" {
+				config.APIVersion = "2023-06-01"
+			}
+			result := invoke[struct {
+				Models []DiscoveredModel `json:"models"`
+			}](t, engine, "list_provider_models", map[string]any{"profile_id": "unsaved", "config": config, "key_update": SecretUpdate{Action: "replace", Value: "draft-key"}})
+			assert(t, len(result.Models) == 1, "Discovery failed to filter or deduplicate models")
+			if protocol == "openai" || protocol == "responses" {
+				assert(t, result.Models[0].ID == "gpt-6.1-sol" && result.Models[0].Limits.MaxOutputTokens == 128000, "Discovery rewrote the upstream model ID or lost capacities")
+			}
+			if strings.HasPrefix(protocol, "gemini") {
+				assert(t, requests.Load() == 2 && result.Models[0].Limits.MaxInputTokens == 1000000, "Gemini pagination or token metadata was lost")
+			}
+			after := invoke[settingsResponse](t, engine, "get_model_settings", nil)
+			assert(t, after.Settings.Revision == before.Settings.Revision && !strings.Contains(jsonText(after), "draft-key"), "Model discovery persisted or exposed the key draft")
+		})
+	}
+}
+
+// TestModelDiscoveryFailureContracts distinguishes unsupported endpoints, invalid responses, and credential-safe redirects.
+func TestModelDiscoveryFailureContracts(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"unsupported", 404, `{"error":"not found"}`, "manually"},
+		{"unauthorized", 401, `{"error":"synthetic-secret"}`, "HTTP 401"},
+		{"invalid-json", 200, `<html>invalid</html>`, "invalid model list"},
+		{"missing-list", 200, `{}`, "invalid model list"},
+		{"null-list", 200, `{"data":null}`, "invalid model list"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := modelServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(test.status)
+				fmt.Fprint(writer, test.body)
+			})
+			config := nativeConfig("openai")
+			config.BaseURL = server.URL
+			_, err := listProviderModels(context.Background(), config)
+			assert(t, err != nil && strings.Contains(err.Error(), test.want) && !strings.Contains(err.Error(), "synthetic-secret"), "Discovery hid an error or exposed a provider body")
+		})
+	}
+	var leaked atomic.Bool
+	target := modelServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		leaked.Store(true)
+		fmt.Fprint(writer, `{"data":[]}`)
+	})
+	redirect := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, target.URL, http.StatusFound)
+	})
+	config := nativeConfig("responses")
+	config.BaseURL, config.APIKey = redirect.URL, "synthetic-secret"
+	_, err := listProviderModels(context.Background(), config)
+	assert(t, err != nil && !leaked.Load(), "Discovery followed a credential-bearing redirect")
+	repeated := modelServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(writer, `{"models":[],"nextPageToken":"same"}`)
+	})
+	config.Protocol, config.BaseURL = "gemini", repeated.URL
+	_, err = listProviderModels(context.Background(), config)
+	assert(t, err != nil && strings.Contains(err.Error(), "repeated"), "Repeated pagination cursors were accepted")
+}
+
+// TestModelDiscoveryDoesNotBlockSettingsOrLeakKeys checks process-local credential scoping and shutdown cancellation.
+func TestModelDiscoveryDoesNotBlockSettingsOrLeakKeys(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		started <- struct{}{}
+		<-request.Context().Done()
+	})
+	engine := testEngine(t)
+	config := nativeConfig("openai")
+	config.BaseURL = server.URL
+	finished := make(chan error, 1)
+	go func() {
+		_, err := engine.Dispatch("list_provider_models", rawMessage(map[string]any{"profile_id": "draft", "config": config}))
+		finished <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discovery did not start")
+	}
+	settingsDone := make(chan error, 1)
+	go func() { _, err := engine.Dispatch("get_model_settings", rawMessage(nil)); settingsDone <- err }()
+	select {
+	case err := <-settingsDone:
+		assert(t, err == nil, "Settings failed during discovery")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discovery held the settings lock")
+	}
+	assert(t, engine.Close() == nil, "Discovery prevented shutdown")
+	select {
+	case err := <-finished:
+		assert(t, err != nil, "Shutdown did not cancel discovery")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discovery did not stop after shutdown")
+	}
+}
+
+// TestModelDiscoverySavedCredentialsAndLimits retains optional limits and scopes existing keys to their connection.
+func TestModelDiscoverySavedCredentialsAndLimits(t *testing.T) {
+	server := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		assert(t, request.Header.Get("Authorization") == "Bearer stored-synthetic-key", "Discovery did not reuse the saved connection's session key")
+		fmt.Fprint(writer, `{"data":[{"id":"deployment-A"}]}`)
+	})
+	engine := testEngine(t)
+	config := nativeConfig("responses")
+	config.BaseURL, config.APIKey = server.URL, "stored-synthetic-key"
+	config.ModelLimits = &ModelLimits{ContextWindowTokens: 1_000_000, MaxOutputTokens: 128000}
+	configureModel(t, engine, config)
+	view := invoke[settingsResponse](t, engine, "get_model_settings", nil)
+	assert(t, view.Settings.Profiles[0].Config.ModelLimits.MaxOutputTokens == 128000, "Optional deployment limits did not survive persistence")
+	redacted := view.Settings.Profiles[0].Config
+	invoke[map[string]any](t, engine, "list_provider_models", map[string]any{"profile_id": "default", "config": redacted})
+	other := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		assert(t, request.Header.Get("Authorization") == "", "Changing the discovery endpoint leaked a saved key")
+		fmt.Fprint(writer, `{"data":[]}`)
+	})
+	redacted.BaseURL = other.URL
+	invoke[map[string]any](t, engine, "list_provider_models", map[string]any{"profile_id": "default", "config": redacted})
+	redacted.APIKey = "unscoped-key"
+	_, err := engine.Dispatch("list_provider_models", rawMessage(map[string]any{"profile_id": "default", "config": redacted}))
+	assert(t, err != nil, "Discovery accepted a raw key outside the explicit secret operation")
+}
+
+// TestModelDiscoveryNativePagination rejects invalid cursor types and follows the current Anthropic contract.
+func TestModelDiscoveryNativePagination(t *testing.T) {
+	var calls atomic.Int32
+	server := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		assert(t, request.Header.Get("anthropic-version") == AnthropicVersion && request.Header.Get("Authorization") == "Bearer current-synthetic-key", "Current Anthropic discovery authentication was incorrect")
+		if request.URL.Query().Get("after_id") == "" {
+			fmt.Fprint(writer, `{"data":[{"id":"claude-first"}],"has_more":true,"last_id":"claude-first"}`)
+		} else {
+			fmt.Fprint(writer, `{"data":[{"id":"claude-second"}],"has_more":false}`)
+		}
+	})
+	config := nativeConfig("anthropic")
+	config.BaseURL, config.APIKey = server.URL, "current-synthetic-key"
+	models, err := listProviderModels(context.Background(), config)
+	assert(t, err == nil && len(models) == 2 && calls.Load() == 2, "Anthropic model pagination was incomplete")
+	for _, protocol := range []string{"gemini", "anthropic"} {
+		t.Run(protocol, func(t *testing.T) {
+			invalid := modelServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				if protocol == "gemini" {
+					fmt.Fprint(writer, `{"models":[],"nextPageToken":123}`)
+				} else {
+					fmt.Fprint(writer, `{"data":[],"has_more":"yes"}`)
+				}
+			})
+			config := nativeConfig(protocol)
+			config.BaseURL = invalid.URL
+			_, err := listProviderModels(context.Background(), config)
+			assert(t, err != nil && strings.Contains(err.Error(), "pagination"), "Invalid pagination metadata silently truncated the model list")
+		})
+	}
 }
 
 // nativeStreamFixture constructs answer, reasoning, and terminal events for protocol contract tests.
@@ -40,8 +282,8 @@ func nativeStreamFixture(protocol, text string) string {
 	}
 }
 
-// TestProviderPresetsCoverElevenServices checks provider coverage, credential-free defaults, and legacy configuration.
-func TestProviderPresetsCoverElevenServices(t *testing.T) {
+// TestProviderPresetsCoverTwelveServices checks provider coverage, credential-free defaults, and legacy configuration.
+func TestProviderPresetsCoverTwelveServices(t *testing.T) {
 	providers, ids := map[string]bool{}, map[string]bool{}
 	for _, preset := range providerPresets() {
 		assert(t, !ids[preset.ID], "Duplicate preset ID")
@@ -51,7 +293,7 @@ func TestProviderPresetsCoverElevenServices(t *testing.T) {
 			t.Fatalf("%s: %v", preset.ID, err)
 		}
 	}
-	assert(t, len(providers) == 11 && len(ids) == 15, "Incorrect provider or preset count")
+	assert(t, len(providers) == 12 && len(ids) == 16, "Incorrect provider or preset count")
 	legacy := defaultProvider()
 	legacy.Model = "legacy"
 	decoded := ProviderConfig{}
@@ -61,7 +303,53 @@ func TestProviderPresetsCoverElevenServices(t *testing.T) {
 		CheckedAt string           `json:"checked_at"`
 		Presets   []ProviderPreset `json:"presets"`
 	}](t, engine, "provider_presets", nil)
-	assert(t, catalog.CheckedAt == ProviderDocsDate && len(catalog.Presets) == 15, "Presets are unavailable through the command entry point")
+	assert(t, catalog.CheckedAt == ProviderDocsDate && len(catalog.Presets) == 16, "Presets are unavailable through the command entry point")
+}
+
+// TestOpenRouterDiscoveryAndRequests retains gateway slugs and translates OpenRouter-specific limits and reasoning.
+func TestOpenRouterDiscoveryAndRequests(t *testing.T) {
+	var preset ProviderPreset
+	for _, item := range providerPresets() {
+		if item.ID == "openrouter" {
+			preset = item
+			break
+		}
+	}
+	assert(t, preset.Name == "OpenRouter" && preset.Config.BaseURL == "https://openrouter.ai/api/v1" && preset.Config.Model == "openai/gpt-6.1-sol", "OpenRouter defaults are incomplete")
+	metadata, found := lookupModel("openrouter", preset.Config.Model)
+	assert(t, found && metadata.Limits.MaxOutputTokens == 128000, "OpenRouter vendor prefixes hid known canonical metadata")
+	server := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		assert(t, request.Header.Get("Authorization") == "Bearer synthetic-router-key", "OpenRouter authentication was incorrect")
+		if request.Method == http.MethodGet {
+			assert(t, request.URL.Path == "/api/v1/models", "OpenRouter model-list path was rewritten")
+			fmt.Fprint(writer, `{"data":[{"id":"openai/gpt-6.1-sol","name":"OpenAI: GPT-6.1 Sol","context_length":1050000,"top_provider":{"max_completion_tokens":128000},"architecture":{"output_modalities":["text"]}},{"id":"vendor/image-model","architecture":{"output_modalities":["image"]}}]}`)
+			return
+		}
+		assert(t, request.URL.Path == "/api/v1/chat/completions", "OpenRouter request path was rewritten")
+		var body map[string]any
+		assert(t, json.NewDecoder(request.Body).Decode(&body) == nil, "Invalid OpenRouter request body")
+		assert(t, body["model"] == "openai/gpt-6.1-sol" && body["max_tokens"] == float64(128000), "OpenRouter slug or output budget changed")
+		assert(t, objectField(body, "reasoning")["effort"] == "high" && body["reasoning_effort"] == nil && body["max_completion_tokens"] == nil, "OpenRouter received another provider's parameter dialect")
+		fmt.Fprint(writer, nativeStreamFixture("openai", "Router response"))
+	})
+	config := preset.Config
+	config.BaseURL, config.APIKey = server.URL+"/api/v1", "synthetic-router-key"
+	models, err := listProviderModels(context.Background(), config)
+	assert(t, err == nil && len(models) == 1 && models[0].ID == "openai/gpt-6.1-sol" && models[0].Limits.ContextWindowTokens == 1050000 && models[0].Limits.MaxOutputTokens == 128000, "OpenRouter model capabilities or modalities were lost")
+	config.MaxTokens, config.ReasoningEffort = 128000, "high"
+	text, err := streamModel(context.Background(), config, []Message{{Role: "user", Content: "Test router"}}, func(string) {})
+	assert(t, err == nil && text == "Router response", "OpenRouter streaming failed")
+}
+
+// TestProviderPrefillContracts ensures each selectable preset supplies a complete, valid connection draft.
+func TestProviderPrefillContracts(t *testing.T) {
+	for _, preset := range providerPresets() {
+		t.Run(preset.ID, func(t *testing.T) {
+			assert(t, preset.Name != "" && preset.Config.BaseURL != "" && preset.Config.Model != "" && preset.Config.Protocol != "" && preset.Config.ProviderID != "", "A provider requires manual connection defaults")
+			_, err := validateConfig(preset.Config)
+			assert(t, err == nil, "A provider's prefilled configuration is invalid")
+		})
+	}
 }
 
 // TestNativeRequestContracts checks real HTTP paths, headers, roles, and output budget fields.

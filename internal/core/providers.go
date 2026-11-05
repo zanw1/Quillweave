@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const ProviderDocsDate = "2026-11-04"
+const ProviderDocsDate = "2026-11-06"
 const AnthropicVersion = "2026-10-21"
 
 type ProviderEndpoint struct {
@@ -54,6 +54,7 @@ func providerPresets() []ProviderPreset {
 		providerPreset("minimax", "MiniMax", "minimax", "openai", "https://api.minimax.cn/v1", "MiniMax-M3.1-Flash", "https://platform.minimax.cn/docs/api-reference/text-openai-api", "Reasoning and answer text are received separately. Flash uses thinking and model-default temperature."),
 		providerPreset("xai", "xAI / Grok", "xai", "responses", "https://api.x.ai/v1", "grok-4.7", "https://docs.x.ai/developers/model-capabilities/text/generate-text", "Official Responses API with store=false."),
 		providerPreset("ollama", "Ollama · Local", "ollama", "ollama", "http://localhost:11434", "gemma4", "https://docs.ollama.com/api/chat", "Start Ollama and install the selected model. Local access can use an empty API key."),
+		providerPreset("openrouter", "OpenRouter", "openrouter", "openai", "https://openrouter.ai/api/v1", "openai/gpt-6.1-sol", "https://openrouter.ai/docs/quickstart", "Unified Chat Completions API. Keep the full provider/model ID, or fetch models available through OpenRouter."),
 	}
 	for i := range items {
 		item := &items[i]
@@ -106,6 +107,9 @@ func providerPresets() []ProviderPreset {
 			item.Config.MaxTokens, item.Config.ContextChars = 4096, 24000
 		case "xai":
 			item.Config.TimeoutSeconds = 3600
+		case "openrouter":
+			item.Models = []string{"openai/gpt-6.1-sol", "openai/gpt-5.4", "anthropic/claude-sonnet-4.6", "openrouter/auto"}
+			item.ReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 		}
 	}
 	chat := items[0]
@@ -128,7 +132,7 @@ func providerPresets() []ProviderPreset {
 	mini.Description = "M3 supports thinking on or off. Reasoning remains separate from the answer."
 	items = append(items, mini)
 	for i := range items {
-		if contains(items[i].ReasoningEfforts, "low") {
+		if items[i].Config.ProviderID != "openrouter" && contains(items[i].ReasoningEfforts, "low") {
 			items[i].Config.ReasoningEffort = "low"
 		} else {
 			items[i].Config.ReasoningEffort = ""
@@ -139,6 +143,40 @@ func providerPresets() []ProviderPreset {
 
 // providerRules selects known model constraints or explicit custom-protocol options.
 func providerRules(config ProviderConfig) (ProviderPreset, bool) {
+	rules, ok := baseProviderRules(config)
+	if metadata, found := lookupModel(config.ProviderID, config.Model); found {
+		if metadata.TemperatureSupported != nil && !*metadata.TemperatureSupported {
+			rules.TemperaturePolicy = "none"
+		}
+		if len(metadata.ReasoningEfforts) > 0 && (config.ProviderID == "" || config.ProviderID == "openai") {
+			// Catalog metadata cannot introduce a dialect the adapter cannot send.
+			allowed := customReasoningEfforts(config.Protocol)
+			for _, effort := range metadata.ReasoningEfforts {
+				if contains(allowed, effort) && !contains(rules.ReasoningEfforts, effort) {
+					rules.ReasoningEfforts = append(rules.ReasoningEfforts, effort)
+				}
+			}
+		}
+	}
+	return rules, ok
+}
+
+// customReasoningEfforts limits metadata to reasoning fields implemented by each protocol.
+func customReasoningEfforts(protocol string) []string {
+	switch protocol {
+	case "openai", "responses":
+		return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	case "anthropic":
+		return []string{"low", "medium", "high", "max"}
+	case "gemini", "gemini_generate":
+		return []string{"minimal", "low", "medium", "high"}
+	default:
+		return nil
+	}
+}
+
+// baseProviderRules retains provider-specific wire behavior independently of model metadata.
+func baseProviderRules(config ProviderConfig) (ProviderPreset, bool) {
 	if config.ProviderID == "" {
 		rules := ProviderPreset{ThinkingModes: []string{}, ReasoningEfforts: []string{}, TemperaturePolicy: "optional"}
 		switch config.Protocol {
@@ -242,20 +280,9 @@ func validateProviderOptions(config ProviderConfig) error {
 
 // providerEndpoint retains gateway paths and completes the endpoint using the configured protocol and model.
 func providerEndpoint(config ProviderConfig) (string, error) {
-	base := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
-	if strings.ContainsAny(base, "{}<>") {
-		return "", errors.New("Enter a workspace ID or complete API URL to replace the placeholder")
-	}
-	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
-		return "", errors.New("Invalid API URL")
-	}
-	local := contains([]string{"localhost", "127.0.0.1", "::1"}, strings.ToLower(parsed.Hostname()))
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && local) {
-		return "", errors.New("Use HTTPS for cloud APIs. Local services can use HTTP")
-	}
-	if parsed.User != nil && (parsed.User.Username() != "" || strings.Contains(parsed.User.String(), ":")) || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(base, "#") {
-		return "", errors.New("Use an API URL without credentials, query parameters, or a fragment")
+	base, err := validatedAPIBase(config.BaseURL)
+	if err != nil {
+		return "", err
 	}
 	switch config.Protocol {
 	case "openai":
@@ -297,6 +324,26 @@ func providerEndpoint(config ProviderConfig) (string, error) {
 		}
 	default:
 		return "", errors.New("Select a supported API protocol")
+	}
+	return base, nil
+}
+
+// validatedAPIBase shares URL validation between model discovery and generation.
+func validatedAPIBase(address string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(address), "/")
+	if strings.ContainsAny(base, "{}<>") {
+		return "", errors.New("Enter a workspace ID or complete API URL to replace the placeholder")
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
+		return "", errors.New("Invalid API URL")
+	}
+	local := contains([]string{"localhost", "127.0.0.1", "::1"}, strings.ToLower(parsed.Hostname()))
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && local) {
+		return "", errors.New("Use HTTPS for cloud APIs. Local services can use HTTP")
+	}
+	if parsed.User != nil && (parsed.User.Username() != "" || strings.Contains(parsed.User.String(), ":")) || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(base, "#") {
+		return "", errors.New("Use an API URL without credentials, query parameters, or a fragment")
 	}
 	return base, nil
 }
@@ -361,7 +408,11 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 			body["temperature"] = *config.Temperature
 		}
 		if effort != "" {
-			body["reasoning_effort"] = effort
+			if config.ProviderID == "openrouter" {
+				body["reasoning"] = map[string]string{"effort": effort}
+			} else {
+				body["reasoning_effort"] = effort
+			}
 		}
 		if thinking != "" {
 			switch config.ProviderID {

@@ -58,3 +58,37 @@
   overflow: auto;
   white-space: pre-wrap;
 }
+
+.planning-details > label { margin: 26px 0; }
+.planning-layout.planning-exploring {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+.planning-layout.planning-exploring > .planning-content {
+  min-height: 0;
+  max-height: 45vh;
+  overflow: auto;
+  padding: 22px 30px;
+}
+.planning-exploring .section-title { flex-wrap: wrap; margin-bottom: 0; }
+.planning-exploring .section-title > div { flex: 1; min-width: 240px; }
+.planning-exploring .section-title h1 { font-size: 23px; }
+.planning-exploring .section-title p { line-height: 1.7; }
+.planning-layout.planning-exploring > .assistant-panel {
+  height: auto;
+  min-height: 0;
+  border-left: 0;
+  border-top: 1px solid var(--line);
+  flex-shrink: 1;
+}
+.planning-exploring .assistant-welcome { max-width: 850px; padding: 24px 30px; }
+.planning-exploring .assistant-welcome h2 { font-size: 30px; line-height: 1.35; }
+@media (max-width: 700px) {
+  .planning-layout.planning-exploring > .planning-content { padding: 16px 20px; }
+  .planning-exploring .section-title > div { min-width: 0; flex-basis: 100%; }
+  .planning-exploring .section-title h1 { font-size: 21px; }
+  .planning-exploring .assistant-welcome { padding: 20px; }
+  .planning-exploring .assistant-welcome h2 { font-size: 25px; }
+}

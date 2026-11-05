@@ -138,18 +138,19 @@ type Candidate struct {
 
 // ProviderConfig preserves the existing JSON fields and persistence format.
 type ProviderConfig struct {
-	Protocol        string   `json:"protocol"`
-	BaseURL         string   `json:"base_url"`
-	Model           string   `json:"model"`
-	Temperature     *float64 `json:"temperature"`
-	MaxTokens       uint32   `json:"max_tokens"`
-	TimeoutSeconds  uint64   `json:"timeout_seconds"`
-	ContextChars    uint64   `json:"context_chars"`
-	APIKey          string   `json:"api_key"`
-	ProviderID      string   `json:"provider_id,omitempty"`
-	ThinkingMode    string   `json:"thinking_mode,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	APIVersion      string   `json:"api_version,omitempty"`
+	Protocol        string       `json:"protocol"`
+	BaseURL         string       `json:"base_url"`
+	Model           string       `json:"model"`
+	Temperature     *float64     `json:"temperature"`
+	MaxTokens       uint32       `json:"max_tokens"`
+	TimeoutSeconds  uint64       `json:"timeout_seconds"`
+	ContextChars    uint64       `json:"context_chars"`
+	APIKey          string       `json:"api_key"`
+	ProviderID      string       `json:"provider_id,omitempty"`
+	ThinkingMode    string       `json:"thinking_mode,omitempty"`
+	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
+	APIVersion      string       `json:"api_version,omitempty"`
+	ModelLimits     *ModelLimits `json:"model_limits,omitempty"`
 }
 
 // ModelProfile preserves the existing JSON fields and persistence format.
@@ -598,7 +599,7 @@ func (chapter *Chapter) SetContent(title, body, synopsis, status string, target 
 // defaultProvider provides an unconfigured model with the existing session budgets.
 func defaultProvider() ProviderConfig {
 	temperature := 0.7
-	return ProviderConfig{Protocol: "openai", BaseURL: "https://api.deepseek.com/v1", Temperature: &temperature, MaxTokens: 4096, TimeoutSeconds: 120, ContextChars: 24000}
+	return ProviderConfig{Protocol: "openai", BaseURL: "https://api.openai.com/v1", Temperature: &temperature, MaxTokens: 4096, TimeoutSeconds: 120, ContextChars: 24000}
 }
 
 // cloneProject copies project data for asynchronous work without shared mutable slices.

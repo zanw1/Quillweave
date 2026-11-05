@@ -24,7 +24,6 @@ import {
 import { api, date, download, message, pickDirectory } from "../lib/api";
 import { Badge, Button, Empty, ErrorBox, Modal } from "../components/ui";
 import { Writing, Planning } from "../features/writing/Editor";
-import { WritingParameters } from "../features/writing/WritingParameters";
 import { Wiki } from "../features/wiki/Wiki";
 import { Library } from "../features/library/Library";
 import { Methods } from "../features/methods/Methods";
@@ -62,14 +61,7 @@ export function App() {
   const [importing, setImporting] = useState(false);
   const [importPath, setImportPath] = useState("");
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    title: "",
-    genre: "",
-    premise: "",
-    writing_style: "custom",
-    default_chapter_words: 3000,
-    narrative_pov: "Third-person limited",
-  });
+  const [form, setForm] = useState({ title: "" });
   const [query, setQuery] = useState("");
   const [layout, setLayout] = useState("list");
   const [seed, setSeed] = useState("");
@@ -135,21 +127,24 @@ export function App() {
     setPage(p.chapters.length ? "write" : "plan");
   }
 
-  /** Create an empty offline project. */
+  /** Create an unplanned workspace with a temporary name when the author has none yet. */
   async function newProject() {
     setError("");
     setBusy(true);
     try {
-      enter(await api<Project>("create_project", form));
+      let title = form.title.trim();
+      if (!title) {
+        const base = t("Untitled story");
+        const titles = new Set(projects.map((item) => item.title));
+        title = base;
+        for (let number = 2; titles.has(title); number++)
+          title = `${base} ${number}`;
+      }
+      enter(
+        await api<Project>("create_project", { title, genre: "", premise: "" }),
+      );
       setCreate(false);
-      setForm({
-        title: "",
-        genre: "",
-        premise: "",
-        writing_style: "custom",
-        default_chapter_words: 3000,
-        narrative_pov: "Third-person limited",
-      });
+      setForm({ title: "" });
     } catch (e) {
       setError(message(e));
     } finally {
@@ -265,7 +260,8 @@ export function App() {
               <IconBook2 size={20} />
             </span>
             <span>
-              {t("My workspace")}<small>{t("Local workspace")}</small>
+              {t("My workspace")}
+              <small>{t("Local workspace")}</small>
             </span>
             <IconChevronDown size={15} />
           </button>
@@ -429,7 +425,8 @@ export function App() {
                 </p>
                 <h1>{t("Give your story room to grow.")}</h1>
                 <p className="welcome-description">
-                  {t("From an idea to a whole world.")}{" "}<br />{t("A home for your prose, characters, and ideas.")}
+                  {t("From an idea to a whole world.")} <br />
+                  {t("A home for your prose, characters, and ideas.")}
                 </p>
                 <div className="welcome-actions">
                   <Button
@@ -447,7 +444,7 @@ export function App() {
                     onClick={example}
                     disabled={busy}
                   >
-                    {t("Explore the sample")}{" "}<IconArrowRight size={17} />
+                    {t("Explore the sample")} <IconArrowRight size={17} />
                   </button>
                 </div>
                 <div className="welcome-side">
@@ -458,7 +455,7 @@ export function App() {
               </div>
               <div className="projects-title">
                 <h2>
-                  {t("My projects")}{" "}<span>{projects.length}</span>
+                  {t("My projects")} <span>{projects.length}</span>
                 </h2>
                 <div className="projects-tools">
                   <label className="search">
@@ -536,11 +533,14 @@ export function App() {
                             </td>
                             <td>
                               <strong className="word-total">
-                                {p.word_count.toLocaleString()}{" "}{t("characters")}
+                                {p.word_count.toLocaleString()}{" "}
+                                {t("characters")}
                               </strong>
                               <small className="cell-sub">
                                 {p.chapter_count}{" "}
-                                {p.chapter_count === 1 ? t("chapter") : t("chapters")}
+                                {p.chapter_count === 1
+                                  ? t("chapter")
+                                  : t("chapters")}
                               </small>
                             </td>
                             <td className="muted">{date(p.updated_at)}</td>
@@ -559,7 +559,8 @@ export function App() {
                     </table>
                     <div className="table-footer">
                       {projects.length}{" "}
-                      {projects.length === 1 ? t("project") : t("projects")}{" "}{t("· Every story deserves an ending")}
+                      {projects.length === 1 ? t("project") : t("projects")}{" "}
+                      {t("· Every story deserves an ending")}
                     </div>
                   </div>
                 ) : (
@@ -579,8 +580,10 @@ export function App() {
                         <footer>
                           <span>
                             {p.chapter_count}{" "}
-                            {p.chapter_count === 1 ? t("chapter") : t("chapters")} ·{" "}
-                            {p.word_count.toLocaleString()}{" "}{t("characters")}
+                            {p.chapter_count === 1
+                              ? t("chapter")
+                              : t("chapters")}{" "}
+                            · {p.word_count.toLocaleString()} {t("characters")}
                           </span>
                           <IconArrowUpRight size={18} />
                         </footer>
@@ -598,7 +601,9 @@ export function App() {
                   detail={
                     query
                       ? t("Try a project title or genre keyword.")
-                      : t("Create a project, import an older one, or explore the sample.")
+                      : t(
+                          "Create a project, import an older one, or explore the sample.",
+                        )
                   }
                 >
                   <Button onClick={() => setCreate(true)}>
@@ -610,7 +615,9 @@ export function App() {
               <div className="home-footnote">
                 <IconCircleCheck size={17} />
                 <span>
-                  {t("Write offline and use AI when you choose. Projects and versions are stored locally.")}
+                  {t(
+                    "Write offline and use AI when you choose. Projects and versions are stored locally.",
+                  )}
                 </span>
               </div>
             </section>
@@ -679,47 +686,26 @@ export function App() {
               void newProject();
             }}
           >
+            <p className="field-hint">
+              {t(
+                "You don't need a story idea yet. Start a workspace, talk with AI, and decide the genre, length, and setting later.",
+              )}
+            </p>
             <label>
-              {t("Project title")}
+              {t("Working title (optional)")}
               <input
                 autoFocus
                 value={form.title}
                 onChange={(e) => setForm({ ...form, title: e.target.value })}
-                placeholder={t("Give your story a title")}
+                placeholder={t("Leave blank for an untitled story")}
                 maxLength={120}
-                required
-              />
-            </label>
-            <label>
-              {t("Genre")}
-              <input
-                value={form.genre}
-                onChange={(e) => setForm({ ...form, genre: e.target.value })}
-                placeholder={t("For example, mystery, fantasy, contemporary, literary fiction")}
-              />
-            </label>
-            <WritingParameters
-              value={form}
-              onChange={(patch) => setForm({ ...form, ...patch })}
-            />
-            <label>
-              {t("Initial idea")}
-              <textarea
-                className="large-input"
-                value={form.premise}
-                onChange={(e) => setForm({ ...form, premise: e.target.value })}
-                placeholder={t("Who wants what, and what stands in the way? You can fill this in later.")}
               />
             </label>
             {error && <ErrorBox>{error}</ErrorBox>}
             <div className="modal-actions">
               <Button onClick={() => setCreate(false)}>{t("Cancel")}</Button>
-              <Button
-                primary
-                type="submit"
-                disabled={busy || !form.title.trim()}
-              >
-                {t("Create project")}
+              <Button primary type="submit" disabled={busy}>
+                {t("Start exploring")}
               </Button>
             </div>
           </form>
@@ -736,7 +722,9 @@ export function App() {
           <div className="modal-content">
             <h3>{t("Import from an older Quillweave version")}</h3>
             <p className="muted">
-              {t("Select the project folder containing chapters/ or Novel_architecture.txt.")}
+              {t(
+                "Select the project folder containing chapters/ or Novel_architecture.txt.",
+              )}
             </p>
             <label>
               {t("Full path to the legacy project")}

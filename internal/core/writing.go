@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type StylePreset struct {
@@ -57,8 +58,11 @@ func chapterTarget(project *Project, chapter *Chapter) uint32 {
 	return project.DefaultChapterWords
 }
 
-// promptGuidance adds the selected style, viewpoint, and measured length target to the prompt.
+// promptGuidance defers writing constraints while exploring and applies them to concrete writing tasks.
 func promptGuidance(project *Project, chapter *Chapter, action string) string {
+	if action == "ask" && chapter == nil && len(project.Chapters) == 0 && strings.TrimSpace(project.Premise) == "" && strings.TrimSpace(project.Outline) == "" {
+		return "The author is exploring an undecided story. Genre, title, plot, length, and viewpoint are not prerequisites. Help discover interests through one or two easy questions at a time. Use preferences the author actually expresses, offer possibilities as proposals, and do not treat application writing defaults as confirmed creative choices. Do not require a complete setup or rush into a full outline."
+	}
 	styles := writingPresets()
 	preset := styles[0]
 	for _, item := range styles {

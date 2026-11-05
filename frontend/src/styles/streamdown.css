@@ -1,0 +1,104 @@
+/* Compile vendor utilities without applying Tailwind's global browser reset. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" source(none);
+@source "../../../node_modules/streamdown/dist/*.js";
+@source "../../../node_modules/@streamdown/cjk/dist/*.js";
+
+@theme inline {
+  --color-background: #fff;
+  --color-foreground: var(--ink);
+  --color-muted: var(--surface);
+  --color-muted-foreground: var(--muted);
+  --color-border: var(--line);
+  --color-primary: var(--blue);
+  --color-primary-foreground: #fff;
+  --color-ring: var(--blue);
+  --radius-lg: 8px;
+}
+
+.markdown-response.answer-text {
+  white-space: normal;
+  min-width: 0;
+}
+.markdown-response :is(h1, h2, h3, h4, h5, h6) {
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.markdown-response [data-streamdown="heading-1"] {
+  font-size: 1.65em;
+}
+.markdown-response [data-streamdown="heading-2"] {
+  font-size: 1.4em;
+}
+.markdown-response [data-streamdown="heading-3"] {
+  font-size: 1.2em;
+}
+.markdown-response [data-streamdown="unordered-list"] {
+  list-style: disc;
+}
+.markdown-response [data-streamdown="ordered-list"] {
+  list-style: decimal;
+}
+.markdown-response :is(ul, ol) {
+  padding-inline-start: 1.5em;
+}
+.markdown-response li > :is(ul, ol) {
+  margin-block: 0.35em;
+}
+.markdown-response [data-streamdown="blockquote"] {
+  border-inline-start: 3px solid #b4c8ef;
+  margin-inline: 0;
+  padding-inline-start: 1em;
+  color: var(--muted);
+}
+.markdown-response [data-streamdown="link"] {
+  color: #3158bd;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.markdown-response [data-streamdown="table-wrapper"] {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown-response [data-streamdown="table"] {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: inherit;
+}
+.markdown-response :is(th, td) {
+  border: 1px solid var(--line);
+  padding: 0.55em 0.8em;
+  text-align: start;
+  vertical-align: top;
+}
+.markdown-response th {
+  background: var(--surface);
+  font-weight: 600;
+}
+.markdown-response [data-streamdown="code-block"] {
+  border: 1px solid var(--line);
+}
+.markdown-response pre {
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+  line-height: 1.7;
+  font-size: 0.95em;
+}
+.markdown-response [data-streamdown="inline-code"] {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+}
+.markdown-response [data-streamdown="horizontal-rule"] {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.markdown-image-reference {
+  font-size: 0.95em;
+  color: var(--muted);
+}
