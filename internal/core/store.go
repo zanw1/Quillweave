@@ -112,6 +112,24 @@ func (store *Store) Insert(project *Project) error {
 	return err
 }
 
+// DeleteProject removes an unchanged project and all owned task history in one transaction.
+func (store *Store) DeleteProject(id string, expected uint64) error {
+	return store.withWriteTransaction(func(connection *sql.Conn) error {
+		project, err := readProject(connection, id)
+		if err != nil {
+			return err
+		}
+		if project.Revision != expected {
+			return errors.New("This project changed. Close and reopen the delete confirmation before trying again")
+		}
+		if _, err := connection.ExecContext(context.Background(), "DELETE FROM runs WHERE project_id=?", id); err != nil {
+			return err
+		}
+		_, err = connection.ExecContext(context.Background(), "DELETE FROM projects WHERE id=?", id)
+		return err
+	})
+}
+
 // Save uses a SQL revision comparison to reject stale concurrent writes.
 func (store *Store) Save(project *Project, expected uint64) error {
 	return saveProject(store.db, project, expected)
@@ -275,7 +293,14 @@ func (store *Store) SetProjectModels(id string, expected uint64, overrides map[s
 
 // SaveRun stores task output and context from a credential-free job document.
 func (store *Store) SaveRun(id, projectID, document string) error {
-	_, err := store.db.Exec("INSERT INTO runs(id,project_id,document) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document", id, projectID, document)
+	result, err := store.db.Exec("INSERT INTO runs(id,project_id,document) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM projects WHERE id=?) ON CONFLICT(id) DO UPDATE SET document=excluded.document", id, projectID, document, projectID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err == nil && changed == 0 {
+		return errors.New("Project not found")
+	}
 	return err
 }
 

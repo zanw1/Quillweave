@@ -205,6 +205,19 @@ pre {
   background: #edf2fb;
   color: #315bc2;
 }
+.icon-button.danger {
+  color: #b42318;
+}
+.icon-button.danger:hover:not(:disabled),
+.button.danger:hover:not(:disabled) {
+  background: #fff0ee;
+  color: #912018;
+  border-color: #e7b6b1;
+}
+.button.danger {
+  color: #b42318;
+  border-color: #e7b6b1;
+}
 .badge {
   padding: 4px 8px;
   background: #f0f3f7;
@@ -792,30 +805,54 @@ tr:hover td {
   gap: 20px;
 }
 .project-card {
-  padding: 25px;
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 12px;
   text-align: left;
   background: #fff;
 }
+.project-card-main {
+  display: block;
+  width: 100%;
+  padding: 25px;
+  text-align: left;
+  border-radius: inherit;
+}
+.project-card-delete {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+.project-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.prose-polish {
+  margin: 12px 0;
+}
+.prose-polish .composer-note {
+  margin-bottom: 0;
+}
 .project-card:hover {
   border-color: #b7c9f3;
   background: #fcfdff;
 }
-.project-card > .badge {
+.project-card-main > .badge {
   float: right;
+  margin-right: 30px;
 }
 .project-card h3 {
   font-size: 19px;
   margin: 23px 0 10px;
 }
-.project-card > p {
+.project-card-main > p {
   color: #8c9ab0;
   font-size: 12px;
   height: 65px;
   overflow: hidden;
 }
-.project-card footer {
+.project-card-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1919,6 +1956,42 @@ tr:hover td {
   gap: 12px;
   margin-top: 25px;
 }
+.project-picker-list {
+  display: grid;
+  gap: 8px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.project-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+}
+.project-picker-option:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: #b7c9f3;
+}
+.project-picker-option > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.project-picker-option strong,
+.project-picker-option small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.project-picker-option small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+.delete-project-name {
+  overflow-wrap: anywhere;
+}
 .modal-content > p {
   font-size: 12px;
 }
@@ -2750,7 +2823,7 @@ tr:hover td {
 .section-title p:not(.eyebrow),
 .welcome-description,
 .table-description,
-.project-card > p,
+.project-card-main > p,
 .method-card > p,
 .drawer-section > p,
 .drawer-lead,

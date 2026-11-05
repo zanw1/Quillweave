@@ -9,6 +9,9 @@ Quillweave uses Go, Wails 3, React, and TypeScript. The interface supports Engli
 ## What you can do
 
 - Write chapters offline, set chapter length goals, and restore earlier versions.
+- Switch between stories explicitly; project tools opened from home ask which story to use when several exist.
+- Delete a story with confirmation, including its saved versions, knowledge, and AI history. Export a backup first to retain a copy.
+- Generate prose with fiction-specific style guidance or use Humanize chapter to request a language edit, then review it before replacing the draft.
 - Discuss a story with AI, generate an outline from the conversation, and review it before applying it to a draft.
 - Maintain characters, places, factions, items, relationships, and clues with quotes linked to their source passages.
 - Explore a knowledge graph, filter by chapter or entry type, and inspect the evidence behind a connection.
@@ -157,11 +160,11 @@ gh repo create zanw1/Quillweave --public --source=. --remote=origin --push
 
 The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, creates the DMG and standalone EXE, calculates SHA-256 checksums, and creates a **draft prerelease** with these files, optional ZIP packages, and license notices attached.
 
-The tag must match `package.json`. The current version uses `v3.0.1`.
+The tag must match `package.json`. The current version uses `v3.0.2`.
 
 ```sh
-git tag -a v3.0.1 -m "Quillweave v3.0.1"
-git push origin v3.0.1
+git tag -a v3.0.2 -m "Quillweave v3.0.2"
+git push origin v3.0.2
 ```
 
 Open the repository's **Actions** tab and wait for **Build release** to finish. Open **Releases**, review the draft's notes and assets, test the downloaded applications, and select **Publish release**. A workflow rerun can replace assets on the draft. Published releases require a new version.
@@ -169,6 +172,23 @@ Open the repository's **Actions** tab and wait for **Build release** to finish. 
 For subsequent versions, update the root and frontend package versions and the lockfile together. Refresh `THIRD_PARTY_NOTICES.txt` when dependencies change, commit the reviewed changes, and push the matching version tag. The workflow uses the repository's automatically supplied `GITHUB_TOKEN` with release-write permission confined to the final upload job. [GitHub release documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
 Git ignores `build/bin/`, `build/releases/`, `data/`, `node_modules/`, `frontend/dist/`, `.env`, `.env.*`, and `参考/`. The `.env.example` template is allowed. Review staged files before pushing, including any manuscripts or exported backups saved elsewhere. Commit source, manifests, license notices, the workflow, and the README screenshots.
+
+### Story management and prose acceptance
+
+Use disposable projects and a local streaming mock for workflow checks. Real-model prose quality still requires human review.
+
+| Input or check | Expected result |
+|---|---|
+| Open a project tool with no stories | Show the new-story dialog |
+| Open a project tool with one story | Enter that story and the requested tool |
+| Open a project tool with several stories | Ask which story to use and retain the requested tool |
+| Switch stories inside Character Wiki | Change stories while staying in Character Wiki |
+| Cancel deletion or press Escape | Retain the complete story |
+| Delete a story with a running AI task | Reject deletion until the task finishes |
+| Edit a story after opening its delete confirmation | Reject the stale confirmation and retain the newer revision |
+| Simulate a database failure during deletion | Roll back the story and its AI history together |
+| Delete one of two stories, then the last story | Retain the other story and its drafts; clear selection after deleting the current story |
+| Humanize an empty or unsaved chapter | Disable empty drafts; save source prose before generating; require explicit application and reject results after source edits |
 
 ### Release acceptance
 

@@ -293,6 +293,34 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		return result, nil
 	case "get_project":
 		return engine.store.Get(args.text("project_id"))
+	case "delete_project":
+		id := args.text("project_id")
+		expected, ok := unsigned(args.fields["revision"])
+		if args.err != nil {
+			return nil, args.err
+		}
+		if !ok {
+			return nil, errors.New("Missing project revision")
+		}
+		engine.jobsMu.Lock()
+		defer engine.jobsMu.Unlock()
+		for _, job := range engine.jobs {
+			if job.ProjectID == id && job.Status == "running" {
+				return nil, errors.New("This project has a running AI task. Stop it and wait for it to finish before deleting")
+			}
+		}
+		if err := engine.store.DeleteProject(id, expected); err != nil {
+			return nil, err
+		}
+		for jobID, job := range engine.jobs {
+			if job.ProjectID == id {
+				if job.cancel != nil {
+					job.cancel()
+				}
+				delete(engine.jobs, jobID)
+			}
+		}
+		return map[string]bool{"deleted": true}, nil
 	case "knowledge_graph":
 		project, err := engine.store.Get(args.text("project_id"))
 		if err != nil {

@@ -58,6 +58,11 @@ func chapterTarget(project *Project, chapter *Chapter) uint32 {
 	return project.DefaultChapterWords
 }
 
+// fictionProseGuidance adapts Humanizer's editing principles to fiction without flattening author voice.
+func fictionProseGuidance() string {
+	return "Fiction prose: The author's style notes and established character voices take priority over generic editing rules. Match the existing prose's rhythm, vocabulary, and viewpoint. Let actions, specific details, and dialogue carry emotion and subtext; avoid explaining a feeling the scene already conveys. Reduce repeated sentence openings, stock comparisons, empty intensifiers, forced contrasts or three-part lists, and paragraph endings that summarize or inflate the scene. Keep deliberate repetition, imagery, punctuation, and genre conventions when they serve the author's voice. Return only the requested fiction, without chatbot greetings, editing commentary, decorative headings, or an explanatory moral. Before responding, reread for these habits and for continuity of names, plot facts, relationships, character knowledge, and planted clues."
+}
+
 // promptGuidance defers writing constraints while exploring and applies them to concrete writing tasks.
 func promptGuidance(project *Project, chapter *Chapter, action string) string {
 	if action == "ask" && chapter == nil && len(project.Chapters) == 0 && strings.TrimSpace(project.Premise) == "" && strings.TrimSpace(project.Outline) == "" {
@@ -81,5 +86,9 @@ func promptGuidance(project *Project, chapter *Chapter, action string) string {
 		remaining := max(0, int(target)-actual)
 		length = fmt.Sprintf("Target chapter length is about %d non-whitespace characters. The saved text has %d characters, leaving about %d. Return the new prose and follow the author's request. Any completion claim must reflect a measured count.", target, actual, remaining)
 	}
-	return fmt.Sprintf("Selected style: %s\nStyle guidance: %s\nNarrative viewpoint: %s\n%s", preset.Name, preset.Guidance, narrativePovLabel(project.NarrativePov), length)
+	guidance := fmt.Sprintf("Selected style: %s\nStyle guidance: %s\nNarrative viewpoint: %s\n%s", preset.Name, preset.Guidance, narrativePovLabel(project.NarrativePov), length)
+	if contains([]string{"continue", "rewrite"}, action) {
+		guidance += "\n" + fictionProseGuidance()
+	}
+	return guidance
 }

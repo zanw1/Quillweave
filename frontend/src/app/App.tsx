@@ -16,6 +16,7 @@ import {
   IconArrowUpRight,
   IconDownload,
   IconUpload,
+  IconTrash,
   IconArrowRight,
   IconCircleCheck,
   IconLayoutSidebarLeftCollapse,
@@ -47,6 +48,27 @@ const pageNames: Record<Page, string> = {
   settings: "Model settings",
 };
 
+/** Remove only the deleted story's local drafts, selection, and task or graph caches. */
+function clearProjectStorage(id: string) {
+  for (const kind of ["localStorage", "sessionStorage"] as const) {
+    try {
+      const storage = window[kind];
+      for (const key of Object.keys(storage)) {
+        if (
+          key === `quillweave-plan-${id}` ||
+          key.startsWith(`quillweave-draft-${id}-`) ||
+          key === `quillweave-job-${id}` ||
+          key === `quillweave-graph-v4-${id}` ||
+          (key === "quillweave-project" && storage.getItem(key) === id)
+        )
+          storage.removeItem(key);
+      }
+    } catch {
+      /* A blocked browser cache must not turn a completed deletion into an error. */
+    }
+  }
+}
+
 /** Manage project navigation through the shared Go service. */
 export function App() {
   const language = useLanguage();
@@ -66,6 +88,13 @@ export function App() {
   const [layout, setLayout] = useState("list");
   const [seed, setSeed] = useState("");
   const [sidebar, setSidebar] = useState(() => window.innerWidth > 640);
+  const [projectPicker, setProjectPicker] = useState<Page | "auto" | null>(null);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
+  const projectRequest = useRef(0);
   const archiveFile = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -81,19 +110,28 @@ export function App() {
   }, [toast]);
   /** Load project summaries and restore the selected project on the home screen. */
   async function load() {
+    const request = ++projectRequest.current;
     setLoading(true);
     setError("");
     try {
       const list = await api<ProjectCard[]>("list_projects");
+      if (request !== projectRequest.current) return;
       setProjects(list);
-      const current = localStorage.getItem("quillweave-project");
+      let current: string | null = null;
+      try {
+        current = localStorage.getItem("quillweave-project");
+      } catch {
+        /* Project tools remain available without a remembered selection. */
+      }
       if (current && list.some((p) => p.id === current)) {
         const p = await api<Project>("get_project", { project_id: current });
-        setProject(p);
-        setChapterId(p.chapters[0]?.id || "");
+        if (request === projectRequest.current) {
+          setProject(p);
+          setChapterId(p.chapters[0]?.id || "");
+        }
       }
     } catch (e) {
-      setError(message(e));
+      if (request === projectRequest.current) setError(message(e));
     } finally {
       setLoading(false);
     }
@@ -102,29 +140,110 @@ export function App() {
   /** Update project data and its home summary while retaining the chapter selection. */
   function update(next: Project) {
     setProject((current) => (current?.id === next.id ? next : current));
+    const request = projectRequest.current;
     api<ProjectCard[]>("list_projects")
-      .then(setProjects)
+      .then((list) => {
+        if (request === projectRequest.current) setProjects(list);
+      })
       .catch((e) => setError(message(e)));
   }
 
   /** Open an existing chapter or direct an empty project to Story planning. */
-  async function openProject(id: string) {
+  async function openProject(id: string, destination?: Page) {
+    const request = ++projectRequest.current;
     setError("");
+    setBusy(true);
     try {
       const p = await api<Project>("get_project", { project_id: id });
-      enter(p);
+      if (request === projectRequest.current) enter(p, destination);
     } catch (e) {
-      setError(message(e));
+      if (request === projectRequest.current) setError(message(e));
+    } finally {
+      if (request === projectRequest.current) setBusy(false);
     }
   }
 
   /** Enter the shared editing flow for newly created, imported, or sample projects. */
-  function enter(p: Project) {
+  function enter(p: Project, destination?: Page) {
+    projectRequest.current++;
     setProject(p);
-    localStorage.setItem("quillweave-project", p.id);
+    try {
+      localStorage.setItem("quillweave-project", p.id);
+    } catch {
+      /* Keep project switching usable when browser storage is blocked. */
+    }
     update(p);
+    setSeed("");
+    setBusy(false);
+    setProjectPicker(null);
     setChapterId(p.chapters[0]?.id || "");
-    setPage(p.chapters.length ? "write" : "plan");
+    setPage(destination || (p.chapters.length ? "write" : "plan"));
+  }
+
+  /** Resolve global project tools explicitly while keeping in-project navigation scoped. */
+  function navigateProject(destination: Page) {
+    setError("");
+    if (selectedPage && project) setPage(destination);
+    else if (!projects.length) setCreate(true);
+    else if (projects.length === 1) void openProject(projects[0].id, destination);
+    else {
+      setPickerQuery("");
+      setProjectPicker(destination);
+    }
+  }
+
+  /** Offer an explicit story switch while preserving the currently open project tool. */
+  function switchProject() {
+    setError("");
+    if (!projects.length) setCreate(true);
+    else {
+      setPickerQuery("");
+      setProjectPicker(selectedPage ? page : "auto");
+    }
+  }
+
+  /** Fetch the current revision and title before asking the author to confirm deletion. */
+  async function requestDelete(id: string) {
+    setBusy(true);
+    setError("");
+    setDeleteError("");
+    try {
+      setDeleteTarget(await api<Project>("get_project", { project_id: id }));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Commit a confirmed deletion before clearing its UI state or browser caches. */
+  async function deleteProject() {
+    if (!deleteTarget || deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api("delete_project", {
+        project_id: deleteTarget.id,
+        revision: deleteTarget.revision,
+      });
+      projectRequest.current++;
+      setProjects((current) => current.filter((p) => p.id !== deleteTarget.id));
+      if (project?.id === deleteTarget.id) {
+        setProject(null);
+        setChapterId("");
+        setSeed("");
+        setPage("home");
+      }
+      clearProjectStorage(deleteTarget.id);
+      setToast(t("Deleted {0}", deleteTarget.title));
+      setDeleteTarget(null);
+    } catch (e) {
+      setDeleteError(message(e));
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
   }
 
   /** Create an unplanned workspace with a temporary name when the author has none yet. */
@@ -233,6 +352,9 @@ export function App() {
   const filtered = projects.filter((p) =>
     `${p.title} ${p.genre}`.includes(query),
   );
+  const pickerProjects = projects.filter((p) =>
+    `${p.title} ${p.genre}`.toLocaleLowerCase().includes(pickerQuery.trim().toLocaleLowerCase()),
+  );
   const chapter =
     project?.chapters.find((c) => c.id === chapterId) || project?.chapters[0];
   const selectedPage = ["write", "plan", "wiki", "knowledge"].includes(page);
@@ -255,13 +377,18 @@ export function App() {
               Quillweave<small>{t("LOCAL WRITING")}</small>
             </span>
           </button>
-          <button className="workspace-picker" onClick={() => setPage("home")}>
+          <button
+            className="workspace-picker"
+            onClick={switchProject}
+            disabled={loading || busy}
+            aria-label={t("Switch project")}
+          >
             <span className="workspace-monogram">
               <IconBook2 size={20} />
             </span>
             <span>
-              {t("My workspace")}
-              <small>{t("Local workspace")}</small>
+              {project?.title || t("My workspace")}
+              <small>{t("Switch project")}</small>
             </span>
             <IconChevronDown size={15} />
           </button>
@@ -274,14 +401,14 @@ export function App() {
             {t("My projects")}
           </button>
           <div className="sidebar-section-label project-label">
-            {project ? project.title : t("Start a new project")}
+            {selectedPage && project ? project.title : t("Project tools")}
           </div>
           {navigation.map((item) => (
             <button
               key={item.page}
               className={`nav-item ${page === item.page ? "active" : ""}`}
-              disabled={!project}
-              onClick={() => setPage(item.page)}
+              disabled={loading || busy}
+              onClick={() => navigateProject(item.page)}
             >
               <item.icon size={20} />
               {t(item.label)}
@@ -545,13 +672,25 @@ export function App() {
                             </td>
                             <td className="muted">{date(p.updated_at)}</td>
                             <td>
-                              <button
-                                className="icon-button"
-                                aria-label={t("Open {0}", p.title)}
-                                onClick={() => openProject(p.id)}
-                              >
-                                <IconArrowUpRight size={18} />
-                              </button>
+                              <div className="project-actions">
+                                <button
+                                  className="icon-button"
+                                  aria-label={t("Open {0}", p.title)}
+                                  disabled={busy}
+                                  onClick={() => openProject(p.id)}
+                                >
+                                  <IconArrowUpRight size={18} />
+                                </button>
+                                <button
+                                  className="icon-button danger"
+                                  aria-label={t("Delete {0}", p.title)}
+                                  title={t("Delete project")}
+                                  disabled={busy}
+                                  onClick={() => requestDelete(p.id)}
+                                >
+                                  <IconTrash size={18} />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -566,28 +705,40 @@ export function App() {
                 ) : (
                   <div className="project-grid">
                     {filtered.map((p) => (
-                      <button
-                        className="project-card"
-                        key={p.id}
-                        onClick={() => openProject(p.id)}
-                      >
-                        <span className="project-icon">
-                          <IconBook2 size={27} />
-                        </span>
-                        <Badge>{p.genre || t("New project")}</Badge>
-                        <h3>{p.title}</h3>
-                        <p>{p.premise || t("A new story is taking shape.")}</p>
-                        <footer>
-                          <span>
-                            {p.chapter_count}{" "}
-                            {p.chapter_count === 1
-                              ? t("chapter")
-                              : t("chapters")}{" "}
-                            · {p.word_count.toLocaleString()} {t("characters")}
+                      <article className="project-card" key={p.id}>
+                        <button
+                          className="project-card-main"
+                          aria-label={t("Open {0}", p.title)}
+                          disabled={busy}
+                          onClick={() => openProject(p.id)}
+                        >
+                          <span className="project-icon">
+                            <IconBook2 size={27} />
                           </span>
-                          <IconArrowUpRight size={18} />
-                        </footer>
-                      </button>
+                          <Badge>{p.genre || t("New project")}</Badge>
+                          <h3>{p.title}</h3>
+                          <p>{p.premise || t("A new story is taking shape.")}</p>
+                          <span className="project-card-meta">
+                            <span>
+                              {p.chapter_count}{" "}
+                              {p.chapter_count === 1
+                                ? t("chapter")
+                                : t("chapters")}{" "}
+                              · {p.word_count.toLocaleString()} {t("characters")}
+                            </span>
+                            <IconArrowUpRight size={18} />
+                          </span>
+                        </button>
+                        <button
+                          className="icon-button danger project-card-delete"
+                          aria-label={t("Delete {0}", p.title)}
+                          title={t("Delete project")}
+                          disabled={busy}
+                          onClick={() => requestDelete(p.id)}
+                        >
+                          <IconTrash size={18} />
+                        </button>
+                      </article>
                     ))}
                   </div>
                 )
@@ -670,6 +821,70 @@ export function App() {
           <IconCircleCheck size={18} />
           {t(toast)}
         </div>
+      )}
+      {projectPicker && (
+        <Modal
+          title={projectPicker === "auto"
+            ? t("Switch project")
+            : t("Choose a project for {0}", t(pageNames[projectPicker]))}
+          onClose={() => { if (!busy) setProjectPicker(null); }}
+        >
+          <div className="modal-content">
+            <label>
+              {t("Search projects")}
+              <input
+                autoFocus
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder={t("Search projects…")}
+              />
+            </label>
+            <div className="project-picker-list">
+              {pickerProjects.map((p) => (
+                <button
+                  key={p.id}
+                  className="project-picker-option"
+                  disabled={busy}
+                  onClick={() => openProject(p.id, projectPicker === "auto" ? undefined : projectPicker)}
+                >
+                  <span className="project-icon"><IconBook2 size={22} /></span>
+                  <span>
+                    <strong>{p.title}</strong>
+                    <small>{p.genre || t("No genre set")} · {p.chapter_count} {t("chapters")}</small>
+                  </span>
+                  {project?.id === p.id && <Badge>{t("Last opened")}</Badge>}
+                </button>
+              ))}
+              {!pickerProjects.length && <p className="muted">{t("No matching project")}</p>}
+            </div>
+            {error && <ErrorBox>{error}</ErrorBox>}
+            <div className="modal-actions">
+              <Button disabled={busy} onClick={() => setProjectPicker(null)}>{t("Cancel")}</Button>
+              <Button disabled={busy} onClick={() => { setProjectPicker(null); setCreate(true); }}>
+                <IconPlus size={17} />{t("Start a new story")}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {deleteTarget && (
+        <Modal
+          title={t("Delete project")}
+          onClose={() => { if (!deletingRef.current) setDeleteTarget(null); }}
+        >
+          <div className="modal-content">
+            <h3 className="delete-project-name">{t('Delete "{0}"?', deleteTarget.title)}</h3>
+            <p>{t("This permanently deletes the story, chapters, saved versions, story knowledge, and AI history. This cannot be undone.")}</p>
+            <p className="muted">{t("Export a project backup first if you want to keep a copy.")}</p>
+            {deleteError && <ErrorBox>{deleteError}</ErrorBox>}
+            <div className="modal-actions">
+              <Button autoFocus disabled={deleting} onClick={() => setDeleteTarget(null)}>{t("Cancel")}</Button>
+              <Button className="danger" disabled={deleting} onClick={deleteProject}>
+                <IconTrash size={17} />{deleting ? t("Deleting…") : t("Delete permanently")}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
       {create && (
         <Modal

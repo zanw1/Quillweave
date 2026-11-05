@@ -38,6 +38,7 @@ interface Props {
   source?: Source;
   initialAction?: string;
   exploring?: boolean;
+  canHumanize?: boolean;
   seed?: string;
   onSettings: () => void;
   onRefresh: () => Promise<void>;
@@ -48,6 +49,8 @@ interface Props {
 const conversationActions = ["ask", "architecture", "outline"];
 const outlineInstruction =
   "Create a complete chapter-by-chapter outline from our discussion and the current story bible. Include the premise, character arcs, act progression, and each chapter's viewpoint, goal, obstacle, choice, consequence, and clues. Identify assumptions and open questions.";
+const humanizeInstruction =
+  "Polish the current chapter to reduce formulaic AI phrasing. Preserve its original language, plot, names, relationships, viewpoint, chronology, clues, and approximate length; keep the author's style and each character's voice. Trim redundant explanations and stock phrasing, and vary mechanical sentence patterns. Keep intentional imagery, repetition, and punctuation. Make no new plot developments. Return only the complete polished chapter. For this editing task, preserve the source length instead of expanding to the project's chapter-length target.";
 
 const explorationSuggestions = [
   {
@@ -74,6 +77,7 @@ export function Assistant({
   source,
   initialAction = "ask",
   exploring = false,
+  canHumanize = !!chapter?.body.trim(),
   seed = "",
   onSettings,
   onRefresh,
@@ -251,6 +255,14 @@ export function Assistant({
     setAction("outline");
     setInstruction(outlineInstruction);
     void start(false, "outline", outlineInstruction);
+  }
+
+  /** Save the current chapter and request a language-only rewrite for author review. */
+  function humanizeChapter() {
+    const request = t(humanizeInstruction);
+    setAction("rewrite");
+    setInstruction(request);
+    void start(false, "rewrite", request);
   }
 
   /** Apply one proposal at a time and retain author drafts after validation errors. */
@@ -591,6 +603,18 @@ export function Assistant({
             {t("Preview context")}
           </button>
         </div>
+        {chapter && onApply && (
+          <div className="prose-polish">
+            <Button
+              disabled={busy || !!running || applying || !canHumanize}
+              onClick={humanizeChapter}
+            >
+              <IconSparkles size={16} />
+              {t("Humanize chapter")}
+            </Button>
+            <p className="composer-note">{t("Keeps the plot and character voices. Review before applying.")}</p>
+          </div>
+        )}
         {planning && (
           <p className="composer-note">
             {t(

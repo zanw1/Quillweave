@@ -961,5 +961,22 @@ export const zhCN: Record<string, string> = {
   "The command request contains trailing data": "命令请求末尾包含多余数据",
   "Missing command name": "缺少命令名称",
   "Failed to fetch": "请求失败，请检查本地服务与网络",
-  "Load failed": "加载失败"
+  "Load failed": "加载失败",
+  "Switch project": "切换作品",
+  "Project tools": "作品工具",
+  "Choose a project for {0}": "选择作品，进入{0}",
+  "Last opened": "最近打开",
+  "Delete project": "删除作品",
+  "Delete {0}": "删除{0}",
+  'Delete "{0}"?': "删除“{0}”？",
+  "Deleted {0}": "已删除{0}",
+  "Deleting…": "删除中…",
+  "Delete permanently": "永久删除",
+  "This permanently deletes the story, chapters, saved versions, story knowledge, and AI history. This cannot be undone.": "这将永久删除作品、章节、保存的版本、故事知识和 AI 历史记录，且无法撤销。",
+  "Export a project backup first if you want to keep a copy.": "如需保留副本，请先导出作品备份。",
+  "This project changed. Close and reopen the delete confirmation before trying again": "作品已发生变更，请关闭并重新打开删除确认框后重试。",
+  "This project has a running AI task. Stop it and wait for it to finish before deleting": "这部作品有正在运行的 AI 任务，请先停止并等待任务结束，再删除作品。",
+  "Humanize chapter": "一键去 AI 味",
+  "Keeps the plot and character voices. Review before applying.": "保留情节与人物语气，审阅后再替换草稿。",
+  "Polish the current chapter to reduce formulaic AI phrasing. Preserve its original language, plot, names, relationships, viewpoint, chronology, clues, and approximate length; keep the author's style and each character's voice. Trim redundant explanations and stock phrasing, and vary mechanical sentence patterns. Keep intentional imagery, repetition, and punctuation. Make no new plot developments. Return only the complete polished chapter. For this editing task, preserve the source length instead of expanding to the project's chapter-length target.": "润色当前章节，减少模板化的 AI 表达。保留原文语言、情节、人名、人物关系、叙述视角、时间顺序、伏笔和大致篇幅，尊重作者文风与每个人物的语气。删减重复解释和套话，调整机械重复的句式；保留有意使用的意象、重复与标点。不要新增剧情。只返回完整的润色后章节正文。本次是语言润色，请保持原文篇幅，无需扩写到作品设置的章节目标字数。"
 };

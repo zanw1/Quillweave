@@ -509,6 +509,7 @@ function Editor({
         <Assistant
           project={project}
           chapter={chapter}
+          canHumanize={!!draft.body.trim()}
           seed={seed}
           onSettings={onSettings}
           beforeStart={save}
