@@ -1,6 +1,6 @@
 {
   "name": "quillweave",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -18,7 +18,7 @@
     "test:core": "node test/run.mjs core",
     "test:ui": "node test/run.mjs ui",
     "test:midscene": "node test/run.mjs midscene",
-    "check:test-layout": "node test/run.mjs layout",
+    "check:test-layout": "node --test test/runner/layout.test.mjs && node test/run.mjs layout",
     "bundle:windows": "node scripts/build.mjs windows",
     "test:race": "node test/run.mjs race",
     "check:go": "node test/run.mjs vet",

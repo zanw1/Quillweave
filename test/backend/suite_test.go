@@ -100,7 +100,7 @@ func moduleOverlay(root, module, target, filter string) (map[string]string, map[
 		if err != nil {
 			return nil, nil, err
 		}
-		if !bytes.HasPrefix(data, []byte("//go:build quillweave_whitebox\n")) {
+		if !bytes.HasPrefix(data, []byte("//go:build quillweave_whitebox\n")) && !bytes.HasPrefix(data, []byte("//go:build quillweave_whitebox\r\n")) {
 			return nil, nil, fmt.Errorf("missing white-box source tag: %s", source)
 		}
 		parsed, err := parser.ParseFile(token.NewFileSet(), source, data, 0)

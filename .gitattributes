@@ -1,2 +1,2 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Keep detected text files LF on every platform, including Windows checkouts.
+* text=auto eol=lf

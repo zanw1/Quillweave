@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	websearch "quillweave/internal/search"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,7 +276,21 @@ func TestSearchMigrationBackupAndLegacyGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assert(t, stat.Mode().Perm() == 0600, "Backup not private")
+	assert(t, stat.Mode().IsRegular() && stat.Size() > 0, "Backup is not a usable regular file")
+	// Windows permissions use ACLs; Go's FileMode does not expose POSIX owner/group bits there.
+	if runtime.GOOS != "windows" {
+		assert(t, stat.Mode().Perm() == 0600, "Backup not private")
+	}
+	backup, err := sql.Open("sqlite", path+".before-search.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	var backupTitle string
+	if err := backup.QueryRow("SELECT json_extract(document,'$.title') FROM projects WHERE id=?", project.ID).Scan(&backupTitle); err != nil {
+		t.Fatal(err)
+	}
+	assert(t, backupTitle == project.Title, "Recovery backup lost the original work")
 	if _, err := db.Exec("UPDATE integrations SET document=? WHERE id=1", jsonText(old)); err == nil {
 		t.Fatal("Old writer restored a second search truth")
 	}

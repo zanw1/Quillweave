@@ -45,7 +45,7 @@ async function checkLayout() {
     if (!sources.length) throw new Error(`No test sources for ${name}`);
     for (const filename of sources) {
       const content = await fs.readFile(filename, "utf8");
-      if (!content.startsWith("//go:build quillweave_whitebox\n"))
+      if (!/^\/\/go:build quillweave_whitebox\r?\n/.test(content))
         throw new Error(`Missing test-source tag: ${filename}`);
       if (/core_suite_\d+_test\.go$/.test(filename))
         throw new Error(`Numbered suite remains: ${filename}`);
@@ -58,9 +58,10 @@ async function checkLayout() {
   }
   for (const directory of ["internal", "cmd", "scripts", "frontend/src"]) {
     for (const filename of await filesIn(path.join(root, directory))) {
+      const relative = path.relative(root, filename).split(path.sep).join("/");
       if (
         /_test\.go$|(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]*_ui_cases\.(?:js|mjs)$/.test(
-          filename,
+          relative,
         )
       ) {
         throw new Error(
