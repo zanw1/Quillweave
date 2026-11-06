@@ -23,7 +23,8 @@
   gap: 16px;
   margin-bottom: 16px;
 }
-.model-discovery-heading h3, .model-section-heading {
+.model-discovery-heading h3,
+.model-section-heading {
   font-size: 14px;
   margin: 0 0 8px;
 }
@@ -33,25 +34,40 @@
   line-height: 1.6;
   margin: 0;
 }
-.model-picker-list { grid-column: 1 / -1; }
+.model-picker-list {
+  grid-column: 1 / -1;
+}
 .model-capacities {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 20px;
 }
-.model-capacities span { color: #647c9e; font-size: 11px; line-height: 1.6; }
+.model-capacities span {
+  color: #647c9e;
+  font-size: 11px;
+  line-height: 1.6;
+}
 .model-capacities strong {
   display: block;
   font-size: 18px;
   color: #3158bd;
   font-variant-numeric: tabular-nums;
 }
-.model-limit-overrides summary { cursor: pointer; font-size: 12px; }
+.model-limit-overrides summary {
+  cursor: pointer;
+  font-size: 12px;
+}
 @media (max-width: 680px) {
-  .model-picker { padding: 14px; }
-  .model-discovery-heading { flex-direction: column; }
-  .model-capacities { grid-template-columns: 1fr; }
+  .model-picker {
+    padding: 14px;
+  }
+  .model-discovery-heading {
+    flex-direction: column;
+  }
+  .model-capacities {
+    grid-template-columns: 1fr;
+  }
 }
 .model-list {
   background: #f8faff;
@@ -69,11 +85,6 @@
   display: grid;
   gap: 8px;
   margin-bottom: 12px;
-  font-size: 12px;
-}
-.provider-preset-picker select {
-  width: 100%;
-  min-width: 0;
   font-size: 12px;
 }
 .provider-catalog-note {
@@ -171,27 +182,11 @@
   gap: 7px;
   justify-content: flex-end;
 }
-.model-editor-heading .button {
-  font-size: 11px;
-  padding: 7px 10px;
-}
 .model-editor > label {
   margin-top: 22px;
 }
-.model-editor .checkbox-label {
-  align-self: center;
-  font-size: 12px;
-}
-.model-key-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.model-editor > .secret-field {
   margin-top: 24px;
-  font-size: 13px;
-  font-weight: 550;
-}
-.model-key-heading + label {
-  margin-top: 11px;
 }
 .field-hint {
   font-size: 11px;
@@ -218,15 +213,11 @@
 }
 .model-assignments {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 20px;
 }
 .model-assignments label {
   min-width: 0;
-}
-.model-assignments select {
-  width: 100%;
-  font-size: 12px;
 }
 .project-models {
   border: 1px solid var(--line);

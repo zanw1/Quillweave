@@ -1,4 +1,15 @@
+import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
+import {
+  conversationJobs,
+  localDraft,
+  saveLocalDraft,
+  useConversations,
+} from "./conversations";
+import { ConversationTools } from "./ConversationTools";
+import { ProposalCards } from "./ProposalCards";
+import { SearchRequestChoice } from "../search/SearchRequestChoice";
+import { searchSelection } from "../../domain/search";
 import { useEffect, useRef, useState } from "react";
 import {
   IconSparkles,
@@ -40,13 +51,23 @@ interface Props {
   exploring?: boolean;
   canHumanize?: boolean;
   seed?: string;
+  seedAction?: string;
+  seedVersion?: number;
+  onSeedConsumed?: () => void;
   onSettings: () => void;
   onRefresh: () => Promise<void>;
   beforeStart?: () => Promise<Project | null>;
   onApply?: (job: Job) => Promise<void>;
 }
 
-const conversationActions = ["ask", "architecture", "outline"];
+const conversationActions = [
+  "ask",
+  "architecture",
+  "outline",
+  "agent",
+  "naming",
+  "research",
+];
 const outlineInstruction =
   "Create a complete chapter-by-chapter outline from our discussion and the current story bible. Include the premise, character arcs, act progression, and each chapter's viewpoint, goal, obstacle, choice, consequence, and clues. Identify assumptions and open questions.";
 const humanizeInstruction =
@@ -79,13 +100,22 @@ export function Assistant({
   exploring = false,
   canHumanize = !!chapter?.body.trim(),
   seed = "",
+  seedAction = "ask",
+  seedVersion = 0,
+  onSeedConsumed,
   onSettings,
   onRefresh,
   beforeStart,
   onApply,
 }: Props) {
-  const [instruction, setInstruction] = useState(seed);
+  const [instruction, setInstruction] = useState(() =>
+    localDraft(
+      `quillweave-chat-draft-${project.id}-${chapter?.id || source?.id || "plan"}-new`,
+      seed,
+    ),
+  );
   const [action, setAction] = useState(initialAction);
+  const [searchChoice, setSearchChoice] = useState("inherit");
   const [job, setJob] = useState<Job | null>(null);
   const [runs, setRuns] = useState<Job[]>([]);
   const [error, setError] = useState("");
@@ -96,28 +126,31 @@ export function Assistant({
   const [context, setContext] = useState<Prompt | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [settings, setSettings] = useState<ModelSettings | null>(null);
+  const manager = useConversations(
+    project.id,
+    chapter?.id || source?.id || "",
+    (draft, restored, restoreDraft = true) => {
+      if (restoreDraft) setInstruction(draft);
+      setJob(restored);
+    },
+  );
+  const managerRef = useRef(manager);
+  managerRef.current = manager;
+  const instructionRef = useRef(instruction);
+  instructionRef.current = instruction;
+  const draftKeyRef = useRef(manager.draftKey);
+  draftKeyRef.current = manager.draftKey;
+  const requestId = useRef("");
+  const requestSnapshot = useRef("");
+  const [sessionError, setSessionError] = useState("");
   const planning = !chapter && !source && !!onApply;
   const exploratory = planning && exploring;
   const availableActions = chapter
-    ? ["ask", "continue", "rewrite", "review", "wiki"]
+    ? ["agent", "ask", "continue", "rewrite", "review", "memory_update", "wiki"]
     : source
       ? ["ask", "wiki"]
       : conversationActions;
-  const conversation = (
-    job?.status === "done" && !runs.some((run) => run.id === job.id)
-      ? [job, ...runs]
-      : runs
-  )
-    .filter(
-      (run) =>
-        run.project_id === project.id &&
-        run.status === "done" &&
-        conversationActions.includes(run.action) &&
-        run.chapter_id === (chapter?.id || ""),
-    )
-    .sort((first, second) => second.created_at.localeCompare(first.created_at))
-    .slice(0, 3)
-    .reverse();
+  const conversation = conversationJobs(manager.session, runs);
   const primary = settings
     ? selectedProfile(
         settings,
@@ -137,11 +170,29 @@ export function Assistant({
   refreshRef.current = onRefresh;
 
   useEffect(() => {
-    if (seed) {
+    if (manager.loading) return;
+    saveLocalDraft(manager.draftKey, instruction);
+    const id = manager.session?.id;
+    const timer = setTimeout(() => {
+      if (id)
+        void managerRef.current.persistDraft(instruction, id).catch(() => {});
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [instruction, manager.draftKey, manager.loading, manager.session?.id]);
+  useEffect(() => {
+    if (job && job.status !== "running")
+      void managerRef.current
+        .reload()
+        .catch((error) => setSessionError(message(error)));
+  }, [job?.id, job?.status]);
+
+  useEffect(() => {
+    if (seed && !manager.loading) {
       setInstruction(seed);
-      setAction("ask");
+      setAction(seedAction);
+      onSeedConsumed?.();
     }
-  }, [seed]);
+  }, [seed, seedAction, seedVersion, manager.loading]);
   useEffect(() => {
     let active = true;
     api<ModelSettingsResponse>("get_model_settings")
@@ -156,13 +207,6 @@ export function Assistant({
       .catch((e) => {
         if (active) setError(message(e));
       });
-    const running = sessionStorage.getItem(`quillweave-job-${project.id}`);
-    if (running)
-      api<Job>("get_job", { job_id: running })
-        .then((value) => {
-          if (active) setJob(value);
-        })
-        .catch(() => sessionStorage.removeItem(`quillweave-job-${project.id}`));
     return () => {
       active = false;
     };
@@ -210,12 +254,26 @@ export function Assistant({
     preview = false,
     requestedAction = action,
     requestedInstruction = instruction,
+    resumeJobId = "",
   ) {
+    if (
+      !preview &&
+      (busy ||
+        job?.status === "running" ||
+        (requestedAction !== "wiki" && !requestedInstruction.trim()))
+    )
+      return;
     setError("");
     setBusy(true);
     try {
       const saved = beforeStart ? await beforeStart() : project;
       if (!saved) return;
+      const session = preview ? manager.session : await manager.ensure();
+      const snapshot = `${session?.id}:${saved.revision}:${requestedAction}:${resumeJobId}:${requestedInstruction.trim()}:${searchChoice}`;
+      if (requestSnapshot.current !== snapshot) {
+        requestSnapshot.current = snapshot;
+        requestId.current = crypto.randomUUID();
+      }
       const history: Message[] = conversationActions.includes(requestedAction)
         ? conversation.flatMap((r) => [
             { role: "user" as const, content: r.instruction },
@@ -234,16 +292,40 @@ export function Assistant({
         instruction:
           requestedAction === "wiki" ? "" : requestedInstruction.trim(),
         history,
+        session_id: session?.id || "",
+        request_id: requestId.current,
+        resume_job_id: resumeJobId,
         force: requestedAction === "wiki" && force,
+        search_selection: searchSelection(searchChoice),
       };
       if (preview) {
         setContext(await api<Prompt>("prepare_ai", args));
         return;
       }
       const next = await api<Job>("start_ai", args);
+      requestId.current = "";
+      requestSnapshot.current = "";
       setJob(next);
-      sessionStorage.setItem(`quillweave-job-${project.id}`, next.id);
+      const clearSent =
+        instructionRef.current.trim() === requestedInstruction.trim() ||
+        !instructionRef.current.trim();
+      if (clearSent) setInstruction("");
+      saveLocalDraft(
+        draftKeyRef.current,
+        clearSent ? "" : instructionRef.current,
+      );
+      saveLocalDraft(
+        `quillweave-chat-draft-${project.id}-${chapter?.id || source?.id || "plan"}-new`,
+        "",
+      );
+      await managerRef.current
+        .reload(session?.id)
+        .catch((error) => setSessionError(message(error)));
     } catch (e) {
+      if (!preview && !instructionRef.current.trim()) {
+        setInstruction(requestedInstruction);
+        saveLocalDraft(draftKeyRef.current, requestedInstruction);
+      }
       setError(message(e));
     } finally {
       setBusy(false);
@@ -255,6 +337,26 @@ export function Assistant({
     setAction("outline");
     setInstruction(outlineInstruction);
     void start(false, "outline", outlineInstruction);
+  }
+
+  /** Restore a selected user turn as a new branch, optionally requesting another response. */
+  async function branchAt(jobId: string, regenerate = false, resume = false) {
+    setSessionError("");
+    try {
+      const turn = manager.session?.turns.find(
+        (turn) =>
+          turn.role === "user" && (turn.job_id === jobId || turn.id === jobId),
+      );
+      if (!turn) throw new Error("Select a user message to rewind or edit");
+      await manager.fork(turn.id);
+      if (regenerate) {
+        setAction(turn.action);
+        setInstruction(turn.content);
+        await start(false, turn.action, turn.content, resume ? jobId : "");
+      }
+    } catch (error) {
+      setSessionError(message(error));
+    }
   }
 
   /** Save the current chapter and request a language-only rewrite for author review. */
@@ -307,6 +409,15 @@ export function Assistant({
           <IconSparkles size={20} />
           {t("Writing assistant")}
         </h3>
+        <small className="assistant-current-model">{t(model)}</small>
+        <button
+          className="icon-button assistant-inline-settings"
+          title={t("Settings")}
+          aria-label={t("Settings")}
+          onClick={onSettings}
+        >
+          <IconSettings size={17} />
+        </button>
         <button
           disabled={!!running}
           className="icon-button"
@@ -317,6 +428,8 @@ export function Assistant({
           <IconHistory size={19} />
         </button>
       </header>
+      <ConversationTools manager={manager} disabled={!!running || busy} />
+      {sessionError && <ErrorBox>{sessionError}</ErrorBox>}
       <div className="assistant-meta">
         <span className={`connection ${primary ? "connected" : ""}`} />
         <span>{t(model || "Model not configured")}</span>
@@ -333,12 +446,30 @@ export function Assistant({
         {conversation
           .filter((run) => run.id !== job?.id)
           .map((run) => (
-            <div className="conversation discussion-turn" key={run.id}>
+            <div
+              className="conversation discussion-turn"
+              key={run.id}
+              data-job-id={run.id}
+            >
               <div className="user-message">
                 <span>
                   {t("Author ·")} {t(actions[run.action])}
                 </span>
                 <p>{run.instruction}</p>
+                <button
+                  className="text-button"
+                  disabled={!!running || busy}
+                  onClick={() => void branchAt(run.id)}
+                >
+                  {t("Edit and branch")}
+                </button>
+                <button
+                  className="text-button"
+                  disabled={!!running || busy}
+                  onClick={() => void branchAt(run.id, true)}
+                >
+                  {t("Regenerate")}
+                </button>
               </div>
               <div className="answer-heading">
                 <IconSparkles size={17} />
@@ -450,7 +581,7 @@ export function Assistant({
             )}
           </div>
         ) : (
-          <div className="conversation">
+          <div className="conversation" data-job-id={job.id}>
             <div className="user-message">
               <span>
                 {t("Author ·")} {t(actions[job.action])}
@@ -511,15 +642,18 @@ export function Assistant({
             {job.error && <ErrorBox>{job.error}</ErrorBox>}
             {job.status === "done" && (
               <div className="answer-actions">
-                {planning && compatible && job.action === "ask" && (
-                  <Button
-                    primary
-                    disabled={busy || applying}
-                    onClick={generateOutline}
-                  >
-                    {t("Generate outline from discussion")}
-                  </Button>
-                )}
+                {planning &&
+                  compatible &&
+                  project.studio?.stage === "planning" &&
+                  job.action === "ask" && (
+                    <Button
+                      primary
+                      disabled={busy || applying}
+                      onClick={generateOutline}
+                    >
+                      {t("Generate outline from discussion")}
+                    </Button>
+                  )}
                 <Button
                   onClick={() =>
                     navigator.clipboard
@@ -557,6 +691,36 @@ export function Assistant({
                 <IconChevronDown size={14} />
               </button>
             )}
+            <ProposalCards
+              job={job}
+              project={project}
+              onJob={setJob}
+              onRefresh={onRefresh}
+              beforeReview={beforeStart}
+            />
+            {job.text &&
+              ["cancelled", "error", "interrupted"].includes(job.status) &&
+              !["agent", "wiki", "memory_update"].includes(job.action) && (
+                <Button
+                  disabled={busy}
+                  onClick={() => void branchAt(job.id, true, true)}
+                >
+                  {t("Continue interrupted response")}
+                </Button>
+              )}
+            {job.status !== "running" && job.action !== "wiki" && (
+              <div className="answer-actions">
+                <Button disabled={busy} onClick={() => void branchAt(job.id)}>
+                  {t("Rewind here")}
+                </Button>
+                <Button
+                  disabled={busy}
+                  onClick={() => void branchAt(job.id, true)}
+                >
+                  {t(job.status === "done" ? "Regenerate" : "Retry")}
+                </Button>
+              </div>
+            )}
             <div ref={end} />
           </div>
         )}
@@ -581,7 +745,7 @@ export function Assistant({
           </p>
         )}
         <div className="composer-toolbar">
-          <select
+          <Select
             aria-label={t("AI action")}
             value={action}
             onChange={(e) => setAction(e.target.value)}
@@ -594,7 +758,14 @@ export function Assistant({
                   {t(label)}
                 </option>
               ))}
-          </select>
+          </Select>
+          {action === "agent" && (
+            <SearchRequestChoice
+              value={searchChoice}
+              onChange={setSearchChoice}
+              disabled={busy || !!running}
+            />
+          )}
           <button
             className="text-button"
             disabled={busy || !!running || action === "wiki"}
@@ -612,7 +783,11 @@ export function Assistant({
               <IconSparkles size={16} />
               {t("Humanize chapter")}
             </Button>
-            <p className="composer-note">{t("Keeps the plot and character voices. Review before applying.")}</p>
+            <p className="composer-note">
+              {t(
+                "Keeps the plot and character voices. Review before applying.",
+              )}
+            </p>
           </div>
         )}
         {planning && (
@@ -620,7 +795,7 @@ export function Assistant({
             {t(
               exploratory
                 ? "Nothing needs to be decided before we talk. Ideas stay as proposals until you choose to save them as story details."
-                : "Discuss your story, generate an outline, then review and apply it. The last three completed turns are included in the context.",
+                : "Start with an idea. Decide when you are ready to outline.",
             )}
           </p>
         )}
@@ -642,9 +817,19 @@ export function Assistant({
           value={action === "wiki" ? "" : instruction}
           onChange={(e) => setInstruction(e.target.value)}
           maxLength={8000}
-          disabled={!!running || action === "wiki"}
+          disabled={action === "wiki" || manager.loading}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (e.key === "ArrowUp" && !instruction) {
+              const prior = [...(manager.session?.turns || [])]
+                .reverse()
+                .find((turn) => turn.role === "user");
+              if (prior) {
+                e.preventDefault();
+                setInstruction(prior.content);
+              }
+            }
+            if (e.key === "Enter" && (!e.shiftKey || e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               if (!busy && !running) void start();
             }
@@ -660,7 +845,11 @@ export function Assistant({
           ) : (
             <Button
               primary
-              disabled={busy || (action !== "wiki" && !instruction.trim())}
+              disabled={
+                busy ||
+                manager.loading ||
+                (action !== "wiki" && !instruction.trim())
+              }
               onClick={() => start()}
             >
               <IconArrowUp size={18} />
@@ -668,6 +857,12 @@ export function Assistant({
             </Button>
           )}
         </div>
+        <p className="composer-note keyboard-hint">
+          {t("Enter to send · Shift+Enter for a new line")} ·{" "}
+          {planning
+            ? t("Draft saved locally · Selected context is sent to your model")
+            : t("Draft saved locally")}
+        </p>
         <p className="composer-note">
           {t(
             "You review and decide. Content is sent to the model you configure.",
@@ -681,6 +876,11 @@ export function Assistant({
           wide
         >
           <div className="modal-content">
+            {context.warning && (
+              <p role="status" className="muted">
+                {t(context.warning)}
+              </p>
+            )}
             <p className="muted">
               {t("Total")} {context.chars.toLocaleString()}{" "}
               {t(

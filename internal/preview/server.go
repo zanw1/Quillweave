@@ -79,6 +79,21 @@ func Handler(engine *core.Engine, assets fs.FS, port int) http.Handler {
 		}
 		value, err := engine.Dispatch(*payload.Command, payload.Args)
 		if err != nil {
+			if core.IsSearchCommand(*payload.Command) {
+				envelope := core.Envelope(nil, err)
+				status := http.StatusBadRequest
+				if envelope.ErrorCode == "SEARCH_REVISION_CONFLICT" || envelope.ErrorCode == "SEARCH_IDEMPOTENCY_CONFLICT" || envelope.ErrorCode == "SEARCH_REFERENCE_IN_USE" {
+					status = http.StatusConflict
+				} else if envelope.ErrorCode == "SEARCH_DISABLED" || envelope.ErrorCode == "SEARCH_SCOPE_MISMATCH" {
+					status = http.StatusForbidden
+				} else if envelope.ErrorCode == "SEARCH_RUN_NOT_FOUND" {
+					status = http.StatusNotFound
+				} else if envelope.ErrorCode == "SEARCH_CAPABILITY_UNSUPPORTED" || envelope.ErrorCode == "SEARCH_CREDENTIAL_REQUIRED" || envelope.ErrorCode == "SEARCH_PROFILE_UNAVAILABLE" {
+					status = http.StatusUnprocessableEntity
+				}
+				respond(writer, status, envelope)
+				return
+			}
 			respond(writer, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}

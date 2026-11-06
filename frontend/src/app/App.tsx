@@ -1,11 +1,17 @@
+import { navigation, pageNames } from "./navigation";
+import {
+  NewStoryDialog,
+  WorkspaceExport,
+  WorkspaceBrand,
+} from "./WorkspaceControls";
+import { Select } from "../components/Select";
+import { clearProjectStorage } from "./storage";
 import { t, useLanguage, setLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   IconFeather,
   IconHome,
   IconBook2,
-  IconPencil,
-  IconFolder,
   IconBulb,
   IconSettings,
   IconChevronDown,
@@ -14,7 +20,6 @@ import {
   IconLayoutGrid,
   IconList,
   IconArrowUpRight,
-  IconDownload,
   IconUpload,
   IconTrash,
   IconArrowRight,
@@ -22,52 +27,17 @@ import {
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand,
 } from "@tabler/icons-react";
-import { api, date, download, message, pickDirectory } from "../lib/api";
+import { api, date, message, pickDirectory } from "../lib/api";
+import { restoreArchiveFile } from "../lib/archive";
 import { Badge, Button, Empty, ErrorBox, Modal } from "../components/ui";
-import { Writing, Planning } from "../features/writing/Editor";
+import { Writing } from "../features/writing/Editor";
+import { Studio as Planning } from "../features/studio/Studio";
 import { Wiki } from "../features/wiki/Wiki";
 import { Library } from "../features/library/Library";
 import { Methods } from "../features/methods/Methods";
 import { Settings } from "../features/settings/Settings";
 import type { Page, Project, ProjectCard } from "../domain/types";
 import "../styles/app.css";
-
-const navigation = [
-  { page: "write" as Page, label: "Chapters", icon: IconPencil },
-  { page: "plan" as Page, label: "Story planning", icon: IconBook2 },
-  { page: "wiki" as Page, label: "Character Wiki", icon: IconBook2 },
-  { page: "knowledge" as Page, label: "Library", icon: IconFolder },
-];
-const pageNames: Record<Page, string> = {
-  home: "My projects",
-  write: "Chapters",
-  plan: "Story planning",
-  wiki: "Character Wiki",
-  knowledge: "Library",
-  methods: "Writing methods",
-  settings: "Model settings",
-};
-
-/** Remove only the deleted story's local drafts, selection, and task or graph caches. */
-function clearProjectStorage(id: string) {
-  for (const kind of ["localStorage", "sessionStorage"] as const) {
-    try {
-      const storage = window[kind];
-      for (const key of Object.keys(storage)) {
-        if (
-          key === `quillweave-plan-${id}` ||
-          key.startsWith(`quillweave-draft-${id}-`) ||
-          key === `quillweave-job-${id}` ||
-          key === `quillweave-graph-v4-${id}` ||
-          (key === "quillweave-project" && storage.getItem(key) === id)
-        )
-          storage.removeItem(key);
-      }
-    } catch {
-      /* A blocked browser cache must not turn a completed deletion into an error. */
-    }
-  }
-}
 
 /** Manage project navigation through the shared Go service. */
 export function App() {
@@ -88,7 +58,9 @@ export function App() {
   const [layout, setLayout] = useState("list");
   const [seed, setSeed] = useState("");
   const [sidebar, setSidebar] = useState(() => window.innerWidth > 640);
-  const [projectPicker, setProjectPicker] = useState<Page | "auto" | null>(null);
+  const [projectPicker, setProjectPicker] = useState<Page | "auto" | null>(
+    null,
+  );
   const [pickerQuery, setPickerQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteError, setDeleteError] = useState("");
@@ -96,6 +68,7 @@ export function App() {
   const deletingRef = useRef(false);
   const projectRequest = useRef(0);
   const archiveFile = useRef<HTMLInputElement>(null);
+  const pendingMethod = useRef("");
 
   useEffect(() => {
     void load();
@@ -173,11 +146,19 @@ export function App() {
       /* Keep project switching usable when browser storage is blocked. */
     }
     update(p);
-    setSeed("");
+    const method = pendingMethod.current;
+    pendingMethod.current = "";
+    setSeed(method);
     setBusy(false);
     setProjectPicker(null);
     setChapterId(p.chapters[0]?.id || "");
-    setPage(destination || (p.chapters.length ? "write" : "plan"));
+    setPage(
+      method
+        ? p.chapters.length
+          ? "write"
+          : "plan"
+        : destination || (p.chapters.length ? "write" : "plan"),
+    );
   }
 
   /** Resolve global project tools explicitly while keeping in-project navigation scoped. */
@@ -185,7 +166,8 @@ export function App() {
     setError("");
     if (selectedPage && project) setPage(destination);
     else if (!projects.length) setCreate(true);
-    else if (projects.length === 1) void openProject(projects[0].id, destination);
+    else if (projects.length === 1)
+      void openProject(projects[0].id, destination);
     else {
       setPickerQuery("");
       setProjectPicker(destination);
@@ -310,11 +292,7 @@ export function App() {
     setBusy(true);
     setError("");
     try {
-      if (file.size > 40_000_000)
-        throw new Error("The backup exceeds the 40 MB import limit");
-      enter(
-        await api<Project>("import_archive", { content: await file.text() }),
-      );
+      enter(await restoreArchiveFile(file));
       setImporting(false);
       setToast("Backup restored as a separate project");
     } catch (e) {
@@ -324,36 +302,19 @@ export function App() {
     }
   }
 
-  /** Export saved prose, story setup, evidence, and versions through a credential-free backup. */
-  async function exportProject(format: string) {
-    if (!project) return;
-    try {
-      const result = await api<{ filename: string; content: string }>(
-        "export",
-        { project_id: project.id, format },
-      );
-      await download(result.filename, result.content);
-      setToast("Exported the saved version");
-    } catch (e) {
-      setError(message(e));
-    }
-  }
-
   /** Bring a writing-method question into the composer for explicit submission. */
   function useMethod(prompt: string) {
-    if (!project?.chapters.length) {
-      setToast("Open a project and create a chapter to use a writing method");
-      return;
-    }
-    setSeed(prompt);
-    setPage("write");
+    pendingMethod.current = prompt;
+    navigateProject("plan");
   }
 
   const filtered = projects.filter((p) =>
     `${p.title} ${p.genre}`.includes(query),
   );
   const pickerProjects = projects.filter((p) =>
-    `${p.title} ${p.genre}`.toLocaleLowerCase().includes(pickerQuery.trim().toLocaleLowerCase()),
+    `${p.title} ${p.genre}`
+      .toLocaleLowerCase()
+      .includes(pickerQuery.trim().toLocaleLowerCase()),
   );
   const chapter =
     project?.chapters.find((c) => c.id === chapterId) || project?.chapters[0];
@@ -369,14 +330,7 @@ export function App() {
       )}
       {sidebar && (
         <aside className="sidebar">
-          <button className="brand" onClick={() => setPage("home")}>
-            <span className="brand-mark">
-              <IconFeather size={27} stroke={1.7} />
-            </span>
-            <span>
-              Quillweave<small>{t("LOCAL WRITING")}</small>
-            </span>
-          </button>
+          <WorkspaceBrand onHome={() => setPage("home")} />
           <button
             className="workspace-picker"
             onClick={switchProject}
@@ -492,7 +446,7 @@ export function App() {
           <div className="topbar-right">
             <label className="language-switcher">
               <span className="sr-only">{t("Interface language")}</span>
-              <select
+              <Select
                 aria-label={t("Interface language")}
                 value={language}
                 onChange={(event) =>
@@ -501,27 +455,14 @@ export function App() {
               >
                 <option value="zh-CN">中文</option>
                 <option value="en">English</option>
-              </select>
+              </Select>
             </label>
             {project && selectedPage && (
-              <details className="export-menu">
-                <summary>
-                  <IconDownload size={17} />
-                  <span>{t("Export project")}</span>
-                </summary>
-                <div>
-                  <button onClick={() => exportProject("manuscript")}>
-                    {t("Manuscript Markdown")}
-                  </button>
-                  <button onClick={() => exportProject("wiki")}>
-                    {t("Character Wiki Markdown")}
-                  </button>
-                  <button onClick={() => exportProject("archive")}>
-                    {t("Full project backup")}
-                  </button>
-                  <small>{t("Export the latest saved version")}</small>
-                </div>
-              </details>
+              <WorkspaceExport
+                project={project}
+                onExported={() => setToast("Exported the saved version")}
+                onError={setError}
+              />
             )}
             <span className="workspace-avatar">
               <IconFeather size={20} />
@@ -717,14 +658,17 @@ export function App() {
                           </span>
                           <Badge>{p.genre || t("New project")}</Badge>
                           <h3>{p.title}</h3>
-                          <p>{p.premise || t("A new story is taking shape.")}</p>
+                          <p>
+                            {p.premise || t("A new story is taking shape.")}
+                          </p>
                           <span className="project-card-meta">
                             <span>
                               {p.chapter_count}{" "}
                               {p.chapter_count === 1
                                 ? t("chapter")
                                 : t("chapters")}{" "}
-                              · {p.word_count.toLocaleString()} {t("characters")}
+                              · {p.word_count.toLocaleString()}{" "}
+                              {t("characters")}
                             </span>
                             <IconArrowUpRight size={18} />
                           </span>
@@ -783,6 +727,7 @@ export function App() {
               onSettings={() => setPage("settings")}
               onWiki={() => setPage("wiki")}
               seed={seed}
+              onSeedConsumed={() => setSeed("")}
             />
           )}
           {page === "plan" && project && (
@@ -791,6 +736,10 @@ export function App() {
               project={project}
               onProject={update}
               onSettings={() => setPage("settings")}
+              onWiki={() => setPage("wiki")}
+              onWrite={() => setPage("write")}
+              initialSeed={seed}
+              onSeedConsumed={() => setSeed("")}
             />
           )}
           {page === "wiki" && project && (
@@ -824,10 +773,17 @@ export function App() {
       )}
       {projectPicker && (
         <Modal
-          title={projectPicker === "auto"
-            ? t("Switch project")
-            : t("Choose a project for {0}", t(pageNames[projectPicker]))}
-          onClose={() => { if (!busy) setProjectPicker(null); }}
+          title={
+            projectPicker === "auto"
+              ? t("Switch project")
+              : t("Choose a project for {0}", t(pageNames[projectPicker]))
+          }
+          onClose={() => {
+            if (!busy) {
+              setProjectPicker(null);
+              pendingMethod.current = "";
+            }
+          }}
         >
           <div className="modal-content">
             <label>
@@ -845,23 +801,50 @@ export function App() {
                   key={p.id}
                   className="project-picker-option"
                   disabled={busy}
-                  onClick={() => openProject(p.id, projectPicker === "auto" ? undefined : projectPicker)}
+                  onClick={() =>
+                    openProject(
+                      p.id,
+                      projectPicker === "auto" ? undefined : projectPicker,
+                    )
+                  }
                 >
-                  <span className="project-icon"><IconBook2 size={22} /></span>
+                  <span className="project-icon">
+                    <IconBook2 size={22} />
+                  </span>
                   <span>
                     <strong>{p.title}</strong>
-                    <small>{p.genre || t("No genre set")} · {p.chapter_count} {t("chapters")}</small>
+                    <small>
+                      {p.genre || t("No genre set")} · {p.chapter_count}{" "}
+                      {t("chapters")}
+                    </small>
                   </span>
                   {project?.id === p.id && <Badge>{t("Last opened")}</Badge>}
                 </button>
               ))}
-              {!pickerProjects.length && <p className="muted">{t("No matching project")}</p>}
+              {!pickerProjects.length && (
+                <p className="muted">{t("No matching project")}</p>
+              )}
             </div>
             {error && <ErrorBox>{error}</ErrorBox>}
             <div className="modal-actions">
-              <Button disabled={busy} onClick={() => setProjectPicker(null)}>{t("Cancel")}</Button>
-              <Button disabled={busy} onClick={() => { setProjectPicker(null); setCreate(true); }}>
-                <IconPlus size={17} />{t("Start a new story")}
+              <Button
+                disabled={busy}
+                onClick={() => {
+                  setProjectPicker(null);
+                  pendingMethod.current = "";
+                }}
+              >
+                {t("Cancel")}
+              </Button>
+              <Button
+                disabled={busy}
+                onClick={() => {
+                  setProjectPicker(null);
+                  setCreate(true);
+                }}
+              >
+                <IconPlus size={17} />
+                {t("Start a new story")}
               </Button>
             </div>
           </div>
@@ -870,61 +853,60 @@ export function App() {
       {deleteTarget && (
         <Modal
           title={t("Delete project")}
-          onClose={() => { if (!deletingRef.current) setDeleteTarget(null); }}
+          onClose={() => {
+            if (!deletingRef.current) setDeleteTarget(null);
+          }}
         >
           <div className="modal-content">
-            <h3 className="delete-project-name">{t('Delete "{0}"?', deleteTarget.title)}</h3>
-            <p>{t("This permanently deletes the story, chapters, saved versions, story knowledge, and AI history. This cannot be undone.")}</p>
-            <p className="muted">{t("Export a project backup first if you want to keep a copy.")}</p>
+            <h3 className="delete-project-name">
+              {t('Delete "{0}"?', deleteTarget.title)}
+            </h3>
+            <p>
+              {t(
+                "This permanently deletes the story, chapters, saved versions, story knowledge, and AI history. This cannot be undone.",
+              )}
+            </p>
+            <p className="muted">
+              {t("Export a project backup first if you want to keep a copy.")}
+            </p>
             {deleteError && <ErrorBox>{deleteError}</ErrorBox>}
             <div className="modal-actions">
-              <Button autoFocus disabled={deleting} onClick={() => setDeleteTarget(null)}>{t("Cancel")}</Button>
-              <Button className="danger" disabled={deleting} onClick={deleteProject}>
-                <IconTrash size={17} />{deleting ? t("Deleting…") : t("Delete permanently")}
+              <Button
+                autoFocus
+                disabled={deleting}
+                onClick={() => setDeleteTarget(null)}
+              >
+                {t("Cancel")}
+              </Button>
+              <Button
+                className="danger"
+                disabled={deleting}
+                onClick={deleteProject}
+              >
+                <IconTrash size={17} />
+                {deleting ? t("Deleting…") : t("Delete permanently")}
               </Button>
             </div>
           </div>
         </Modal>
       )}
       {create && (
-        <Modal
-          title={t("Start a new story")}
+        <NewStoryDialog
+          title={form.title}
+          error={error}
+          busy={busy}
+          onTitle={(title) => setForm({ ...form, title })}
+          onCreate={newProject}
+          onCancel={() => {
+            setCreate(false);
+            pendingMethod.current = "";
+          }}
           onClose={() => {
             setCreate(false);
             setError("");
+            pendingMethod.current = "";
           }}
-        >
-          <form
-            className="modal-content"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void newProject();
-            }}
-          >
-            <p className="field-hint">
-              {t(
-                "You don't need a story idea yet. Start a workspace, talk with AI, and decide the genre, length, and setting later.",
-              )}
-            </p>
-            <label>
-              {t("Working title (optional)")}
-              <input
-                autoFocus
-                value={form.title}
-                onChange={(e) => setForm({ ...form, title: e.target.value })}
-                placeholder={t("Leave blank for an untitled story")}
-                maxLength={120}
-              />
-            </label>
-            {error && <ErrorBox>{error}</ErrorBox>}
-            <div className="modal-actions">
-              <Button onClick={() => setCreate(false)}>{t("Cancel")}</Button>
-              <Button primary type="submit" disabled={busy}>
-                {t("Start exploring")}
-              </Button>
-            </div>
-          </form>
-        </Modal>
+        />
       )}
       {importing && (
         <Modal

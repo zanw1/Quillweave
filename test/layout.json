@@ -1,0 +1,8 @@
+{
+  "go_modules": {
+    "core": "internal/core",
+    "preview": "internal/preview",
+    "platform": "internal/platform",
+    "search": "internal/search"
+  }
+}

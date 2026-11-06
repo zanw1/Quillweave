@@ -21,7 +21,9 @@ export function Methods({ onUse }: { onUse: (prompt: string) => void }) {
           <p className="eyebrow">{t("THE WRITER'S TOOLKIT")}</p>
           <h1>{t("Methods for the story you want to tell")}</h1>
           <p>
-            {t("Six writing tools to help you examine a story from another angle.")}
+            {t(
+              "Six writing tools to help you examine a story from another angle.",
+            )}
           </p>
         </div>
         <Badge>{t("Optional methods for exploration")}</Badge>
@@ -55,7 +57,7 @@ export function Methods({ onUse }: { onUse: (prompt: string) => void }) {
                   className="text-button"
                   onClick={() => setSelected(m.id)}
                 >
-                  {t("Explore method")}{" "}<IconArrowUpRight size={16} />
+                  {t("Explore method")} <IconArrowUpRight size={16} />
                 </button>
               </div>
             </article>
@@ -64,7 +66,9 @@ export function Methods({ onUse }: { onUse: (prompt: string) => void }) {
       <div className="methods-note">
         <IconBook2 size={22} stroke={1.5} />
         <p>
-          {t("Use these methods to ask sharper questions. Character choices, meaning, and final decisions belong to the author.")}
+          {t(
+            "Use these methods to ask sharper questions. Character choices, meaning, and final decisions belong to the author.",
+          )}
         </p>
       </div>
       {method && (
@@ -99,13 +103,15 @@ export function Methods({ onUse }: { onUse: (prompt: string) => void }) {
               <IconExternalLink size={16} />
             </a>
             <p className="muted">
-              {t("This is a short summary with review questions. Read the original source for the full discussion.")}
+              {t(
+                "This is a short summary with review questions. Read the original source for the full discussion.",
+              )}
             </p>
           </div>
           <Button
             primary
             onClick={() => {
-              onUse(method.prompt);
+              onUse(t(method.prompt));
               setSelected(null);
             }}
           >

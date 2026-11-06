@@ -12,3 +12,7 @@ build/releases/
 !.env.example
 *.log
 *.syso
+.specula-lite
+aidd-wiki
+# Local historical verification evidence; not an active suite.
+test/archive/

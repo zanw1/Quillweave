@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -10,16 +11,7 @@ import {
 } from "@tabler/icons-react";
 import { api, contentHash, date, message, wordCount } from "../../lib/api";
 import { Assistant } from "../assistant/Assistant";
-import {
-  Badge,
-  Button,
-  Empty,
-  ErrorBox,
-  MarkdownResponse,
-  Modal,
-} from "../../components/ui";
-import { WritingParameters } from "./WritingParameters";
-import { ProjectModels } from "../settings/models";
+import { Badge, Button, Empty, ErrorBox, Modal } from "../../components/ui";
 import type { Chapter, Job, Project } from "../../domain/types";
 
 interface Props {
@@ -30,6 +22,7 @@ interface Props {
   onSettings: () => void;
   onWiki: () => void;
   seed: string;
+  onSeedConsumed?: () => void;
 }
 type Draft = Pick<
   Chapter,
@@ -74,6 +67,7 @@ export function Writing({
   onSettings,
   onWiki,
   seed,
+  onSeedConsumed,
 }: Props) {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
@@ -160,6 +154,7 @@ export function Writing({
             onSettings,
             onWiki,
             seed,
+            onSeedConsumed,
           }}
         />
       ) : (
@@ -224,7 +219,6 @@ export function Writing({
     </div>
   );
 }
-
 /** Retain unsaved drafts and verify the source revision before applying AI output. */
 function Editor({
   project,
@@ -233,6 +227,7 @@ function Editor({
   onSettings,
   onWiki,
   seed,
+  onSeedConsumed,
 }: Props & { chapter: Chapter }) {
   const draftKey = `quillweave-draft-${project.id}-${chapter.id}`;
   const [draft, setDraftState] = useState<Draft>(() =>
@@ -426,14 +421,14 @@ function Editor({
               maxLength={120}
             />
             <div className="manuscript-meta">
-              <select
+              <Select
                 aria-label={t("Chapter status")}
                 value={draft.status}
                 onChange={(e) => setDraft({ ...draft, status: e.target.value })}
               >
                 <option value="draft">{t("Draft")}</option>
                 <option value="final">{t("Final")}</option>
-              </select>
+              </Select>
               <span>
                 {wordCount(draft.body).toLocaleString()} /{" "}
                 {(
@@ -511,6 +506,7 @@ function Editor({
           chapter={chapter}
           canHumanize={!!draft.body.trim()}
           seed={seed}
+          onSeedConsumed={onSeedConsumed}
           onSettings={onSettings}
           beforeStart={save}
           onRefresh={refresh}
@@ -535,7 +531,7 @@ function Editor({
               <>
                 <label>
                   {t("Select version")}
-                  <select
+                  <Select
                     value={selectedVersion}
                     onChange={(e) => setSelectedVersion(e.target.value)}
                   >
@@ -546,7 +542,7 @@ function Editor({
                         {t("characters")}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <div className="version-comparison">
                   <div>
@@ -568,299 +564,6 @@ function Editor({
                 </div>
               </>
             )}
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-/** Share story setup, outline drafts, and writing parameters with planning discussion. */
-export function Planning({
-  project,
-  onProject,
-  onSettings,
-}: {
-  project: Project;
-  onProject: (p: Project) => void;
-  onSettings: () => void;
-}) {
-  const exploring =
-    !project.chapters.length &&
-    !project.premise.trim() &&
-    !project.outline.trim();
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const showDetails = !exploring || detailsOpen;
-  const draftKey = `quillweave-plan-${project.id}`;
-  const [draft, setDraft] = useState(() => {
-    const fallback = {
-      title: project.title,
-      genre: project.genre,
-      premise: project.premise,
-      style: project.style,
-      outline: project.outline,
-      writing_style: project.writing_style,
-      default_chapter_words: project.default_chapter_words,
-      narrative_pov: project.narrative_pov,
-    };
-    try {
-      const value = JSON.parse(localStorage.getItem(draftKey) || "null");
-      return value &&
-        ["title", "genre", "premise", "style", "outline"].every(
-          (key) => typeof value[key] === "string",
-        )
-        ? ({ ...fallback, ...value } as typeof fallback)
-        : fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const [outlineReview, setOutlineReview] = useState<{
-    text: string;
-    base: string;
-    error: string;
-  } | null>(null);
-  const dirty = Object.entries(draft).some(
-    ([key, value]) => project[key as keyof typeof draft] !== value,
-  );
-  useEffect(() => {
-    try {
-      if (dirty) localStorage.setItem(draftKey, JSON.stringify(draft));
-      else localStorage.removeItem(draftKey);
-    } catch {
-      setError("Draft storage is full. Save the story bible.");
-    }
-  }, [draft, draftKey, dirty]);
-  /** Save author plans while retaining edits made during the request. */
-  async function save(): Promise<Project | null> {
-    if (!dirty) return project;
-    if (busy) return null;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await api<Project>("update_project", {
-        project_id: project.id,
-        revision: project.revision,
-        ...draft,
-      });
-      onProject(next);
-      return next;
-    } catch (e) {
-      setError(message(e));
-      return null;
-    } finally {
-      setBusy(false);
-    }
-  }
-  /** Open outline proposals for review or apply setup proposals to the draft. */
-  async function apply(job: Job) {
-    if (!["architecture", "outline"].includes(job.action)) return;
-    if (job.action === "outline") {
-      setOutlineReview({
-        text: job.text,
-        base: draftRef.current.outline,
-        error: "",
-      });
-      return;
-    }
-    const key = "premise";
-    if (
-      draft[key] &&
-      !window.confirm(t("Replace the current setup draft with this proposal?"))
-    )
-      return;
-    setDraft((previous) => ({ ...previous, [key]: job.text }));
-    setDetailsOpen(true);
-  }
-  /** Apply an edited proposal to the local outline draft after explicit review. */
-  function acceptOutline() {
-    if (!outlineReview) return;
-    if (!outlineReview.text.trim()) {
-      setOutlineReview({
-        ...outlineReview,
-        error: "Enter an outline before applying it.",
-      });
-      return;
-    }
-    if (draftRef.current.outline !== outlineReview.base) {
-      setOutlineReview({
-        ...outlineReview,
-        error:
-          "The outline draft changed during review. Close this review and open it again.",
-      });
-      return;
-    }
-    setDraft((previous) => ({ ...previous, outline: outlineReview.text }));
-    setDetailsOpen(true);
-    setOutlineReview(null);
-  }
-  return (
-    <div className={`planning-layout${exploring ? " planning-exploring" : ""}`}>
-      <section className="planning-content">
-        <div className="section-title">
-          <div>
-            <p className="eyebrow">
-              {t(exploring ? "A PLACE TO BEGIN" : "STORY BIBLE")}
-            </p>
-            <h1>
-              {t(
-                exploring
-                  ? "Find your story, one conversation at a time"
-                  : "Plan your story",
-              )}
-            </h1>
-            <p>
-              {t(
-                exploring
-                  ? "No genre, plot, or length to decide now. Start with what interests you; the details can grow from the conversation."
-                  : "Discuss the story, generate an outline, then review and apply it to your draft.",
-              )}
-            </p>
-          </div>
-          {exploring && (
-            <button
-              type="button"
-              className="button"
-              aria-expanded={detailsOpen}
-              aria-controls={`story-details-${project.id}`}
-              onClick={() => setDetailsOpen((open) => !open)}
-            >
-              {t(
-                detailsOpen
-                  ? "Hide story details"
-                  : "Story details · edit later",
-              )}
-            </button>
-          )}
-          {showDetails && (
-            <Button primary disabled={busy} onClick={save}>
-              <IconDeviceFloppy size={17} />
-              {t("Save story bible")}
-            </Button>
-          )}
-        </div>
-        {error && <ErrorBox>{error}</ErrorBox>}
-        <div
-          className="planning-details"
-          id={`story-details-${project.id}`}
-          hidden={!showDetails}
-        >
-          {exploring && (
-            <p className="field-hint">
-              {t(
-                "These settings are optional while exploring. Chapter length and viewpoint are editable defaults, not commitments.",
-              )}
-            </p>
-          )}
-          <div className="form-grid">
-            <label>
-              {t("Project title")}
-              <input
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-              />
-            </label>
-            <label>
-              {t("Genre")}
-              <input
-                value={draft.genre}
-                onChange={(e) => setDraft({ ...draft, genre: e.target.value })}
-              />
-            </label>
-          </div>
-          <WritingParameters
-            value={draft}
-            onChange={(patch) => setDraft({ ...draft, ...patch })}
-          />
-          <label>
-            {t("Core premise")}
-            <textarea
-              className="large-input"
-              value={draft.premise}
-              onChange={(e) => setDraft({ ...draft, premise: e.target.value })}
-              placeholder={t("Who wants what, and what stands in the way?")}
-            />
-          </label>
-          <label>
-            {t("Narrative style and boundaries")}
-            <textarea
-              value={draft.style}
-              onChange={(e) => setDraft({ ...draft, style: e.target.value })}
-              placeholder={t(
-                "Viewpoint, language, and the style you want to preserve…",
-              )}
-            />
-          </label>
-          <label>
-            {t("Story outline")}
-            <textarea
-              className="outline-input"
-              aria-label={t("Story outline")}
-              value={draft.outline}
-              onChange={(e) => setDraft({ ...draft, outline: e.target.value })}
-              placeholder={t("Expand a paragraph into a causal chapter plan…")}
-            />
-          </label>
-          <ProjectModels project={project} onProject={onProject} />
-        </div>
-      </section>
-      <Assistant
-        project={project}
-        initialAction="ask"
-        exploring={exploring}
-        onSettings={onSettings}
-        onRefresh={async () =>
-          onProject(await api("get_project", { project_id: project.id }))
-        }
-        beforeStart={save}
-        onApply={apply}
-      />
-      {outlineReview && (
-        <Modal
-          title={t("Review generated outline")}
-          wide
-          onClose={() => setOutlineReview(null)}
-        >
-          <div className="modal-content outline-review">
-            <p>
-              {t(
-                "Edit the proposal below, then apply it to the story outline draft. Save the story bible when you are ready.",
-              )}
-            </p>
-            <details>
-              <summary>{t("Current outline")}</summary>
-              <MarkdownResponse
-                text={outlineReview.base || t("No outline yet.")}
-              />
-            </details>
-            <label>
-              {t("Proposed outline")}
-              <textarea
-                className="outline-input"
-                aria-label={t("Proposed outline")}
-                value={outlineReview.text}
-                onChange={(event) =>
-                  setOutlineReview({
-                    ...outlineReview,
-                    text: event.target.value,
-                    error: "",
-                  })
-                }
-              />
-            </label>
-            {outlineReview.error && <ErrorBox>{outlineReview.error}</ErrorBox>}
-            <div className="modal-actions">
-              <Button onClick={() => setOutlineReview(null)}>
-                {t("Cancel")}
-              </Button>
-              <Button primary onClick={acceptOutline}>
-                {t("Use as outline draft")}
-              </Button>
-            </div>
           </div>
         </Modal>
       )}

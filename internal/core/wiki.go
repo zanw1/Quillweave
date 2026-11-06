@@ -25,6 +25,9 @@ func compilationFingerprint(project *Project, sourceID string, config ProviderCo
 		return "", errors.New("Compilation source not found")
 	}
 	parts := []string{sourceID, hashText(source), rulesHash(project), config.Protocol, config.BaseURL, config.Model}
+	if responseLanguage(project, "") != "en" {
+		parts = append(parts, responseLanguage(project, ""))
+	}
 	if options := providerOptionFingerprint(config); options != "" {
 		parts = append(parts, options)
 	}

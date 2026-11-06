@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
 import { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import {
@@ -21,6 +22,7 @@ import {
   Empty,
   ErrorBox,
   Modal,
+  RequiredLabel,
 } from "../../components/ui";
 import { StoryMemory } from "./StoryMemory";
 const KnowledgeGraph = lazy(() =>
@@ -155,7 +157,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
           {showEntity && <strong>{fact.entity}</strong>}
           <Badge tone="blue">{t(factKinds[fact.kind])}</Badge>
           <span>
-            {fact.chapter ? t("Chapter {0}", fact.chapter) : t("Reference source")}
+            {fact.chapter
+              ? t("Chapter {0}", fact.chapter)
+              : t("Reference source")}
           </span>
           <Badge
             tone={
@@ -218,7 +222,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
         <blockquote>{fact.quote}</blockquote>
         <div className="fact-footer">
           <button className="text-button" onClick={() => setSource(fact)}>
-            {t("View source")}{" "}<IconArrowUpRight size={14} />
+            {t("View source")} <IconArrowUpRight size={14} />
           </button>
           <span>
             {fact.epistemic === "inferred" ? t("Inferred") : t("Explicit")} ·{" "}
@@ -293,7 +297,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
           onClick={() => setTab("entries")}
         >
           <IconBook2 size={17} />
-          {t("All entries")}{" "}<span>{project.entities.length}</span>
+          {t("All entries")} <span>{project.entities.length}</span>
         </button>
         <button
           className={tab === "trajectory" ? "active" : ""}
@@ -307,7 +311,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
           onClick={() => setTab("review")}
         >
           <IconCheck size={17} />
-          {t("Pending review")}{" "}<span>{pending.length}</span>
+          {t("Pending review")} <span>{pending.length}</span>
         </button>
         <button
           className={tab === "memory" ? "active" : ""}
@@ -326,7 +330,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
       </div>
       {error && <ErrorBox>{error}</ErrorBox>}
       {tab === "graph" && (
-        <Suspense fallback={<div className="loading">{t("Loading graph…")}</div>}>
+        <Suspense
+          fallback={<div className="loading">{t("Loading graph…")}</div>}
+        >
           <KnowledgeGraph
             project={project}
             onEntity={setSelected}
@@ -350,12 +356,14 @@ export function Wiki({ project, onProject, onChapter }: Props) {
               <IconSearch size={18} />
               <input
                 aria-label={t("Search Wiki")}
-                placeholder={t("Search characters, locations, or worldbuilding…")}
+                placeholder={t(
+                  "Search characters, locations, or worldbuilding…",
+                )}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
             </label>
-            <select
+            <Select
               aria-label={t("Entry type")}
               value={kind}
               onChange={(e) => setKind(e.target.value)}
@@ -366,8 +374,10 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                   {t(label)}
                 </option>
               ))}
-            </select>
-            <span className="muted">{entries.length}{" "}{t("entries")}</span>
+            </Select>
+            <span className="muted">
+              {entries.length} {t("entries")}
+            </span>
           </div>
           {entries.length ? (
             <div className="table-wrap">
@@ -438,7 +448,10 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                 </tbody>
               </table>
               <div className="table-footer">
-                {t("Total")}{" "}{entries.length}{" "}{t("entries · Author setup and chapter evidence are maintained separately")}
+                {t("Total")} {entries.length}{" "}
+                {t(
+                  "entries · Author setup and chapter evidence are maintained separately",
+                )}
               </div>
             </div>
           ) : (
@@ -448,7 +461,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                   ? t("No matching entries")
                   : t("Bring your characters and world together")
               }
-              detail={t("Create a character or use Compile Wiki in the writing workspace to analyze a chapter.")}
+              detail={t(
+                "Create a character or use Compile Wiki in the writing workspace to analyze a chapter.",
+              )}
             />
           )}
         </>
@@ -457,14 +472,18 @@ export function Wiki({ project, onProject, onChapter }: Props) {
         <div className="review-list">
           <div className="info-strip">
             <IconBook2 size={18} />
-            {t("Review the quote and its interpretation before confirming. Current, confirmed evidence enters the AI Wiki context.")}
+            {t(
+              "Review the quote and its interpretation before confirming. Current, confirmed evidence enters the AI Wiki context.",
+            )}
           </div>
           {pending.length ? (
             pending.map((f) => factCard(f, true))
           ) : (
             <Empty
               title={t("The review queue is clear")}
-              detail={t("New evidence will appear here after a chapter analysis completes.")}
+              detail={t(
+                "New evidence will appear here after a chapter analysis completes.",
+              )}
             />
           )}
         </div>
@@ -494,13 +513,18 @@ export function Wiki({ project, onProject, onChapter }: Props) {
             <div className="trajectory-main">
               <div className="trajectory-title">
                 <div>
-                  <h2>{character.name}{t("trajectory")}</h2>
+                  <h2>
+                    {character.name}
+                    {t("trajectory")}
+                  </h2>
                   <p>{character.description}</p>
                 </div>
                 <Badge>{t("In chapter order")}</Badge>
               </div>
               <p className="muted">
-                {t("Actions, relationships, and emotional changes link to their source. Chapter order may differ from in-story chronology.")}
+                {t(
+                  "Actions, relationships, and emotional changes link to their source. Chapter order may differ from in-story chronology.",
+                )}
               </p>
               <div className="timeline">
                 {trajectoryFacts.length ? (
@@ -515,7 +539,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                 ) : (
                   <Empty
                     title={t("No character trajectory yet")}
-                    detail={t("Analyze a chapter that includes this character in the writing workspace.")}
+                    detail={t(
+                      "Analyze a chapter that includes this character in the writing workspace.",
+                    )}
                   />
                 )}
               </div>
@@ -524,7 +550,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
         ) : (
           <Empty
             title={t("Start with a character")}
-            detail={t("Create a character entry, or extract characters from a chapter to view their trajectories.")}
+            detail={t(
+              "Create a character entry, or extract characters from a chapter to view their trajectories.",
+            )}
           />
         ))}
       {entity && (
@@ -564,7 +592,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
               (f) => related(f, entity.name) && f.status !== "rejected",
             ) && (
               <p className="muted">
-                {t("Analyze a chapter to see this entry's evidence and changes.")}
+                {t(
+                  "Analyze a chapter to see this entry's evidence and changes.",
+                )}
               </p>
             )}
           </div>
@@ -584,7 +614,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
           >
             <div className="form-grid">
               <label>
-                {t("Name")}
+                <RequiredLabel>{t("Name")}</RequiredLabel>
                 <input
                   autoFocus
                   value={editing.name}
@@ -597,7 +627,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
               </label>
               <label>
                 {t("Type")}
-                <select
+                <Select
                   value={editing.kind}
                   onChange={(e) =>
                     setEditing({ ...editing, kind: e.target.value })
@@ -608,7 +638,7 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                       {t(label)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             </div>
             <label>
@@ -634,7 +664,9 @@ export function Wiki({ project, onProject, onChapter }: Props) {
                 onChange={(e) =>
                   setEditing({ ...editing, description: e.target.value })
                 }
-                placeholder={t("Identity, wants, beliefs, relationships, and creative boundaries…")}
+                placeholder={t(
+                  "Identity, wants, beliefs, relationships, and creative boundaries…",
+                )}
               />
             </label>
             {error && <ErrorBox>{error}</ErrorBox>}

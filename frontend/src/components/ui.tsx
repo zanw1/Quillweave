@@ -1,5 +1,16 @@
 import { t } from "../lib/i18n";
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import type { SecretUpdate } from "../domain/types";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useRef,
+  type ReactNode,
+  type ComponentProps,
+  type MouseEvent,
+  type PointerEvent,
+} from "react";
 import {
   IconX,
   IconArrowRight,
@@ -27,17 +38,156 @@ export function Button({
   children,
   primary = false,
   className = "",
+  size = "md",
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { primary?: boolean }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  primary?: boolean;
+  size?: "sm" | "md";
+}) {
   return (
     <button
       type="button"
       className={`button ${primary ? "primary" : ""} ${className}`}
+      data-size={size}
       {...props}
     >
       {children}
     </button>
   );
+}
+
+/** Keep boolean settings keyboard-native while sharing the Tailwind Plus switch field structure. */
+export function Switch({
+  className = "",
+  ...props
+}: Omit<ComponentProps<"input">, "type" | "role">) {
+  return (
+    <span className={`qw-switch ${className}`}>
+      <input
+        {...props}
+        type="checkbox"
+        role="switch"
+        className="qw-switch-input"
+      />
+      <span className="qw-switch-track" aria-hidden="true">
+        <span />
+      </span>
+    </span>
+  );
+}
+
+/** Edit keys directly while representing a retained server-side secret without reading or resubmitting it. */
+export function SecretField({
+  label,
+  ariaLabel = label,
+  configured,
+  update,
+  onChange,
+  disabled = false,
+}: {
+  label: string;
+  ariaLabel?: string;
+  configured: boolean;
+  update?: SecretUpdate;
+  onChange: (update: SecretUpdate) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  const input = useRef<HTMLInputElement>(null);
+  const value = update?.action === "replace" ? update.value : "";
+  const retained = configured && (!update || update.action === "preserve");
+  return (
+    <div className="secret-field">
+      <label htmlFor={id}>{label}</label>
+      <div className="secret-input-row">
+        <input
+          ref={input}
+          id={id}
+          aria-label={ariaLabel}
+          type="password"
+          autoComplete="new-password"
+          spellCheck={false}
+          disabled={disabled}
+          value={value}
+          placeholder={retained ? "••••••••" : undefined}
+          onChange={(event) =>
+            onChange(
+              event.target.value
+                ? { action: "replace", value: event.target.value }
+                : { action: "clear" },
+            )
+          }
+        />
+        {(retained || value) && (
+          <Button
+            disabled={disabled}
+            aria-label={`${t("Clear key")} · ${ariaLabel}`}
+            onClick={() => {
+              onChange({ action: "clear" });
+              input.current?.focus();
+            }}
+          >
+            {t("Clear key")}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Mark required fields visually while native required semantics preserve their accessible names. */
+export function RequiredLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="qw-field-label">
+      {children}
+      <span className="qw-required" aria-hidden="true">
+        *
+      </span>
+    </span>
+  );
+}
+
+/** Share native focus containment and dismiss only a complete click on the actual backdrop. */
+function useDialog(onClose: () => void) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const backdropPress = useRef(false);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  /** Separate a backdrop from the dialog's own blank content and scrollbar. */
+  function outside(
+    event: MouseEvent<HTMLDialogElement> | PointerEvent<HTMLDialogElement>,
+  ) {
+    const box = event.currentTarget.getBoundingClientRect();
+    return (
+      event.clientX < box.left ||
+      event.clientX > box.right ||
+      event.clientY < box.top ||
+      event.clientY > box.bottom
+    );
+  }
+  return {
+    ref,
+    onCancel: (event: React.SyntheticEvent<HTMLDialogElement>) => {
+      event.preventDefault();
+      onClose();
+    },
+    onPointerDown: (event: PointerEvent<HTMLDialogElement>) => {
+      backdropPress.current =
+        event.target === event.currentTarget && outside(event);
+    },
+    onClick: (event: MouseEvent<HTMLDialogElement>) => {
+      if (
+        backdropPress.current &&
+        event.target === event.currentTarget &&
+        outside(event)
+      )
+        onClose();
+      backdropPress.current = false;
+    },
+  };
 }
 
 /** Provide a clear next action for empty states and search results. */
@@ -72,26 +222,17 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
-    return () => ref.current?.close();
-  }, []);
+  const dialog = useDialog(onClose);
+  const titleId = useId();
   return (
     <dialog
-      ref={ref}
+      {...dialog}
       className={`modal ${wide ? "wide" : ""}`}
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
       aria-label={title}
+      aria-labelledby={titleId}
     >
       <header>
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button
           type="button"
           className="icon-button"
@@ -101,7 +242,7 @@ export function Modal({
           <IconX size={20} />
         </button>
       </header>
-      {children}
+      <div className="modal-body">{children}</div>
     </dialog>
   );
 }
@@ -118,20 +259,14 @@ export function Drawer({
   children: ReactNode;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
-    return () => ref.current?.close();
-  }, []);
+  const dialog = useDialog(onClose);
+  const titleId = useId();
   return (
     <dialog
-      ref={ref}
+      {...dialog}
       className="drawer"
-      onCancel={onClose}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
       aria-label={title}
+      aria-labelledby={titleId}
     >
       <header>
         <span>{subtitle}</span>
@@ -144,7 +279,7 @@ export function Drawer({
         </button>
       </header>
       <div className="drawer-body">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
     </dialog>

@@ -1,3 +1,5 @@
+//go:build quillweave_whitebox
+
 package platform
 
 import (

@@ -1,0 +1,238 @@
+/* Search-specific layout reuses the shared 40/34px field, button, switch and dialog tokens. */
+.search-settings {
+  min-width: 0;
+}
+.search-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  margin: 22px 0;
+  background: #fff;
+}
+.search-card h3 {
+  margin-bottom: 8px;
+}
+.search-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.search-card-heading p {
+  margin-bottom: 0;
+  font-size: 12px;
+}
+.search-actions,
+.search-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.search-actions {
+  margin-top: 18px;
+}
+.search-card > label {
+  margin-top: 18px;
+}
+.search-fallback-list {
+  padding-left: 24px;
+  margin: 16px 0;
+}
+.search-fallback-list li {
+  margin: 8px 0;
+}
+.search-fallback-list li > span {
+  display: inline-block;
+  margin-right: 12px;
+  min-width: 140px;
+}
+.search-fallback-list .button {
+  margin-right: 8px;
+}
+.search-profile-filters {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  margin: 18px 0;
+}
+.search-profile-filters > .search {
+  flex: 1;
+}
+.search-profile-filters > label:last-child {
+  width: 180px;
+  flex-shrink: 0;
+}
+.search-profile-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+}
+.search-profile-table th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.search-profile-table td {
+  padding: 16px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.search-profile-table th:first-child {
+  width: 35%;
+}
+.search-profile-table th:nth-child(3) {
+  width: 16%;
+}
+.search-profile-table th:last-child {
+  width: 26%;
+}
+.search-profile-table strong,
+.search-profile-table small {
+  display: block;
+}
+.search-profile-table small {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.search-profile-table .badge {
+  margin-top: 6px;
+}
+.search-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.search-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.search-editor-scope .modal-body {
+  overflow: hidden;
+}
+.search-editor-form {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100dvh - 104px));
+  padding: 0;
+}
+.search-editor-fields {
+  border: 0;
+  margin: 0;
+  padding: var(--dialog-padding);
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.search-editor-fields > p {
+  margin-bottom: 0;
+}
+.search-editor-fields .qw-select {
+  width: 100%;
+}
+.search-editor-actions {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 18px var(--dialog-padding);
+  border-top: 1px solid var(--line);
+}
+.model-search-binding {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-top: 20px;
+}
+.model-search-binding .qw-select {
+  width: 100%;
+}
+.model-search-binding > small {
+  display: block;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.search-run-view {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  margin: 22px 0;
+  overflow-wrap: anywhere;
+}
+.search-run-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.search-run-view > small {
+  display: block;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.search-usage {
+  display: flex;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+.search-answer {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.research-search-choice {
+  margin-bottom: 16px;
+}
+.research-search-choice .qw-select {
+  width: 100%;
+}
+.research-source-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+@media (max-width: 900px) {
+  .search-card {
+    padding: 18px;
+  }
+  .search-card-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .search-profile-table th:nth-child(2),
+  .search-profile-table td:nth-child(2) {
+    display: none;
+  }
+  .search-profile-table th:last-child {
+    width: 32%;
+  }
+}
+@media (max-width: 600px) {
+  .search-profile-filters {
+    flex-wrap: wrap;
+  }
+  .search-profile-filters > label:last-child {
+    width: 100%;
+  }
+  .search-pagination {
+    flex-wrap: wrap;
+  }
+}

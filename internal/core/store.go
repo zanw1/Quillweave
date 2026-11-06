@@ -14,7 +14,10 @@ import (
 	"sort"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	path string
+}
 
 type documentDB interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -33,16 +36,80 @@ func OpenStore(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version > 3 {
+		db.Close()
+		return nil, errors.New("This database requires a newer application version")
+	}
 	_, err = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
     CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,document TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1),document TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document TEXT NOT NULL);
-    PRAGMA user_version=1;`)
+    `)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	canonical, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		canonical, err = filepath.Abs(canonical)
+	}
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	store := &Store{db: db, path: canonical}
+	var count int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version < 2 {
+		if err := db.QueryRow("SELECT COUNT(*) FROM projects").Scan(&count); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if count > 0 {
+			backup := path + ".before-studio.sqlite3"
+			if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+				if _, err := db.Exec("VACUUM INTO ?", backup); err != nil {
+					db.Close()
+					return nil, fmt.Errorf("Create migration recovery backup: %w", err)
+				}
+				if err := os.Chmod(backup, 0600); err != nil {
+					db.Close()
+					return nil, err
+				}
+			}
+		}
+	}
+	if err := store.migrateStudioStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := store.migrateSearchStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := store.ensureLookupIndexes(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// ensureLookupIndexes matches existing lookup/order clauses and also runs for already-upgraded databases.
+func (store *Store) ensureLookupIndexes() error {
+	_, err := store.db.Exec(`
+CREATE INDEX IF NOT EXISTS project_parts_load_order ON project_parts(project_id,position,id);
+CREATE INDEX IF NOT EXISTS runs_project ON runs(project_id);
+CREATE INDEX IF NOT EXISTS search_runs_latest_global_test ON search_runs(profile_id,created_at DESC) WHERE purpose='test' AND project_id IS NULL;
+`)
+	return err
 }
 
 // Close releases database connections for shutdown and temporary-directory cleanup.
@@ -50,7 +117,13 @@ func (store *Store) Close() error { return store.db.Close() }
 
 // List returns independent project documents ordered by their latest update.
 func (store *Store) List() ([]Project, error) {
-	return listProjects(store.db)
+	var projects []Project
+	err := store.withReadSnapshot(func(db documentDB) error {
+		var err error
+		projects, err = listProjects(db)
+		return err
+	})
+	return projects, err
 }
 
 // listProjects reads projects and model references through a connection or shared write transaction.
@@ -75,13 +148,38 @@ func listProjects(db documentDB) ([]Project, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
+	for i := range projects {
+		if err := hydrateProject(db, &projects[i]); err != nil {
+			return nil, err
+		}
+	}
 	sort.SliceStable(projects, func(i, j int) bool { return projects[i].UpdatedAt > projects[j].UpdatedAt })
 	return projects, nil
 }
 
 // Get returns an explicit error for a missing project.
 func (store *Store) Get(id string) (Project, error) {
-	return readProject(store.db, id)
+	var project Project
+	err := store.withReadSnapshot(func(db documentDB) error {
+		var err error
+		project, err = readProject(db, id)
+		return err
+	})
+	return project, err
+}
+
+// withReadSnapshot gives every statement in an aggregate read the same committed database view.
+func (store *Store) withReadSnapshot(read func(documentDB) error) error {
+	transaction, err := store.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	if err := read(transaction); err != nil {
+		return err
+	}
+	return transaction.Commit()
 }
 
 // readProject uses the transaction connection for project revision checks and subsequent writes.
@@ -96,6 +194,9 @@ func readProject(db documentDB, id string) (Project, error) {
 		return project, err
 	}
 	err = decodeJSON([]byte(raw), &project)
+	if err == nil {
+		err = hydrateProject(db, &project)
+	}
 	return project, err
 }
 
@@ -104,12 +205,25 @@ func (store *Store) Insert(project *Project) error {
 	if project.Revision > math.MaxInt64 {
 		return errors.New("Revision is out of range")
 	}
-	raw, err := jsonBytes(project)
-	if err != nil {
+	rekeyArchive(project)
+	return store.withWriteTransaction(func(conn *sql.Conn) error {
+		if err := insertProjectIn(conn, project); err != nil {
+			return err
+		}
+		if err := importConversations(conn, project); err != nil {
+			return err
+		}
+		return importArchiveRuntime(conn, project)
+	})
+}
+
+// insertProjectIn writes only canonical project records so streamed runtime imports can share its transaction.
+func insertProjectIn(db documentDB, project *Project) error {
+	metadata, parts := splitProject(project)
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO projects(id,revision,document) VALUES(?,?,?)", project.ID, int64(project.Revision), jsonText(metadata)); err != nil {
 		return err
 	}
-	_, err = store.db.Exec("INSERT INTO projects(id,revision,document) VALUES(?,?,?)", project.ID, int64(project.Revision), string(raw))
-	return err
+	return saveParts(db, project.ID, parts)
 }
 
 // DeleteProject removes an unchanged project and all owned task history in one transaction.
@@ -122,7 +236,23 @@ func (store *Store) DeleteProject(id string, expected uint64) error {
 		if project.Revision != expected {
 			return errors.New("This project changed. Close and reopen the delete confirmation before trying again")
 		}
+		var active int
+		if err := connection.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM runs WHERE project_id=? AND json_extract(document,'$.status')='running'", id).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return errors.New("This project has a running AI task. Stop it and wait for it to finish before deleting")
+		}
+		if err := connection.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM search_runs WHERE project_id=? AND status IN ('queued','running')", id).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return errors.New("This project has an active search. Cancel it before deleting")
+		}
 		if _, err := connection.ExecContext(context.Background(), "DELETE FROM runs WHERE project_id=?", id); err != nil {
+			return err
+		}
+		if _, err := connection.ExecContext(context.Background(), "DELETE FROM story_fts WHERE project_id=?", id); err != nil {
 			return err
 		}
 		_, err = connection.ExecContext(context.Background(), "DELETE FROM projects WHERE id=?", id)
@@ -132,7 +262,7 @@ func (store *Store) DeleteProject(id string, expected uint64) error {
 
 // Save uses a SQL revision comparison to reject stale concurrent writes.
 func (store *Store) Save(project *Project, expected uint64) error {
-	return saveProject(store.db, project, expected)
+	return store.withWriteTransaction(func(conn *sql.Conn) error { return saveProject(conn, project, expected) })
 }
 
 // saveProject shares revision-checked writes between project edits and model assignments.
@@ -145,7 +275,8 @@ func saveProject(db documentDB, project *Project, expected uint64) error {
 	if project.Revision > math.MaxInt64 || expected > math.MaxInt64 {
 		return errors.New("Revision is out of range")
 	}
-	raw, err := jsonBytes(project)
+	metadata, parts := splitProject(project)
+	raw, err := jsonBytes(metadata)
 	if err != nil {
 		return err
 	}
@@ -160,7 +291,7 @@ func saveProject(db documentDB, project *Project, expected uint64) error {
 	if changed == 0 {
 		return errors.New("Another operation changed this project. Keep your draft and refresh before saving.")
 	}
-	return nil
+	return saveParts(db, project.ID, parts)
 }
 
 // ModelSettings reads legacy single-model settings and keeps credentials process-local.
@@ -219,6 +350,9 @@ func (store *Store) SaveModelSettings(settings ModelSettings, expected uint64) e
 
 // saveModelSettings writes a settings document through a locked connection with revision protection.
 func saveModelSettings(connection *sql.Conn, settings ModelSettings, expected uint64) error {
+	if err := validateSearchModelChanges(connection, settings); err != nil {
+		return err
+	}
 	var previous string
 	err := connection.QueryRowContext(context.Background(), "SELECT document FROM settings WHERE id=1").Scan(&previous)
 	exists := err == nil
@@ -306,24 +440,24 @@ func (store *Store) SaveRun(id, projectID, document string) error {
 
 // RunProviderContext reads private context by task ID and project, preserving history ownership boundaries.
 func (store *Store) RunProviderContext(projectID, jobID string) (providerContext, string, error) {
-	var fingerprint, reasoning, encrypted, text sql.NullString
+	var fingerprint, reasoning, encrypted, visible, text sql.NullString
 	err := store.db.QueryRow(`SELECT json_extract(document,'$.provider_context.fingerprint'),
         json_extract(document,'$.provider_context.reasoning'),json_extract(document,'$.provider_context.encrypted'),
-        json_extract(document,'$.text') FROM runs WHERE id=? AND project_id=?
+        json_extract(document,'$.provider_context.visible_text'),json_extract(document,'$.text') FROM runs WHERE id=? AND project_id=?
         AND json_extract(document,'$.status')='done'
-        AND json_extract(document,'$.action') IN ('ask','architecture','outline')`, jobID, projectID).Scan(&fingerprint, &reasoning, &encrypted, &text)
+        AND json_extract(document,'$.action') IN ('ask','architecture','outline','agent','naming','research')`, jobID, projectID).Scan(&fingerprint, &reasoning, &encrypted, &visible, &text)
 	if errors.Is(err, sql.ErrNoRows) {
 		return providerContext{}, "", nil
 	}
 	if err != nil {
 		return providerContext{}, "", err
 	}
-	return providerContext{Fingerprint: fingerprint.String, Reasoning: reasoning.String, Encrypted: encrypted.String}, text.String, nil
+	return providerContext{Fingerprint: fingerprint.String, Reasoning: reasoning.String, Encrypted: encrypted.String, VisibleText: visible.String}, text.String, nil
 }
 
 // Runs returns the latest hundred public task records with private provider state removed in SQL.
 func (store *Store) Runs(projectID string) ([]json.RawMessage, error) {
-	rows, err := store.db.Query("SELECT json_remove(document,'$.provider_context') FROM runs WHERE project_id=? ORDER BY rowid DESC LIMIT 100", projectID)
+	rows, err := store.db.Query("SELECT json_remove(document,'$.provider_context','$.execution_owner') FROM runs WHERE project_id=? ORDER BY rowid DESC LIMIT 100", projectID)
 	if err != nil {
 		return nil, err
 	}

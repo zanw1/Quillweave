@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
@@ -42,19 +43,24 @@ export function WritingParameters({
       <div className="form-grid">
         <label>
           {t("Writing style")}
-          <select
+          <Select
             value={value.writing_style}
             onChange={(e) => onChange({ writing_style: e.target.value })}
           >
-            {!presets.length && <option value="custom">{t("Custom style")}</option>}
+            {!presets.length && (
+              <option value="custom">{t("Custom style")}</option>
+            )}
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
                 {t(p.name)}
               </option>
             ))}
-          </select>
+          </Select>
           <small>
-            {t(selected?.description || "Style notes are editable creative choices.")}
+            {t(
+              selected?.description ||
+                "Style notes are editable creative choices.",
+            )}
           </small>
         </label>
         <label>
@@ -70,19 +76,23 @@ export function WritingParameters({
             }
           />
           <small>
-            {t("Each chapter can override this target. The editor displays measured character counts.")}
+            {t(
+              "Each chapter can override this target. The editor displays measured character counts.",
+            )}
           </small>
         </label>
         <label>
           {t("Narrative viewpoint")}
-          <select
+          <Select
             value={legacyPovLabels[value.narrative_pov] || value.narrative_pov}
             onChange={(e) => onChange({ narrative_pov: e.target.value })}
           >
             <option value="First person">{t("First person")}</option>
-            <option value="Third-person limited">{t("Third-person limited")}</option>
+            <option value="Third-person limited">
+              {t("Third-person limited")}
+            </option>
             <option value="Omniscient">{t("Omniscient")}</option>
-          </select>
+          </Select>
         </label>
       </div>
     </div>

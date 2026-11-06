@@ -1,3 +1,12 @@
+import { Select } from "../../components/Select";
+import { Integrations } from "../studio/Integrations";
+import {
+  protocolNames,
+  effortNames,
+  endpointMatches,
+  selectedPreset,
+  customOptions,
+} from "./options";
 import { t } from "../../lib/i18n";
 import { useEffect, useState } from "react";
 import {
@@ -5,97 +14,32 @@ import {
   IconTrash,
   IconCheck,
   IconPlayerPlay,
-  IconSettings,
   IconSearch,
   IconCopy,
 } from "@tabler/icons-react";
 import { api, message } from "../../lib/api";
-import { Badge, Button, Empty, ErrorBox } from "../../components/ui";
-import { ModelAssignments } from "./models";
+import {
+  Badge,
+  Button,
+  Empty,
+  ErrorBox,
+  SecretField,
+  Switch,
+} from "../../components/ui";
+import { GlobalModelRoutes } from "./models";
+import { SearchSettings } from "./search/SearchSettings";
+import { ModelSearchBinding } from "./search/ModelSearchBinding";
+import { notifySearchChanged } from "../../lib/search";
 import { ModelPicker, modelEfforts, modelMetadata } from "./ModelPicker";
 import "./settings.css";
 import type {
   ModelProfile,
   ModelSettingsResponse,
   ProviderCatalog,
-  ProviderConfig,
-  ProviderPreset,
   SecretUpdate,
 } from "../../domain/types";
 
-const protocolNames: Record<string, string> = {
-  openai: "Chat Completions compatible",
-  responses: "OpenAI Responses compatible",
-  anthropic: "Anthropic Messages",
-  gemini: "Gemini Interactions",
-  gemini_generate: "Gemini Generate Content",
-  ollama: "Ollama native API",
-};
-const effortNames: Record<string, string> = {
-  none: "None",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Maximum",
-};
-
-/** Recognize filled workspace endpoint templates while retaining custom gateway URLs. */
-function endpointMatches(value: string, template: string) {
-  const current = value.replace(/\/+$/, "");
-  if (!template.includes("{WorkspaceId}")) return current === template;
-  const [prefix, suffix] = template.split("{WorkspaceId}");
-  return current.startsWith(prefix) && current.endsWith(suffix);
-}
-
-/** Choose hints for the provider, protocol, and known model, with backend enforcement. */
-function selectedPreset(
-  catalog: ProviderCatalog | null,
-  config?: ProviderConfig,
-) {
-  if (!config?.provider_id) return undefined;
-  const matches =
-    catalog?.presets.filter(
-      (p) =>
-        p.config.provider_id === config.provider_id &&
-        p.config.protocol === config.protocol,
-    ) || [];
-  return matches.find((p) => p.models.includes(config.model)) || matches[0];
-}
-
-/** Offer protocol-standard custom fields alongside provider-specific preset controls. */
-function customOptions(
-  protocol: string,
-  catalog: ProviderCatalog | null,
-): Pick<
-  ProviderPreset,
-  | "thinking_modes"
-  | "reasoning_efforts"
-  | "temperature_policy"
-  | "temperature_fixed_models"
-> {
-  return {
-    temperature_fixed_models:
-      protocol === "anthropic"
-        ? catalog?.presets.find((p) => p.id === "anthropic")
-            ?.temperature_fixed_models
-        : [],
-    thinking_modes: protocol === "ollama" ? ["enabled", "disabled"] : [],
-    reasoning_efforts:
-      protocol === "responses"
-        ? ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-        : protocol === "anthropic"
-          ? ["low", "medium", "high", "max"]
-          : protocol.startsWith("gemini")
-            ? ["minimal", "low", "medium", "high"]
-            : [],
-    temperature_policy:
-      protocol === "anthropic" ? "anthropic_version" : "optional",
-  };
-}
-
-/** Edit independent model profiles and task routing with explicit credential operations. */
+/** Edit independent model profiles and task routing with direct, masked key entry. */
 export function Settings() {
   const [data, setData] = useState<ModelSettingsResponse | null>(null);
   const [selected, setSelected] = useState("");
@@ -321,6 +265,7 @@ export function Settings() {
         }),
       );
       setUpdates({});
+      notifySearchChanged();
       setDirty(false);
       setNotice("Model profiles and task routing saved.");
     } catch (e) {
@@ -370,7 +315,7 @@ export function Settings() {
           disabled={!data || !catalog || busy || !dirty}
           onClick={save}
         >
-          {busy ? t("Saving") : t("Save all settings")}
+          {busy ? t("Saving") : t("Save model settings")}
         </Button>
       </div>
       {loading && (
@@ -404,6 +349,12 @@ export function Settings() {
         >
           {t("Task routing")}
         </button>
+        <button
+          className={tab === "search" ? "active" : ""}
+          onClick={() => setTab("search")}
+        >
+          {t("Search profiles")}
+        </button>
       </div>
       {data && catalog && tab === "profiles" && (
         <div className="model-workspace">
@@ -411,7 +362,7 @@ export function Settings() {
             <div className="provider-preset-controls">
               <label className="provider-preset-picker">
                 {t("New profile template")}
-                <select
+                <Select
                   aria-label={t("New profile template")}
                   value={newPreset}
                   onChange={(e) => setNewPreset(e.target.value)}
@@ -425,7 +376,7 @@ export function Settings() {
                     </option>
                   ))}
                   <option value="">{t("Custom compatible profile")}</option>
-                </select>
+                </Select>
               </label>
               <Button
                 primary
@@ -548,7 +499,7 @@ export function Settings() {
                   </label>
                   <label>
                     {t("Service provider")}
-                    <select
+                    <Select
                       aria-label={t("Service provider")}
                       value={preset?.id || ""}
                       onChange={(event) => applyPreset(event.target.value)}
@@ -559,11 +510,11 @@ export function Settings() {
                           {t(item.name)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <label>
                     {t("API protocol")}
-                    <select
+                    <Select
                       aria-label={t("API protocol")}
                       value={profile.config.protocol}
                       onChange={(e) =>
@@ -586,11 +537,10 @@ export function Settings() {
                           {t(name)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
+                  <label className="checkbox-label toggle-label">
+                    <Switch
                       checked={profile.enabled}
                       onChange={(e) => edit({ enabled: e.target.checked })}
                     />
@@ -601,7 +551,7 @@ export function Settings() {
                   <div className="form-grid provider-endpoints">
                     <label>
                       {t("Region / Endpoint")}
-                      <select
+                      <Select
                         aria-label={t("Service region")}
                         value={endpoint?.url || ""}
                         onChange={(e) => {
@@ -620,7 +570,7 @@ export function Settings() {
                             {t(item.name)}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                     {workspaceTemplate && (
                       <label>
@@ -671,7 +621,7 @@ export function Settings() {
                 {profile.config.protocol === "anthropic" && (
                   <label>
                     {t("Anthropic API version")}
-                    <select
+                    <Select
                       aria-label={t("Anthropic API version")}
                       value={profile.config.api_version || "2026-10-21"}
                       onChange={(e) =>
@@ -690,7 +640,7 @@ export function Settings() {
                       <option value="2023-06-01">
                         {t("2023-06-01 · Legacy compatibility")}
                       </option>
-                    </select>
+                    </Select>
                     <small>
                       {t(
                         "The current API uses model-default temperature. Legacy requests follow the selected model's limits.",
@@ -698,55 +648,18 @@ export function Settings() {
                     </small>
                   </label>
                 )}
-                <div className="model-key-heading">
-                  <span>{t("API Key")}</span>
-                  <Badge tone={data.key_status[profile.id] ? "green" : "gray"}>
-                    {data.key_status[profile.id]
-                      ? t("Configured for this session")
-                      : t("Not configured")}
-                  </Badge>
-                </div>
-                <label>
-                  <span className="sr-only">{t("API key operation")}</span>
-                  <select
-                    aria-label={t("API key operation")}
-                    value={keyUpdate?.action || "preserve"}
-                    onChange={(e) =>
-                      updateSecret(
-                        e.target.value === "replace"
-                          ? { action: "replace", value: "" }
-                          : e.target.value === "clear"
-                            ? { action: "clear" }
-                            : { action: "preserve" },
-                      )
-                    }
-                  >
-                    <option value="preserve">{t("Keep current key")}</option>
-                    <option value="replace">{t("Enter / Replace key")}</option>
-                    <option value="clear">{t("Clear current key")}</option>
-                  </select>
-                </label>
-                {keyUpdate?.action === "replace" && (
-                  <label>
-                    {t("New API key")}
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={keyUpdate.value}
-                      onChange={(e) =>
-                        updateSecret({
-                          action: "replace",
-                          value: e.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                )}
+                <SecretField
+                  label={t("API Key")}
+                  configured={!!data.key_status[profile.id]}
+                  update={keyUpdate}
+                  onChange={updateSecret}
+                />
                 <p className="field-hint">
                   {t(
                     "Keys are held in this app process's memory. Local models can use an empty key.",
                   )}
                 </p>
+                <ModelSearchBinding key={`search:${profile.id}`} modelId={profile.id} />
                 <ModelPicker
                   key={profile.id}
                   profileId={profile.id}
@@ -789,7 +702,7 @@ export function Settings() {
                     {options.thinking_modes.length > 0 && (
                       <label>
                         {t("Thinking mode")}
-                        <select
+                        <Select
                           aria-label={t("Thinking mode")}
                           value={profile.config.thinking_mode || "auto"}
                           onChange={(e) =>
@@ -819,13 +732,13 @@ export function Settings() {
                                 : t("Thinking off")}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
                     )}
                     {options.reasoning_efforts.length > 0 && (
                       <label>
                         {t("Reasoning effort")}
-                        <select
+                        <Select
                           aria-label={t("Reasoning effort")}
                           disabled={profile.config.thinking_mode === "disabled"}
                           value={
@@ -848,7 +761,7 @@ export function Settings() {
                               {t(effortNames[level] || level)}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
                     )}
                   </div>
@@ -990,70 +903,16 @@ export function Settings() {
         </div>
       )}
       {data && catalog && tab === "routes" && (
-        <section className="model-routing-card">
-          <div className="settings-card-heading">
-            <span className="soft-icon">
-              <IconSettings size={22} />
-            </span>
-            <div>
-              <h2>{t("Global default and task routing")}</h2>
-              <p>
-                {t(
-                  "Unassigned tasks use the default profile. Each project can override task routing in Story planning.",
-                )}
-              </p>
-            </div>
-          </div>
-          <label>
-            {t("Default model profile")}
-            <select
-              value={data.settings.default_profile}
-              onChange={(e) => {
-                setData({
-                  ...data,
-                  settings: {
-                    ...data.settings,
-                    default_profile: e.target.value,
-                  },
-                });
-                setDirty(true);
-              }}
-            >
-              <option value="">{t("Unassigned (offline writing)")}</option>
-              {data.settings.default_profile &&
-                !data.settings.profiles.some(
-                  (p) => p.id === data.settings.default_profile && p.enabled,
-                ) && (
-                  <option value={data.settings.default_profile}>
-                    {t("Current default profile unavailable")}
-                  </option>
-                )}
-              {data.settings.profiles
-                .filter((p) => p.enabled)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.config.model || t("Model ID required")}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <div className="settings-divider" />
-          <ModelAssignments
-            settings={data.settings}
-            routes={data.settings.routes}
-            inheritLabel={t("Use default model")}
-            onChange={(routes) => {
-              setData({ ...data, settings: { ...data.settings, routes } });
-              setDirty(true);
-            }}
-          />
-          <p className="field-hint">
-            {t(
-              "Wiki extraction and memory compilation can use different models. Assign a usable profile to each task.",
-            )}
-          </p>
-        </section>
+        <GlobalModelRoutes
+          settings={data.settings}
+          onChange={(settings) => {
+            setData({ ...data, settings });
+            setDirty(true);
+          }}
+        />
       )}
+      {tab === "search" && <SearchSettings />}
+      <Integrations memoryOnly />
     </fieldset>
   );
 }

@@ -1,7 +1,7 @@
 import { getLanguage, t } from "./i18n";
 
 /** Detect the injected native-window flag before loading desktop runtime code. */
-function isDesktop(): boolean {
+export function isDesktop(): boolean {
   const bridge = (
     window as unknown as {
       _wails?: { flags?: { quillweaveDesktop?: boolean } };
@@ -11,7 +11,10 @@ function isDesktop(): boolean {
 }
 
 /** Call restricted Wails entry points through the shared desktop command bridge. */
-async function desktopCall<T>(method: string, ...args: unknown[]): Promise<T> {
+export async function desktopCall<T>(
+  method: string,
+  ...args: unknown[]
+): Promise<T> {
   const { Call } = await import("@wailsio/runtime");
   return Call.ByName(
     `quillweave/internal/desktop.Service.${method}`,
@@ -21,6 +24,10 @@ async function desktopCall<T>(method: string, ...args: unknown[]): Promise<T> {
 
 /** Use native IPC or loopback HTTP for the same business commands. */
 export async function api<T>(command: string, args: unknown = {}): Promise<T> {
+  args = {
+    ...(args && typeof args === "object" ? args : {}),
+    ui_language: getLanguage(),
+  };
   if (isDesktop())
     return desktopCall<T>("Dispatch", command, JSON.stringify(args));
   const response = await fetch("/api/command", {
@@ -57,19 +64,25 @@ export async function download(filename: string, content: string) {
 /** Choose a legacy project folder through the native dialog or a browser-entered path. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isDesktop()) return null;
-  const selected = await desktopCall<string>("PickDirectoryWithLanguage", getLanguage());
+  const selected = await desktopCall<string>(
+    "PickDirectoryWithLanguage",
+    getLanguage(),
+  );
   return selected || null;
 }
 
 /** Format local dates, including legacy timestamps without timezone suffixes. */
 export function date(value: string) {
   return value
-    ? new Date(value).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
+    ? new Date(value).toLocaleString(
+        getLanguage() === "en" ? "en-US" : "zh-CN",
+        {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        },
+      )
     : t("Not recorded");
 }
 

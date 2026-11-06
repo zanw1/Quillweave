@@ -20,25 +20,31 @@ import (
 
 // Project preserves the existing JSON fields and persistence format.
 type Project struct {
-	ID                  string            `json:"id"`
-	Title               string            `json:"title"`
-	Genre               string            `json:"genre"`
-	Premise             string            `json:"premise"`
-	Style               string            `json:"style"`
-	Outline             string            `json:"outline"`
-	Revision            uint64            `json:"revision"`
-	CreatedAt           string            `json:"created_at"`
-	UpdatedAt           string            `json:"updated_at"`
-	Chapters            []Chapter         `json:"chapters"`
-	Entities            []Entity          `json:"entities"`
-	Facts               []Fact            `json:"facts"`
-	Sources             []Source          `json:"sources"`
-	WikiPurpose         string            `json:"wiki_purpose"`
-	Compilations        []WikiCompilation `json:"compilations"`
-	WritingStyle        string            `json:"writing_style"`
-	DefaultChapterWords uint32            `json:"default_chapter_words"`
-	NarrativePov        string            `json:"narrative_pov"`
-	ModelOverrides      map[string]string `json:"model_overrides"`
+	ID                  string             `json:"id"`
+	Title               string             `json:"title"`
+	Genre               string             `json:"genre"`
+	Premise             string             `json:"premise"`
+	Style               string             `json:"style"`
+	Outline             string             `json:"outline"`
+	Revision            uint64             `json:"revision"`
+	CreatedAt           string             `json:"created_at"`
+	UpdatedAt           string             `json:"updated_at"`
+	Chapters            []Chapter          `json:"chapters"`
+	Entities            []Entity           `json:"entities"`
+	Facts               []Fact             `json:"facts"`
+	Sources             []Source           `json:"sources"`
+	WikiPurpose         string             `json:"wiki_purpose"`
+	Compilations        []WikiCompilation  `json:"compilations"`
+	WritingStyle        string             `json:"writing_style"`
+	DefaultChapterWords uint32             `json:"default_chapter_words"`
+	NarrativePov        string             `json:"narrative_pov"`
+	ModelOverrides      map[string]string  `json:"model_overrides"`
+	Studio              StudioState        `json:"studio"`
+	Conversations       []Conversation     `json:"conversations,omitempty"`
+	ArchiveJobs         []Job              `json:"jobs,omitempty"`
+	Experiments         []PolicyExperiment `json:"experiments,omitempty"`
+	requestLanguage     string
+	taskLanguage        string
 }
 
 // MemorySection preserves the existing JSON fields and persistence format.
@@ -97,12 +103,13 @@ type Entity struct {
 
 // Source preserves the existing JSON fields and persistence format.
 type Source struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Category  string `json:"category"`
-	URL       string `json:"url"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"created_at"`
+	ID         string                  `json:"id"`
+	Title      string                  `json:"title"`
+	Category   string                  `json:"category"`
+	URL        string                  `json:"url"`
+	Content    string                  `json:"content"`
+	CreatedAt  string                  `json:"created_at"`
+	Provenance *SearchSourceProvenance `json:"provenance,omitempty"`
 }
 
 // Fact preserves the existing JSON fields and persistence format.
@@ -172,13 +179,21 @@ type ModelSettings struct {
 
 // AIRequest preserves the existing JSON fields and persistence format.
 type AIRequest struct {
-	ProjectID   string    `json:"project_id"`
-	ChapterID   string    `json:"chapter_id"`
-	Action      string    `json:"action"`
-	Instruction string    `json:"instruction"`
-	SourceID    string    `json:"source_id"`
-	History     []Message `json:"history"`
-	Force       bool      `json:"force"`
+	ProjectID       string           `json:"project_id"`
+	ChapterID       string           `json:"chapter_id"`
+	Action          string           `json:"action"`
+	Instruction     string           `json:"instruction"`
+	SourceID        string           `json:"source_id"`
+	History         []Message        `json:"history"`
+	Force           bool             `json:"force"`
+	SessionID       string           `json:"session_id,omitempty"`
+	RequestID       string           `json:"request_id,omitempty"`
+	UILanguage      string           `json:"ui_language,omitempty"`
+	Language        string           `json:"language,omitempty"`
+	ResumeJobID     string           `json:"resume_job_id,omitempty"`
+	SearchSelection *SearchSelection `json:"search_selection,omitempty"`
+	Retrieved       []ContextItem    `json:"-"`
+	systemAppend    string
 }
 
 // Message preserves the existing JSON fields and persistence format.
@@ -192,6 +207,7 @@ type Message struct {
 
 // Prompt preserves the existing JSON fields and persistence format.
 type Prompt struct {
+	Warning    string        `json:"warning,omitempty"`
 	Messages   []Message     `json:"messages"`
 	Context    []ContextItem `json:"context"`
 	SourceHash string        `json:"source_hash"`
@@ -253,7 +269,7 @@ type KnowledgeGraph struct {
 // UnmarshalJSON preserves required fields, type constraints, and legacy defaults.
 func (value *Project) UnmarshalJSON(data []byte) error {
 	type record Project
-	next := record{WikiPurpose: DefaultWikiPurpose, Compilations: []WikiCompilation{}, WritingStyle: "custom", DefaultChapterWords: 3000, NarrativePov: "Third-person limited", ModelOverrides: map[string]string{}}
+	next := record{WikiPurpose: DefaultWikiPurpose, Compilations: []WikiCompilation{}, WritingStyle: "custom", DefaultChapterWords: 3000, NarrativePov: "Third-person limited", ModelOverrides: map[string]string{}, Studio: defaultStudio()}
 	if err := decodeRecord(data, &next, "id", "title", "genre", "premise", "style", "outline", "revision", "created_at", "updated_at", "chapters", "entities", "facts", "sources"); err != nil {
 		return err
 	}
@@ -528,7 +544,7 @@ func wordCount(value string) int {
 
 // NewProject creates an offline project with explicit writing defaults.
 func NewProject(title, genre, premise string) Project {
-	return Project{ID: newID(), Title: strings.TrimSpace(title), Genre: genre, Premise: premise, CreatedAt: now(), UpdatedAt: now(), Chapters: []Chapter{}, Entities: []Entity{}, Facts: []Fact{}, Sources: []Source{}, WikiPurpose: DefaultWikiPurpose, Compilations: []WikiCompilation{}, WritingStyle: "custom", DefaultChapterWords: 3000, NarrativePov: "Third-person limited", ModelOverrides: map[string]string{}}
+	return Project{ID: newID(), Title: strings.TrimSpace(title), Genre: genre, Premise: premise, CreatedAt: now(), UpdatedAt: now(), Chapters: []Chapter{}, Entities: []Entity{}, Facts: []Fact{}, Sources: []Source{}, WikiPurpose: DefaultWikiPurpose, Compilations: []WikiCompilation{}, WritingStyle: "custom", DefaultChapterWords: 3000, NarrativePov: "Third-person limited", ModelOverrides: map[string]string{}, Studio: defaultStudio()}
 }
 
 // NewChapter creates a draft chapter inheriting the project length target.

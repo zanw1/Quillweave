@@ -14,15 +14,21 @@ import (
 )
 
 type Engine struct {
-	mu      sync.Mutex
-	store   *Store
-	models  ModelSettings
-	closed  bool
-	jobsMu  sync.Mutex
-	jobs    map[string]*Job
-	ctx     context.Context
-	cancel  context.CancelFunc
-	workers sync.WaitGroup
+	mu            sync.Mutex
+	store         *Store
+	models        ModelSettings
+	closed        bool
+	jobsMu        sync.Mutex
+	jobs          map[string]*Job
+	ctx           context.Context
+	cancel        context.CancelFunc
+	workers       sync.WaitGroup
+	integrations  IntegrationSettings
+	owner         *runtimeOwner
+	transfersMu   sync.Mutex
+	transfers     map[string]*archiveTransfer
+	searchKeys    map[string]searchSecret
+	searchRuntime searchRuntime
 }
 type arguments struct {
 	fields map[string]json.RawMessage
@@ -48,7 +54,33 @@ func NewEngine(path string) (*Engine, error) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Engine{store: store, models: models, jobs: map[string]*Job{}, ctx: ctx, cancel: cancel}, nil
+	integrations, err := store.IntegrationSettings()
+	if err != nil {
+		cancel()
+		store.Close()
+		return nil, err
+	}
+	owner, err := openRuntimeOwner(store.path)
+	if err != nil {
+		cancel()
+		store.Close()
+		return nil, err
+	}
+	engine := &Engine{store: store, models: models, jobs: map[string]*Job{}, ctx: ctx, cancel: cancel, integrations: integrations, owner: owner, searchKeys: map[string]searchSecret{}}
+	if err := engine.refreshSearchCompatLocked(); err != nil {
+		cancel()
+		store.Close()
+		owner.lock.Close()
+		return nil, err
+	}
+	if err := engine.reconcileJobsLocked(); err != nil {
+		cancel()
+		owner.lock.Close()
+		os.RemoveAll(owner.dir)
+		store.Close()
+		return nil, err
+	}
+	return engine, nil
 }
 
 // Close cancels requests, waits for workers, and then closes the database.
@@ -62,7 +94,12 @@ func (engine *Engine) Close() error {
 	engine.cancel()
 	engine.mu.Unlock()
 	engine.workers.Wait()
-	return engine.store.Close()
+	engine.mu.Lock()
+	transferErr := engine.cleanupArchiveTransfers()
+	recoveryErr := engine.reconcileJobsLocked()
+	runtimeErr := engine.closeRuntime()
+	engine.mu.Unlock()
+	return errors.Join(recoveryErr, runtimeErr, transferErr, engine.store.Close())
 }
 
 // refreshModelsLocked refreshes persistent metadata under engine.mu and merges matching process-local keys.
@@ -222,6 +259,9 @@ func settingsView(models ModelSettings) map[string]any {
 
 // Dispatch serves the shared business commands for desktop and HTTP transports.
 func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any, err error) {
+	if len(raw) > 45_000_000 {
+		return nil, errors.New("The request frame is too large. Use the streaming backup transfer")
+	}
 	if len(raw) == 0 {
 		raw = json.RawMessage("null")
 	}
@@ -239,12 +279,24 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 			err = args.err
 		}
 	}()
+	if IsSearchCommand(command) {
+		return engine.dispatchSearch(command, raw, args)
+	}
 	switch command {
+	case "begin_archive_export", "read_archive_chunk", "begin_archive_import", "write_archive_chunk", "complete_archive_import", "finish_archive_transfer", "import_archive":
+		return engine.archiveCommand(command, args)
+	case "studio", "save_studio", "save_plan", "delete_plan", "create_planned_chapters", "save_memory", "save_decision", "review_proposal", "list_conversations", "create_conversation", "update_conversation", "fork_conversation", "get_conversation", "get_integrations", "save_integrations", "search_web", "test_search", "retain_external", "recall_external", "reflect_external", "evaluate_policy", "list_experiments", "record_experiment", "writing_skills":
+		return engine.studioCommand(command, args, raw)
 	case "start_ai":
 		var request AIRequest
 		if decodeJSON(raw, &request) != nil {
 			return nil, errors.New("The AI request is incomplete")
 		}
+		selection, selectionErr := decodeSearchSelection(args.fields["search_selection"])
+		if selectionErr != nil {
+			return nil, selectionErr
+		}
+		request.SearchSelection = selection
 		return engine.start(request)
 	case "test_model":
 		id := args.optionalString("profile_id")
@@ -253,13 +305,29 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		return engine.discoverModels(raw)
 	case "get_job":
 		id := args.text("job_id")
-		engine.jobsMu.Lock()
-		defer engine.jobsMu.Unlock()
-		job := engine.jobs[id]
-		if job == nil {
-			return nil, errors.New("The task is unavailable or the app restarted. Check task history")
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		if engine.closed {
+			engine.jobsMu.Lock()
+			defer engine.jobsMu.Unlock()
+			if job := engine.jobs[id]; job != nil {
+				return job.snapshot(), nil
+			}
+			return nil, errors.New("The application is closing")
 		}
-		return job.snapshot(), nil
+		recoveryErr := engine.reconcileJobsLocked()
+		engine.jobsMu.Lock()
+		job := engine.jobs[id]
+		if job != nil && (job.Status == "running" || job.pendingFinal != nil) {
+			snapshot := job.snapshot()
+			engine.jobsMu.Unlock()
+			return snapshot, nil
+		}
+		engine.jobsMu.Unlock()
+		if recoveryErr != nil {
+			return nil, recoveryErr
+		}
+		return engine.loadStoredJob(id)
 	case "cancel_ai":
 		id := args.text("job_id")
 		engine.jobsMu.Lock()
@@ -305,7 +373,7 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		engine.jobsMu.Lock()
 		defer engine.jobsMu.Unlock()
 		for _, job := range engine.jobs {
-			if job.ProjectID == id && job.Status == "running" {
+			if job.ProjectID == id && (job.Status == "running" || job.pendingFinal != nil) {
 				return nil, errors.New("This project has a running AI task. Stop it and wait for it to finish before deleting")
 			}
 		}
@@ -399,6 +467,7 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 				return err
 			}
 			project.Chapters = append(project.Chapters, chapter)
+			project.Studio.Stage = "writing"
 			return nil
 		})
 	case "save_chapter":
@@ -546,36 +615,6 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 			return nil, err
 		}
 		return project, nil
-	case "import_archive":
-		content := args.text("content")
-		if args.err != nil {
-			return nil, args.err
-		}
-		if len(content) > 40_000_000 {
-			return nil, errors.New("The backup exceeds the 40 MB import limit")
-		}
-		var value any
-		if decodeJSON([]byte(content), &value) != nil {
-			return nil, errors.New("The backup is not valid JSON")
-		}
-		archive, _ := value.(map[string]any)
-		if archive["format"] != "quillweave-1" {
-			return nil, errors.New("Unsupported backup format")
-		}
-		var project Project
-		if decodeJSON(rawMessage(archive["project"]), &project) != nil {
-			return nil, errors.New("The backup is incomplete")
-		}
-		if err := validateProject(&project); err != nil {
-			return nil, err
-		}
-		project.ID = newID()
-		project.Revision = 0
-		project.UpdatedAt = now()
-		if err := engine.store.Insert(&project); err != nil {
-			return nil, err
-		}
-		return project, nil
 	case "export":
 		project, err := engine.store.Get(args.text("project_id"))
 		if err != nil {
@@ -585,15 +624,10 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		filename, content := "", ""
 		switch format {
 		case "archive":
-			filename = project.Title + ".quillweave.json"
-			var buffer bytes.Buffer
-			encoder := json.NewEncoder(&buffer)
-			encoder.SetIndent("", "  ")
-			encoder.SetEscapeHTML(false)
-			if err := encoder.Encode(map[string]any{"format": "quillweave-1", "project": project}); err != nil {
+			filename, content, err = engine.store.legacyArchiveText(engine.ctx, project.ID)
+			if err != nil {
 				return nil, err
 			}
-			content = strings.TrimSuffix(buffer.String(), "\n")
 		case "manuscript":
 			filename = project.Title + ".md"
 			chapters := []string{}
@@ -634,6 +668,7 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		if err := engine.store.SaveModelSettings(next, engine.models.Revision); err != nil {
 			return nil, err
 		}
+		engine.invalidateSearchModelsLocked(engine.models, next, updates)
 		engine.models = next
 		return settingsView(engine.models), nil
 	case "set_project_models":
@@ -664,22 +699,15 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		if decodeJSON(raw, &request) != nil {
 			return nil, errors.New("The AI request is incomplete")
 		}
-		project, err := engine.store.Get(request.ProjectID)
+		prepared, err := engine.prepareTaskLocked(request, true)
 		if err != nil {
 			return nil, err
 		}
-		if err := engine.refreshModelsLocked(); err != nil {
-			return nil, err
+		if prepared.prior != "" {
+			job, err := engine.loadJob(prepared.prior, request.ProjectID)
+			return job.Prompt, err
 		}
-		budget := 24000
-		if model, err := engine.models.Select(&project, request.Action); err == nil {
-			budget = int(model.Config.ContextChars)
-			request, err = engine.restoreProviderHistory(request, model.Config, model.ProfileID)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return prepareAI(&project, request, budget)
+		return prepared.prompt, nil
 	case "get_runs":
 		return engine.store.Runs(args.text("project_id"))
 	default:
@@ -757,6 +785,9 @@ func saveEntity(project *Project, raw json.RawMessage) error {
 
 // validateProject validates chapter, source, and entity identity before importing a complete project.
 func validateProject(project *Project) error {
+	if err := validateStudio(&project.Studio); err != nil {
+		return err
+	}
 	if _, err := validateName(project.Title); err != nil {
 		return err
 	}

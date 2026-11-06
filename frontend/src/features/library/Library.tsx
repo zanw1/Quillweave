@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
 import { useRef, useState } from "react";
 import {
@@ -16,6 +17,7 @@ import {
   Empty,
   ErrorBox,
   Modal,
+  RequiredLabel,
 } from "../../components/ui";
 import { Assistant } from "../assistant/Assistant";
 import type { ContextItem, Project, Source } from "../../domain/types";
@@ -139,7 +141,9 @@ export function Library({
               aria-label={t("Search sources")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={t("Search keywords across the project, character facts, and sources…")}
+              placeholder={t(
+                "Search keywords across the project, character facts, and sources…",
+              )}
             />
           </label>
           <Button primary disabled={busy} type="submit">
@@ -177,7 +181,9 @@ export function Library({
             ) : (
               <Empty
                 title={t("No matching excerpts")}
-                detail={t("Try a character, location, or a more specific keyword.")}
+                detail={t(
+                  "Try a character, location, or a more specific keyword.",
+                )}
               />
             )}
           </div>
@@ -211,7 +217,8 @@ export function Library({
                       <Badge>{t(kinds[source.category])}</Badge>
                     </td>
                     <td>
-                      {wordCount(source.content).toLocaleString()}{" "}{t("characters")}
+                      {wordCount(source.content).toLocaleString()}{" "}
+                      {t("characters")}
                     </td>
                     <td className="muted">{date(source.created_at)}</td>
                     <td>
@@ -231,7 +238,9 @@ export function Library({
         ) : (
           <Empty
             title={t("Build a library for your story")}
-            detail={t("Import TXT or Markdown, or paste source text and its citation. Sources are stored locally and sent to your model when you analyze them.")}
+            detail={t(
+              "Import TXT or Markdown, or paste source text and its citation. Sources are stored locally and sent to your model when you analyze them.",
+            )}
           >
             <Button onClick={() => setAdding(true)}>
               <IconPlus size={17} />
@@ -250,7 +259,7 @@ export function Library({
             >
               <div className="form-grid">
                 <label>
-                  {t("Source title")}
+                  <RequiredLabel>{t("Source title")}</RequiredLabel>
                   <input
                     autoFocus
                     value={draft.title}
@@ -262,7 +271,7 @@ export function Library({
                 </label>
                 <label>
                   {t("Category")}
-                  <select
+                  <Select
                     value={draft.category}
                     onChange={(e) =>
                       setDraft({ ...draft, category: e.target.value })
@@ -271,7 +280,7 @@ export function Library({
                     <option value="research">{t("Reference")}</option>
                     <option value="craft">{t("Writing methods")}</option>
                     <option value="world">{t("Worldbuilding")}</option>
-                  </select>
+                  </Select>
                 </label>
               </div>
               <label>
@@ -297,16 +306,21 @@ export function Library({
                   onChange={(e) => void readFile(e.target.files?.[0])}
                 />
               </div>
-              <textarea
-                className="source-input"
-                aria-label={t("Source content")}
-                value={draft.content}
-                onChange={(e) =>
-                  setDraft({ ...draft, content: e.target.value })
-                }
-                placeholder={t("Paste material you can use, including its author, publication date, and original URL…")}
-                required
-              />
+              <label>
+                <RequiredLabel>{t("Source content")}</RequiredLabel>
+                <textarea
+                  className="source-input"
+                  aria-label={t("Source content")}
+                  value={draft.content}
+                  onChange={(e) =>
+                    setDraft({ ...draft, content: e.target.value })
+                  }
+                  placeholder={t(
+                    "Paste material you can use, including its author, publication date, and original URL…",
+                  )}
+                  required
+                />
+              </label>
               {error && <ErrorBox>{error}</ErrorBox>}
               <div className="modal-actions">
                 <Button onClick={() => setAdding(false)}>{t("Cancel")}</Button>
@@ -331,7 +345,9 @@ export function Library({
           >
             <div className="drawer-subtitle">
               <Badge>{t(kinds[selected.category])}</Badge>
-              <span>{wordCount(selected.content)}{" "}{t("characters")}</span>
+              <span>
+                {wordCount(selected.content)} {t("characters")}
+              </span>
             </div>
             {/^https?:\/\//.test(selected.url) && (
               <a
@@ -340,7 +356,7 @@ export function Library({
                 target="_blank"
                 rel="noreferrer"
               >
-                {t("Open original source")}{" "}<IconExternalLink size={16} />
+                {t("Open original source")} <IconExternalLink size={16} />
               </a>
             )}
             <pre className="source-text">{selected.content}</pre>
@@ -356,7 +372,9 @@ export function Library({
                 {t("Compile this source with AI")}
               </Button>
               <p className="muted">
-                {t("The complete source is analyzed in chunks. Proposed facts enter the Wiki review queue.")}
+                {t(
+                  "The complete source is analyzed in chunks. Proposed facts enter the Wiki review queue.",
+                )}
               </p>
             </div>
           </Drawer>

@@ -1,0 +1,205 @@
+/** Search settings, execution evidence and provider errors share the persisted interface language. */
+export const zhSearch: Record<string, string> = {
+  Profile: "配置",
+  Reload: "重新加载",
+  Actions: "操作",
+  Default: "默认",
+  Remove: "移除",
+  Retrieved: "获取时间",
+  "External memory settings": "外部记忆设置",
+  "Save memory service": "保存记忆服务",
+  "Account region": "账户区域",
+  "Actual engine": "实际引擎",
+  "Add fallback search profile": "添加备用搜索配置",
+  "Add search profile": "添加搜索配置",
+  "All search services": "全部搜索服务",
+  "Allowed sites": "限定网站",
+  "Choose a saved profile": "选择已保存的配置",
+  "Choose search independently from writing, then reuse it in discussion and research.":
+    "搜索服务可独立于写作模型选择，并用于讨论和资料研究。",
+  "Content truncated": "内容已截断",
+  "Credential source": "密钥来源",
+  "DeepSeek search": "DeepSeek 搜索",
+  "Delete search profile": "删除搜索配置",
+  "Default search profile": "默认搜索配置",
+  'Delete search profile "{0}"': "删除搜索配置“{0}”",
+  'Delete search profile "{0}"?': "确定删除搜索配置“{0}”？",
+  "Disable web search": "禁止联网搜索",
+  "Do not switch automatically": "不自动切换",
+  "Enable this search profile": "启用此搜索配置",
+  "Enable web search": "启用联网搜索",
+  "Enable web search before testing": "请先启用联网搜索再测试",
+  "Endpoint not configured": "服务地址未配置",
+  "Engine default": "引擎默认值",
+  "Enter a separate key": "填写独立密钥",
+  "Excluded sites": "排除网站",
+  "Executed query": "实际执行的查询",
+  "Fallback policy": "备用策略",
+  "Filter search profiles": "筛选搜索配置",
+  "Filter search service": "筛选搜索服务",
+  "Find the official documentation for this search service":
+    "查找此搜索服务的官方文档",
+  "Include page content": "获取网页内容",
+  "Inherit default search profile": "继承默认搜索配置",
+  "Inherit model and default search": "继承模型关联与默认搜索配置",
+  "International API platform": "国际 API 平台",
+  "Keys remain in this app process. Restarting requires entering them again.":
+    "密钥仅保存在当前应用进程中，重启后需重新填写。",
+  "Kimi API regions and Kimi Code use separate credentials. Choose the endpoint matching your API account.":
+    "Kimi 各 API 区域与 Kimi Code 使用独立密钥，请选择与 API 账户匹配的地址。",
+  "Loading search settings…": "正在加载搜索配置…",
+  "Mainland API platform": "中国大陆 API 平台",
+  "Maximum page fetches": "最多读取网页次数",
+  "Maximum search attempts": "最多搜索尝试次数",
+  "Model tokens": "模型输入 / 输出词元",
+  "Move fallback {0} up": "上移第 {0} 个备用配置",
+  "Move up": "上移",
+  "Native search controls the returned result count.":
+    "原生搜索由供应商决定返回数量，本地仅保留配置数量以内的来源。",
+  "Next page": "下一页",
+  "No matching search profiles": "没有匹配的搜索配置",
+  "Not reported": "未报告",
+  "Official search documentation": "搜索服务官方文档",
+  "Ordered fallback on transient failures": "暂时失败时按顺序切换",
+  "Preserved legacy fallback rules": "保留旧版备用规则",
+  "Previous page": "上一页",
+  "Published after": "发布时间起点",
+  "Published before": "发布时间终点",
+  "Read original page": "读取原文",
+  "Reload saved policy": "重新加载已保存策略",
+  "Reported cost": "供应商报告费用",
+  "Reported fetches": "供应商报告读取次数",
+  "Reported searches": "供应商报告搜索次数",
+  "Require a hard search limit": "要求严格搜索次数上限",
+  "Research and agent tools use this association. Ordinary prose requests do not search automatically.":
+    "资料研究和 Agent 工具使用此关联，普通写作请求不会自动搜索。",
+  "Research answer": "研究模型回答",
+  "Research question": "研究问题",
+  "Research model connection": "研究模型连接",
+  "Reserved attempts": "已预留尝试次数",
+  "Results per search": "每次保留来源数",
+  "Retrieved content budget (characters)": "来源内容总量上限（字符）",
+  "Reuse a matching model connection": "复用同服务模型的密钥",
+  "Save a model connection for this service in Model profiles first. Custom gateways must match the search endpoint.":
+    "请先在模型配置中保存同服务的模型连接，自定义网关需与搜索地址匹配。",
+  "Save model settings": "保存模型设置",
+  "Save search association": "保存搜索关联",
+  "Save search policy": "保存搜索策略",
+  "Save search profile": "保存搜索配置",
+  "Save this model profile before associating search.":
+    "请先保存模型配置，再关联搜索。",
+  "Search connections": "搜索连接",
+  "Search depth": "搜索深度",
+  "Search engine": "搜索引擎",
+  "Search language": "搜索语言",
+  "Search mode": "搜索模式",
+  "Search policy": "搜索策略",
+  "Search profile": "搜索配置",
+  "Search profile for this request": "本次请求的搜索配置",
+  "Search profile name": "搜索配置名称",
+  "Search profile name…": "搜索配置名称…",
+  "Search profile pagination": "搜索配置分页",
+  "Search profile saved": "搜索配置已保存",
+  "Search profiles": "搜索配置",
+  "Search run status": "搜索运行状态",
+  "Search service": "搜索服务",
+  "Search settings": "搜索设置",
+  "Search services and writing models can be chosen independently. Testing may incur search and model charges.":
+    "搜索服务与写作模型可独立选择，测试可能产生搜索和模型费用。",
+  "Search settings saved": "搜索设置已保存",
+  "Select a compatible model connection": "选择兼容的模型连接",
+  Service: "服务",
+  "Service / mode": "服务 / 模式",
+  "Service default": "服务默认值",
+  "Service endpoint": "服务地址",
+  "Showing {0}–{1} of {2}": "第 {0}–{1} 条，共 {2} 条",
+  Started: "开始时间",
+  "Test verdict": "测试结论",
+  "Testing may incur charges": "测试可能产生费用",
+  "The global switch overrides every model and request. New paid connections start disabled.":
+    "全局开关优先于所有模型和单次请求，新付费服务默认停用。",
+  "The latest test is historical or inconclusive. A new process or changed configuration requires testing again.":
+    "最近测试为历史记录或证据不足，重启应用或修改配置后需重新测试。",
+  "The latest test matches this configuration and current process credentials.":
+    "最近测试与当前配置及本进程密钥匹配。",
+  "The model answered without verified browsing. This is not a successful web-search test.":
+    "模型给出了回答，但没有可核验的联网证据，本次不能判定为搜索测试成功。",
+  "This citation has no readable excerpt. Read the page before adopting it.":
+    "此引用没有可读摘录，请先读取原文再采纳。",
+  "This native or automatic route cannot guarantee a hard search count. Strict mode blocks execution; use standalone search or a pinned engine.":
+    "此原生或自动路由不能保证严格搜索次数，严格模式会阻止执行；可改用独立搜索或固定引擎。",
+  "This permission applies to the next Agent request. Research citations remain separate from confirmed story facts.":
+    "此选择适用于下一次 Agent 请求，检索引用仍需审阅后才能成为故事事实。",
+  "Unavailable profile": "配置不可用",
+  "Web search disabled. Accepted supplier work may still be billed.":
+    "联网搜索已关闭，供应商已经接受的工作仍可能计费。",
+  "Web search for this model": "此模型的联网搜索",
+  "Web search is disabled globally. Open Search settings to enable it.":
+    "联网搜索已全局关闭，可在搜索设置中启用。",
+  "Standalone search": "独立搜索 API",
+  "Basic · result list": "Basic · 搜索结果列表",
+  "Pro · source passages": "Pro · 来源段落",
+  "Native model browsing": "模型原生联网",
+  "Search server tool": "服务端搜索工具",
+  "Automatic engine": "自动选择引擎",
+  "Upstream native search": "上游模型原生搜索",
+  "Waiting to search": "等待搜索",
+  Searching: "正在搜索",
+  "Search finished": "搜索已完成",
+  "Connected, no results": "连接成功，暂无结果",
+  "Search failed": "搜索失败",
+  "Search cancelled": "搜索已取消",
+  "Search interrupted": "搜索已中断",
+  "Search verified": "搜索证据已核验",
+  "Search not verified": "未核验搜索执行",
+  "Search excerpt": "搜索摘录",
+  "Provider-selected passage": "供应商选取的段落",
+  "Fetched page": "已读取网页内容",
+  "Provider summary": "供应商生成的摘要",
+  "Search off": "搜索关闭",
+  "Search choice": "搜索选择",
+  "Cancel search": "取消搜索",
+  "Search operation failed": "搜索操作失败",
+  "The local search service is unavailable": "本地搜索服务不可用",
+  "Search settings changed. Reload before saving; your edits are retained":
+    "搜索设置已发生变化，请重新加载后保存；当前编辑已保留。",
+  "Model connections changed. Reload before saving; your edits are retained":
+    "模型连接已发生变化，请重新加载后保存；当前编辑已保留。",
+  "Enter the API key for this search service before running":
+    "请先填写此搜索服务的 API 密钥。",
+  "Enter the search API key for this process before running":
+    "请先填写当前应用进程使用的搜索 API 密钥。",
+  "Enable web search before searching or testing a connection":
+    "请先启用联网搜索，再搜索或测试连接。",
+  "This task or model explicitly disables web search":
+    "本次任务或模型已明确禁止联网搜索。",
+  "The selected search profile is disabled": "所选搜索配置已停用。",
+  "The shared search budget is exhausted": "共享搜索次数已用完。",
+  "The parent task's model call budget is exhausted":
+    "当前任务的模型调用次数已用完。",
+  "Search was cancelled; an accepted supplier request may still be billed":
+    "搜索已取消，供应商已接受的请求仍可能计费。",
+  "Search was cancelled; accepted supplier work may still be billed":
+    "搜索已取消，供应商已接受的工作仍可能计费。",
+  "This search profile is still the default or a fallback":
+    "此搜索配置仍是默认或备用配置，请先解除关联。",
+  "A model still references this search profile":
+    "仍有模型关联此搜索配置，请先解除关联。",
+  "Cancel the active search before deleting its profile":
+    "请先取消正在运行的搜索，再删除配置。",
+  "Enter a unique search profile name of 1–80 characters":
+    "请填写 1–80 字符的唯一搜索配置名称。",
+  "Search limits exceed the selected service's supported range":
+    "搜索限额超出此服务支持的范围。",
+  "The model returned an answer without verified web-tool execution":
+    "模型返回了回答，但没有可核验的联网工具执行证据。",
+  "This route cannot guarantee the search limit; choose standalone search or a pinned engine":
+    "此路由无法保证搜索次数上限，请选择独立搜索或固定引擎。",
+  "The search credential changed before execution":
+    "执行前搜索密钥已变化，请重新发起请求。",
+  "Search service returned an unexpected result schema":
+    "搜索服务返回了不兼容的结果格式。",
+  "The research model did not finish its response": "研究模型未完成响应。",
+  "This project has an active search. Cancel it before deleting":
+    "此作品有正在运行的搜索，请先取消再删除。",
+};

@@ -1,0 +1,619 @@
+@media (max-width: 640px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+  .topbar {
+    height: 62px;
+    padding: 0 16px;
+  }
+  .breadcrumbs {
+    gap: 9px;
+  }
+  .breadcrumbs > button:not(.icon-button),
+  .breadcrumbs > span {
+    display: none;
+  }
+  .topbar-right {
+    gap: 14px;
+  }
+  .workspace-avatar {
+    width: 29px;
+    height: 29px;
+  }
+  .home-page {
+    padding: 22px 18px;
+  }
+  .welcome-banner {
+    padding: 27px 23px;
+    border-radius: 13px;
+  }
+  .welcome-banner h1 {
+    font-size: 29px;
+  }
+  .welcome-description br {
+    display: initial;
+  }
+  .welcome-actions {
+    gap: 15px;
+    flex-wrap: wrap;
+  }
+  .welcome-actions > .text-button {
+    font-size: 11px;
+  }
+  .projects-title {
+    margin-top: 28px;
+  }
+  .projects-tools {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .projects-tools > .search {
+    min-width: 150px;
+  }
+  .projects-tools > .button {
+    font-size: 11px;
+  }
+  .projects-table th,
+  .projects-table td {
+    padding: 15px 12px;
+  }
+  .projects-table th:nth-child(4),
+  .projects-table td:nth-child(4) {
+    display: none;
+  }
+  .project-name {
+    gap: 10px;
+  }
+  .project-name strong {
+    font-size: 13px;
+  }
+  .project-icon {
+    width: 34px;
+    height: 39px;
+  }
+  .projects-table td {
+    height: 80px;
+  }
+  .project-grid {
+    grid-template-columns: 1fr;
+  }
+  .home-footnote {
+    line-height: 1.7;
+    align-items: center;
+    font-size: 9px;
+  }
+  .chapter-nav {
+    width: 110px;
+    min-width: 110px;
+    padding: 14px 5px;
+  }
+  .chapter-nav-title {
+    font-size: 10px;
+    padding-left: 7px;
+  }
+  .volume-label {
+    margin: 18px 8px 10px;
+  }
+  .chapter-item {
+    padding: 13px 7px;
+    gap: 5px;
+  }
+  .chapter-number {
+    display: none;
+  }
+  .chapter-item strong {
+    font-size: 10px;
+  }
+  .chapter-item small {
+    font-size: 8px;
+  }
+  .new-chapter {
+    font-size: 9px;
+    padding: 15px 7px;
+    gap: 4px;
+  }
+  .chapter-nav-footer {
+    display: none;
+  }
+  .manuscript {
+    margin: 12px;
+    padding: 24px 18px;
+  }
+  .chapter-title-input {
+    font-size: 20px;
+  }
+  .manuscript-body {
+    font-size: 16px;
+  }
+  .editor-toolbar {
+    padding: 10px 12px;
+  }
+  .editor-toolbar .toolbar-actions {
+    gap: 4px;
+  }
+  .editor-toolbar .toolbar-actions .icon-button {
+    width: 27px;
+  }
+  .editor-toolbar .button {
+    padding: 6px 9px;
+  }
+  .editor-toolbar .button svg {
+    display: none;
+  }
+  .editor-toolbar > div > span:first-child {
+    font-size: 10px;
+  }
+  .editor-footer {
+    padding-inline: 12px;
+  }
+  .manuscript-meta {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .manuscript-meta .text-button {
+    margin-left: 0;
+  }
+  .workspace-page {
+    padding: 25px 18px;
+  }
+  .section-title h1 {
+    font-size: 22px;
+  }
+  .section-title {
+    gap: 10px;
+    margin-bottom: 25px;
+  }
+  .section-title p:not(.eyebrow) {
+    font-size: 11px;
+  }
+  .section-title > .button {
+    font-size: 11px;
+    padding: 8px 10px;
+  }
+  .tabs {
+    gap: 18px;
+  }
+  .tabs > button {
+    font-size: 11px;
+    gap: 5px;
+  }
+  .tabs > button svg {
+    display: none;
+  }
+  .list-toolbar {
+    flex-wrap: wrap;
+  }
+  .list-toolbar .search {
+    flex: 1;
+    min-width: 140px;
+  }
+  .list-toolbar > .muted {
+    display: none;
+  }
+  .wiki-page th:nth-child(5),
+  .wiki-page td:nth-child(5) {
+    display: none;
+  }
+  .wiki-page td,
+  .wiki-page th {
+    padding: 15px 10px;
+  }
+  .entity-link {
+    gap: 10px;
+  }
+  .entity-link strong {
+    font-size: 12px;
+  }
+  .fact-card {
+    padding: 16px;
+  }
+  .fact-meta {
+    gap: 6px;
+  }
+  .fact-footer {
+    flex-wrap: wrap;
+  }
+  .timeline {
+    padding-left: 23px;
+  }
+  .timeline-marker {
+    left: -38px;
+  }
+  .method-grid {
+    grid-template-columns: 1fr;
+  }
+  .method-card {
+    padding: 23px;
+  }
+  .methods-note {
+    padding: 18px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .settings-card-heading {
+    gap: 12px;
+  }
+  .settings-card-heading p {
+    font-size: 10px;
+  }
+  .settings-card-heading .soft-icon {
+    flex-shrink: 0;
+  }
+  .drawer {
+    width: min(94vw, 640px);
+  }
+  .drawer-body {
+    padding: 25px 20px;
+  }
+  .drawer > header {
+    padding: 19px 20px;
+  }
+  .drawer-body > h2 {
+    font-size: 24px;
+  }
+  .modal-content {
+    padding: 22px;
+  }
+  .version-comparison {
+    grid-template-columns: 1fr;
+  }
+  .planning-content {
+    padding: 25px 20px;
+  }
+  .path-input {
+    flex-wrap: wrap;
+  }
+  .path-input > input {
+    min-width: 100%;
+  }
+}
+/* Use small type for secondary information and readable sizes for primary actions. */
+.sidebar {
+  padding-top: 22px;
+}
+.workspace-picker {
+  margin-top: 23px;
+  margin-bottom: 3px;
+}
+.sidebar-section-label {
+  padding-top: 18px;
+  padding-bottom: 10px;
+}
+.nav-item {
+  padding-block: 11px;
+}
+.sidebar-bottom {
+  padding-top: 20px;
+}
+.local-status {
+  padding-block: 20px;
+  margin-top: 7px;
+}
+.volume-label,
+.chapter-number,
+.chapter-nav-title,
+.chapter-item small,
+.assistant-meta,
+.composer-toolbar select,
+.composer-toolbar .text-button,
+.suggestion,
+.assistant-composer textarea,
+.answer-text,
+.user-message > p,
+.composer-footer .button,
+.fact-card h4,
+.fact-card blockquote,
+.table-description {
+  font-size: 12px;
+}
+.chapter-item strong,
+.nav-item,
+.assistant-welcome > p:not(.eyebrow),
+.project-name small,
+.entity-link small {
+  font-size: 13px;
+}
+.composer-note,
+.composer-footer > span,
+.editor-footer,
+.chapter-nav-footer,
+.manuscript-meta,
+.manuscript-meta select,
+.manuscript-meta .text-button,
+.fact-footer,
+.fact-footer > .text-button,
+.review-actions .button,
+.home-footnote {
+  font-size: 11px;
+}
+.assistant-welcome .eyebrow {
+  font-size: 10px;
+}
+@media (max-height: 780px) and (min-width: 1001px) {
+  .assistant-welcome {
+    padding-top: 25px;
+  }
+  .assistant-welcome .soft-icon {
+    margin-bottom: 15px;
+  }
+  .assistant-welcome h2 {
+    font-size: 25px;
+  }
+  .suggestions {
+    margin-top: 20px;
+    padding-top: 15px;
+  }
+  .sidebar-section-label {
+    padding-top: 14px;
+  }
+  .nav-item {
+    padding-block: 10px;
+  }
+  .workspace-picker {
+    margin-top: 17px;
+  }
+}
+@media (max-width: 640px) {
+  .chapter-item strong {
+    font-size: 11px;
+  }
+  .chapter-item small {
+    font-size: 10px;
+  }
+  .editor-footer {
+    font-size: 10px;
+  }
+  .home-footnote {
+    font-size: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}
+@media (max-width: 640px) {
+  .app:not(.sidebar-collapsed) > .sidebar {
+    display: flex;
+    position: fixed;
+    top: 62px;
+    bottom: 0;
+    left: 0;
+    width: 230px;
+    z-index: 31;
+  }
+  .app:not(.sidebar-collapsed) > .sidebar-shade {
+    display: block;
+    position: fixed;
+    inset: 62px 0 0;
+    background: #25334b36;
+    z-index: 30;
+  }
+}
+
+/* Keep explanations and usable actions readable, reserving pale tones for decorative or disabled content. */
+.section-title p:not(.eyebrow),
+.welcome-description,
+.table-description,
+.project-card-main > p,
+.method-card > p,
+.drawer-section > p,
+.drawer-lead,
+.source-text,
+.context-item,
+.trajectory-title p,
+.trajectory-main > .muted,
+.assistant-welcome > p:not(.eyebrow),
+.fact-card blockquote,
+.source-quote,
+.settings-card-heading p,
+label small,
+.table-footer,
+.home-footnote,
+.composer-note,
+.editor-footer,
+.search-caption {
+  color: #63758e;
+}
+.suggestion,
+.new-chapter,
+.list-toolbar > select,
+.filter-chips > button,
+.tabs > button,
+.composer-toolbar select,
+.export-menu,
+.workspace-picker > span:nth-child(2),
+.chapter-nav-title {
+  color: #5f7390;
+}
+.chapter-item small,
+.project-name small,
+.entity-link small,
+.cell-sub,
+.fact-meta,
+.fact-footer,
+.drawer-subtitle,
+.assistant-meta,
+.manuscript-meta,
+.manuscript-meta select,
+.method-card h4,
+.method-card-footer,
+.library-search + p {
+  color: #69788f;
+}
+
+/* Present story memory and checks with evidence cards and clear review actions. */
+.tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+}
+.tabs > button {
+  flex-shrink: 0;
+}
+.story-memory {
+  max-width: 1050px;
+}
+.story-memory .info-strip {
+  align-items: flex-start;
+  gap: 14px;
+}
+.story-memory .info-strip > div {
+  flex: 1;
+}
+.story-memory .info-strip strong {
+  color: #4b6486;
+  font-size: 12px;
+}
+.story-memory .info-strip p {
+  margin: 6px 0 0;
+  color: #63758e;
+}
+.memory-intro {
+  margin: 30px 0 24px;
+}
+.memory-intro h2 {
+  font-size: 21px;
+  margin-bottom: 12px;
+}
+.memory-intro p {
+  font-size: 12px;
+  color: #63758e;
+}
+.memory-card {
+  border: 1px solid var(--line);
+  padding: 25px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+.memory-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+}
+.memory-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.memory-meta {
+  font-size: 11px;
+  color: #7b8da7;
+  margin: 12px 0 21px;
+}
+.memory-section {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+  margin-top: 18px;
+}
+.memory-section > p {
+  color: #4f637e;
+  line-height: 2;
+  font-size: 14px;
+}
+.memory-questions {
+  background: #f7f9fd;
+  padding: 15px 18px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: #63758e;
+  margin-bottom: 16px;
+}
+.memory-questions ul {
+  padding-left: 19px;
+  margin-bottom: 0;
+  line-height: 1.9;
+}
+.memory-section details {
+  color: #657c9e;
+  font-size: 12px;
+}
+.memory-section summary {
+  cursor: pointer;
+}
+.memory-evidence {
+  margin-top: 15px;
+  border: 1px solid var(--line);
+  padding: 15px;
+  border-radius: 7px;
+}
+.memory-evidence strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.memory-evidence blockquote {
+  border-left: 2px solid #c5d7f5;
+  margin: 12px 0;
+  padding-left: 13px;
+  line-height: 1.8;
+}
+.memory-evidence > span:last-child {
+  margin-left: 12px;
+  font-size: 11px;
+}
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+.memory-actions > .text-button {
+  margin-right: auto;
+}
+.health-finding {
+  display: flex;
+  gap: 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 21px;
+  margin-bottom: 15px;
+  color: #6d84a4;
+}
+.health-finding > div {
+  flex: 1;
+}
+.health-finding h3 {
+  color: #4e6584;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+.health-finding p {
+  font-size: 12px;
+  color: #63758e;
+  margin-bottom: 5px;
+}
+.health-finding > .badge {
+  align-self: flex-start;
+}
+.assistant-composer > .checkbox-label {
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+@media (max-width: 640px) {
+  .story-memory .info-strip {
+    flex-wrap: wrap;
+  }
+  .story-memory .info-strip > div {
+    min-width: 210px;
+  }
+  .memory-card {
+    padding: 18px;
+  }
+  .health-finding {
+    padding: 16px;
+    gap: 10px;
+  }
+  .health-finding > .badge {
+    display: none;
+  }
+}

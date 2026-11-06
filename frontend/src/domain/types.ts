@@ -1,3 +1,5 @@
+import type { AgentStep, StudioProposal, StudioState } from "./studio";
+
 export interface Version {
   id: string;
   created_at: string;
@@ -69,6 +71,7 @@ export interface Project {
   default_chapter_words: number;
   narrative_pov: string;
   model_overrides: Record<string, string>;
+  studio: StudioState;
 }
 export interface MemorySection {
   summary: string;
@@ -233,6 +236,7 @@ export interface Message {
   source_job_id?: string;
 }
 export interface Prompt {
+  warning?: string;
   messages: Message[];
   context: ContextItem[];
   source_hash: string;
@@ -252,6 +256,12 @@ export interface Job {
   created_at: string;
   model: string;
   prompt: Prompt;
+  session_id?: string;
+  language?: string;
+  steps?: AgentStep[];
+  proposals?: StudioProposal[];
+  calls?: number;
+  base_revision?: number;
 }
 export type Page =
   | "home"
@@ -280,6 +290,10 @@ export const factKinds: Record<string, string> = {
   knowledge_state: "Character knowledge",
 };
 export const actions: Record<string, string> = {
+  agent: "Creative partner",
+  naming: "Explore names and titles",
+  research: "Discuss research",
+  memory_update: "Update story memory",
   ask: "Discuss",
   continue: "Continue chapter",
   rewrite: "Rewrite chapter",

@@ -5,31 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Job struct {
-	ID              string `json:"id"`
-	ProjectID       string `json:"project_id"`
-	ChapterID       string `json:"chapter_id"`
-	Action          string `json:"action"`
-	Instruction     string `json:"instruction"`
-	Status          string `json:"status"`
-	Text            string `json:"text"`
-	Error           string `json:"error"`
-	Progress        string `json:"progress"`
-	CreatedAt       string `json:"created_at"`
-	Model           string `json:"model"`
-	Prompt          Prompt `json:"prompt"`
-	ctx             context.Context
-	cancel          context.CancelFunc
-	committing      bool
-	providerContext *providerContext
+	ID                   string           `json:"id"`
+	ProjectID            string           `json:"project_id"`
+	ChapterID            string           `json:"chapter_id"`
+	Action               string           `json:"action"`
+	Instruction          string           `json:"instruction"`
+	Status               string           `json:"status"`
+	Text                 string           `json:"text"`
+	Error                string           `json:"error"`
+	Progress             string           `json:"progress"`
+	CreatedAt            string           `json:"created_at"`
+	Model                string           `json:"model"`
+	Prompt               Prompt           `json:"prompt"`
+	SessionID            string           `json:"session_id,omitempty"`
+	Language             string           `json:"language,omitempty"`
+	Steps                []AgentStep      `json:"steps"`
+	Proposals            []StudioProposal `json:"proposals"`
+	Calls                int              `json:"calls"`
+	SearchSelection      *SearchSelection `json:"search_selection,omitempty"`
+	SearchModelProfileID string           `json:"search_model_profile_id,omitempty"`
+	BaseRevision         uint64           `json:"base_revision"`
+	checkpointedAt       time.Time
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	committing           bool
+	providerContext      *providerContext
+	ownerID              string
+	pendingFinal         *Job
 }
 
 type providerContext struct {
 	Fingerprint string `json:"fingerprint"`
 	Reasoning   string `json:"reasoning,omitempty"`
 	Encrypted   string `json:"encrypted,omitempty"`
+	VisibleText string `json:"visible_text,omitempty"`
 }
 
 // storedJob persists private context for completed planning turns in a separate local field.
@@ -41,7 +54,8 @@ func storedJob(job *Job) string {
 	return jsonText(struct {
 		Job
 		ProviderContext *providerContext `json:"provider_context,omitempty"`
-	}{Job: job.snapshot(), ProviderContext: private})
+		Owner           string           `json:"execution_owner,omitempty"`
+	}{Job: job.snapshot(), ProviderContext: private, Owner: job.ownerID})
 }
 
 // restoreProviderHistory restores completed planning context only for a matching project and model identity.
@@ -50,7 +64,7 @@ func (engine *Engine) restoreProviderHistory(request AIRequest, config ProviderC
 		return request, nil
 	}
 	request.History = append([]Message{}, request.History...)
-	for i := max(0, len(request.History)-8); i < len(request.History); i++ {
+	for i := max(0, len(request.History)-maxHistoryMessages); i < len(request.History); i++ {
 		message := &request.History[i]
 		if message.Role != "assistant" || message.SourceJobID == "" {
 			continue
@@ -61,13 +75,33 @@ func (engine *Engine) restoreProviderHistory(request AIRequest, config ProviderC
 		}
 		if private.Fingerprint == providerIdentity(config, profileID) && text == message.Content {
 			message.reasoningContent, message.encryptedContent = private.Reasoning, private.Encrypted
+			if private.VisibleText != "" {
+				message.Content = private.VisibleText
+			}
 		}
 	}
 	return request, nil
 }
 
+// retainProviderOutput binds private continuation state to the exact visible provider response.
+func (engine *Engine) retainProviderOutput(jobID string, selected SelectedModel, output modelOutput) {
+	if !preservesProviderContext(selected.Config) || (output.Reasoning == "" && output.Encrypted == "") {
+		return
+	}
+	engine.jobsMu.Lock()
+	defer engine.jobsMu.Unlock()
+	if current := engine.jobs[jobID]; current != nil {
+		current.providerContext = &providerContext{Fingerprint: providerIdentity(selected.Config, selected.ProfileID), Reasoning: output.Reasoning, Encrypted: output.Encrypted, VisibleText: output.Text}
+	}
+}
+
 // snapshot copies task output for synchronized encoding and background updates.
-func (job *Job) snapshot() Job { return *job }
+func (job *Job) snapshot() Job {
+	value := *job
+	value.Steps = append([]AgentStep{}, job.Steps...)
+	value.Proposals = append([]StudioProposal{}, job.Proposals...)
+	return value
+}
 
 // start enforces one active task per project and the four-task global limit.
 func (engine *Engine) start(request AIRequest) (any, error) {
@@ -76,56 +110,21 @@ func (engine *Engine) start(request AIRequest) (any, error) {
 	if engine.closed {
 		return nil, errors.New("The application is closing")
 	}
-	project, err := engine.store.Get(request.ProjectID)
+	prepared, err := engine.prepareTaskLocked(request)
 	if err != nil {
 		return nil, err
 	}
-	if err := engine.refreshModelsLocked(); err != nil {
-		return nil, err
+	if prepared.prior != "" {
+		return engine.loadJob(prepared.prior, request.ProjectID)
 	}
-	task := request.Action
-	if task == "wiki" {
-		task = "wiki_extract"
-	}
-	selected, err := engine.models.Select(&project, task)
-	if err != nil {
-		return nil, err
-	}
-	synthesis := selected
-	if request.Action == "wiki" {
-		synthesis, err = engine.models.Select(&project, "wiki_compile")
-		if err != nil {
-			return nil, err
-		}
-	}
-	prompt := Prompt{Messages: []Message{}, Context: []ContextItem{}}
-	if request.Action == "wiki" {
-		sourceID := request.SourceID
-		if sourceID == "" {
-			sourceID = request.ChapterID
-		}
-		source, _, ok := project.SourceText(sourceID)
-		if !ok {
-			return nil, errors.New("Select a chapter or source to analyze")
-		}
-		if strings.TrimSpace(source) == "" {
-			return nil, errors.New("There is no text to analyze")
-		}
-		prompt.SourceID = sourceID
-		prompt.SourceHash = hashText(source)
-		prompt.Chars = charCount(source)
-	} else {
-		request, err = engine.restoreProviderHistory(request, selected.Config, selected.ProfileID)
-		if err != nil {
-			return nil, err
-		}
-		prompt, err = prepareAI(&project, request, int(selected.Config.ContextChars))
-		if err != nil {
-			return nil, err
-		}
-	}
+	project, request := prepared.project, prepared.request
+	selected, synthesis, prompt, resumeText := prepared.selected, prepared.synthesis, prepared.prompt, prepared.resumeText
 	ctx, cancel := context.WithCancel(engine.ctx)
-	job := &Job{ID: newID(), ProjectID: request.ProjectID, ChapterID: request.ChapterID, Action: request.Action, Instruction: request.Instruction, Status: "running", Progress: "Connecting to the model…", CreatedAt: now(), Model: selected.ProfileName + " / " + selected.Config.Model, Prompt: prompt, ctx: ctx, cancel: cancel}
+	job := &Job{ID: newID(), ProjectID: request.ProjectID, ChapterID: request.ChapterID, Action: request.Action, Instruction: request.Instruction, Status: "running", Progress: "Connecting to the model…", CreatedAt: now(), Model: selected.ProfileName + " / " + selected.Config.Model, Prompt: prompt, ctx: ctx, cancel: cancel, SessionID: request.SessionID, Language: responseLanguage(&project, request.Language), BaseRevision: project.Revision, Steps: []AgentStep{}, Proposals: []StudioProposal{}}
+	job.Text = resumeText
+	job.SearchSelection = request.SearchSelection
+	job.SearchModelProfileID = selected.ProfileID
+	job.ownerID = engine.owner.id
 	if request.Action == "wiki" {
 		job.Model += " → " + synthesis.ProfileName + " / " + synthesis.Config.Model
 		if !request.Force {
@@ -170,12 +169,19 @@ func (engine *Engine) start(request AIRequest) (any, error) {
 			}
 		}
 	}
+	if err := engine.store.beginDurableJob(request, job); err != nil {
+		engine.jobsMu.Unlock()
+		cancel()
+		return nil, err
+	}
 	engine.jobs[job.ID] = job
 	result := job.snapshot()
 	engine.jobsMu.Unlock()
 	if job.Status == "done" {
 		cancel()
-		if err := engine.store.SaveRun(job.ID, job.ProjectID, storedJob(job)); err != nil {
+		engine.jobsMu.Lock()
+		defer engine.jobsMu.Unlock()
+		if err := engine.commitTerminalLocked(job); err != nil {
 			return nil, err
 		}
 		return result, nil
@@ -191,6 +197,21 @@ func (engine *Engine) appendText(id, text string) {
 	defer engine.jobsMu.Unlock()
 	if job := engine.jobs[id]; job != nil {
 		job.Text += text
+		if time.Since(job.checkpointedAt) >= time.Second {
+			job.checkpointedAt = time.Now()
+			if err := engine.store.SaveRun(job.ID, job.ProjectID, storedJob(job)); err != nil {
+				job.Error = "Unable to save a recovery checkpoint: " + err.Error()
+			}
+		}
+	}
+}
+
+// noteModelCall counts real model requests rather than inferring cost from task labels.
+func (engine *Engine) noteModelCall(id string) {
+	engine.jobsMu.Lock()
+	defer engine.jobsMu.Unlock()
+	if job := engine.jobs[id]; job != nil {
+		job.Calls++
 	}
 }
 
@@ -222,6 +243,7 @@ func (engine *Engine) executeJob(job Job, project Project, selected, synthesis S
 	}
 	if outcome == nil {
 		current.Status = "done"
+		current.Error = ""
 		current.Progress = progress
 	} else {
 		current.Status = "error"
@@ -230,9 +252,7 @@ func (engine *Engine) executeJob(job Job, project Project, selected, synthesis S
 		}
 		current.Error = outcome.Error()
 	}
-	if err := engine.store.SaveRun(current.ID, current.ProjectID, storedJob(current)); err != nil {
-		current.Error = "Unable to save task history: " + err.Error()
-	}
+	_ = engine.commitTerminalLocked(current)
 }
 
 // beginCommit shares the task lock with cancellation and marks the start of irrevocable Wiki commit.
@@ -254,17 +274,20 @@ func (engine *Engine) beginCommit(id string) error {
 // runJob validates both Wiki stages before atomically publishing knowledge.
 func (engine *Engine) runJob(job Job, project *Project, selected, synthesis SelectedModel) (string, error) {
 	config := selected.Config
+	project.requestLanguage = job.Language
+	project.taskLanguage = job.Language
+	if job.Action == "agent" {
+		return engine.runAgent(job, project, selected)
+	}
 	if job.Action != "wiki" {
+		engine.noteModelCall(job.ID)
 		output, err := streamModelOutput(job.ctx, config, job.Prompt.Messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return "", err
 		}
-		if conversationAction(job.Action) && preservesProviderContext(config) && (output.Reasoning != "" || output.Encrypted != "") {
-			engine.jobsMu.Lock()
-			if current := engine.jobs[job.ID]; current != nil {
-				current.providerContext = &providerContext{Fingerprint: providerIdentity(config, selected.ProfileID), Reasoning: output.Reasoning, Encrypted: output.Encrypted}
-			}
-			engine.jobsMu.Unlock()
+		engine.recordProposals(job.ID, output.Text, project)
+		if conversationAction(job.Action) {
+			engine.retainProviderOutput(job.ID, selected, output)
 		}
 		return "Generation complete. Review the result before applying it", nil
 	}
@@ -283,6 +306,7 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 		if uint64(messageChars(messages)) > config.ContextChars {
 			return "", errors.New("Character details and tracking focus exceed the context budget. Increase the budget")
 		}
+		engine.noteModelCall(job.ID)
 		response, err := streamModel(job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return "", err
@@ -320,6 +344,8 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 	if err != nil {
 		return "", err
 	}
+	latest.requestLanguage = job.Language
+	latest.taskLanguage = job.Language
 	if rulesHash(&latest) != rulesHash(project) {
 		return "", errors.New("Tracking focus changed during analysis. Compile the source again")
 	}
@@ -371,6 +397,7 @@ func (engine *Engine) compileMemories(job Job, project *Project, config Provider
 			end++
 		}
 		engine.setProgress(job.ID, fmt.Sprintf("Stage 2: Compiling story memory from evidence %d–%d", start+1, end))
+		engine.noteModelCall(job.ID)
 		response, err := streamModel(job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return nil, err

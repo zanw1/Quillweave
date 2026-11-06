@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { useEffect, useRef, useState } from "react";
 import { IconRefresh } from "@tabler/icons-react";
 import { Button, ErrorBox } from "../../components/ui";
@@ -178,18 +179,12 @@ export function ModelPicker({
           {t("Model ID")}
           <input
             aria-label={t("Model ID")}
-            list="provider-model-examples"
+            autoComplete="off"
+            spellCheck={false}
             value={config.model}
             placeholder={t("Model ID from the provider")}
             onChange={(event) => select(event.target.value)}
           />
-          <datalist id="provider-model-examples">
-            {choices.slice(0, 500).map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.name}
-              </option>
-            ))}
-          </datalist>
         </label>
         <label>
           {t("Search available models")}
@@ -204,7 +199,7 @@ export function ModelPicker({
           {remote === null
             ? t("Preset examples")
             : t("Models returned by this connection")}
-          <select
+          <Select
             aria-label={t("Available models")}
             value=""
             onChange={(event) => {
@@ -221,7 +216,7 @@ export function ModelPicker({
                   : `${model.name} · ${model.id}`}
               </option>
             ))}
-          </select>
+          </Select>
           <small>
             {remote?.length === 0
               ? t(
