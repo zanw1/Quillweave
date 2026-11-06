@@ -113,6 +113,24 @@ async function execute(
   let pending = "";
   if (parseGo) {
     const outputs = new Map();
+    const logs = new Map();
+    const failurePattern = /FAIL|Error:|panic:|failed:|_test\.go:\d+:/;
+    const remember = (key, text) => {
+      if (raw || text === "") return;
+      const list = logs.get(key) || [];
+      list.push(text);
+      logs.set(key, list);
+    };
+    const flushFailure = (key) => {
+      const partial = outputs.get(key);
+      if (partial) remember(key, partial);
+      if (!raw) {
+        for (const text of logs.get(key) || []) {
+          if (!failurePattern.test(text)) process.stderr.write(text + "\n");
+        }
+      }
+      logs.delete(key);
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.on("data", (bytes) => process.stderr.write(bytes));
     child.stdout.on("data", (chunk) => {
@@ -128,25 +146,28 @@ async function execute(
           if (!raw) console.log(line);
           continue;
         }
-        if (!item.Output) continue;
         // test2json can split one long log line across several Output events.
         const key = `${item.Package}::${item.Test || ""}`;
-        const output = (outputs.get(key) || "") + item.Output;
-        const completed = output.split("\n");
-        outputs.set(key, completed.pop());
-        for (const line of completed) {
-          const match = line.match(/BACKEND_RESULT (\{.*\})/);
-          if (match) {
-            const result = JSON.parse(match[1]);
-            report.modules.push(result);
-            if (!raw)
-              console.log(
-                `${result.module}: ${result.passed_top_level} top-level / ${result.passed_all_test_nodes} test nodes passed${result.race ? " (race)" : ""}`,
-              );
-          } else if (!raw && /FAIL|Error:|panic:|failed:/.test(line)) {
-            process.stderr.write(line + "\n");
+        if (item.Output) {
+          const output = (outputs.get(key) || "") + item.Output;
+          const completed = output.split("\n");
+          outputs.set(key, completed.pop());
+          for (const text of completed) {
+            const match = text.match(/BACKEND_RESULT (\{.*\})/);
+            if (match) {
+              const result = JSON.parse(match[1]);
+              report.modules.push(result);
+              if (!raw)
+                console.log(
+                  `${result.module}: ${result.passed_top_level} top-level / ${result.passed_all_test_nodes} test nodes passed${result.race ? " (race)" : ""}`,
+                );
+            } else if (!raw && failurePattern.test(text)) {
+              process.stderr.write(text + "\n");
+            } else remember(key, text);
           }
         }
+        if (item.Action === "fail") flushFailure(key);
+        if (item.Action === "pass" || item.Action === "skip") logs.delete(key);
       }
     });
   }
@@ -271,7 +292,12 @@ async function main() {
     }
     report.result = "passed";
   } finally {
-    await fs.rm(temporary, { recursive: true, force: true });
+    await fs.rm(temporary, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
     report.temporary_files_cleaned = true;
     report.finished_at = new Date().toISOString();
     if (options.report) {

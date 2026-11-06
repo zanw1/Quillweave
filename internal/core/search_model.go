@@ -4,6 +4,7 @@ import (
 	"context"
 	websearch "quillweave/internal/search"
 	"sync"
+	"sync/atomic"
 )
 
 type SearchSourceProvenance = websearch.Provenance
@@ -13,14 +14,26 @@ type searchSecret struct {
 	Value, Identity string
 	Generation      uint64
 }
+
+const (
+	// searchPhaseRunning is supplier work that must not be replaced by recovery.
+	searchPhaseRunning int32 = iota
+	// searchPhasePublishing is the first terminal file write and database commit.
+	searchPhasePublishing
+	// searchPhaseRetrying is a synced result waiting out a failed database commit.
+	searchPhaseRetrying
+)
+
 type searchTask struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	profiles map[string]bool
+	phase    atomic.Int32
 }
 type searchRuntime struct {
-	mu    sync.Mutex
-	tasks map[string]*searchTask
+	mu       sync.Mutex
+	intentMu sync.Mutex
+	tasks    map[string]*searchTask
 }
 
 type searchPlan struct {

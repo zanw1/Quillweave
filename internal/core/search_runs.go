@@ -285,7 +285,7 @@ func (engine *Engine) workSearch(ctx context.Context, initial searchRun, task *s
 		}
 	}
 	final.FinishedAt = now()
-	engine.finishSearchWithRetry(ctx, &final)
+	engine.finishSearchWithRetry(ctx, task, &final)
 }
 
 // executeConfiguredSearch reuses the legacy compatibility adapter path while sharing the new lifecycle and budget.
@@ -350,10 +350,13 @@ func intField(value any) int {
 }
 
 // finishSearchWithRetry preserves a terminal intent before retrying a temporarily unavailable database.
-func (engine *Engine) finishSearchWithRetry(ctx context.Context, final *searchRun) {
+func (engine *Engine) finishSearchWithRetry(ctx context.Context, task *searchTask, final *searchRun) {
+	if task != nil {
+		task.phase.Store(searchPhasePublishing)
+	}
 	_ = engine.saveSearchIntent(*final)
 	for {
-		stored, err := engine.store.changeSearchRun(final.ID, func(run *searchRun) error {
+		_, err := engine.store.changeSearchRun(final.ID, func(run *searchRun) error {
 			revision := run.Revision
 			owner, hash := run.Owner, run.Hash
 			*run = *final
@@ -364,8 +367,11 @@ func (engine *Engine) finishSearchWithRetry(ctx context.Context, final *searchRu
 		})
 		if err == nil {
 			engine.removeSearchIntent(final.ID)
-			_ = stored
 			return
+		}
+		// The sidecar is durable now. Recovery may publish it, but not while this write is still creating the file.
+		if task != nil {
+			task.phase.Store(searchPhaseRetrying)
 		}
 		select {
 		case <-ctx.Done():

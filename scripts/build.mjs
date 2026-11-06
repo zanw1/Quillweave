@@ -80,7 +80,12 @@ function packageMac(binary, temporary, output) {
 </dict></plist>`,
   );
   run("codesign", ["--force", "--deep", "--sign", "-", bundle]);
-  fs.rmSync(output, { recursive: true, force: true });
+  fs.rmSync(output, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
   fs.cpSync(bundle, output, { recursive: true });
 }
 
@@ -176,8 +181,14 @@ function build() {
     }
     console.log(`Built ${output}`);
   } finally {
-    if (createdResource) fs.rmSync(resources, { force: true });
-    fs.rmSync(temporary, { recursive: true, force: true });
+    if (createdResource)
+      fs.rmSync(resources, { force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(temporary, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 }
 

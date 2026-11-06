@@ -56,6 +56,7 @@ func TestSearchSharedFallbackBudget(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
+				_ = readBodyForStudioTest(t, r)
 				if r.URL.Path == "/primary/v1/tools/search" {
 					w.WriteHeader(scenario.status)
 					fmt.Fprint(w, `{"error":{"message":"fixture"}}`)
@@ -89,6 +90,7 @@ func insertSearchProject(t *testing.T, engine *Engine) string {
 func TestSearchReferencedCredentialInvalidation(t *testing.T) {
 	engine := testEngine(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = readBodyForStudioTest(t, r)
 		if r.Header.Get("Authorization") != "Bearer REF_KEY" {
 			t.Error("Wrong referenced key")
 		}

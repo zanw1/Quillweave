@@ -25,12 +25,18 @@ type documentDB interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+// sqliteDSN applies durability settings on every physical connection, before its first statement.
+// An Exec after Open would miss connections created when a bad connection is discarded.
+func sqliteDSN(path string) string {
+	return path + "?_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL"
+}
+
 // OpenStore opens the existing SQLite tables and JSON documents with atomic commit settings.
 func OpenStore(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +51,7 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, errors.New("This database requires a newer application version")
 	}
-	_, err = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+	_, err = db.Exec(`
     CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,document TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1),document TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document TEXT NOT NULL);

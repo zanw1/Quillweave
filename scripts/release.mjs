@@ -16,7 +16,7 @@ function publishFile(source, destination) {
     fs.copyFileSync(source, pending);
     fs.renameSync(pending, destination);
   } finally {
-    fs.rmSync(pending, { force: true });
+    fs.rmSync(pending, { force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -92,7 +92,12 @@ function release() {
     publishFile(checksumFile, path.join(outputDirectory, "SHA256SUMS.txt"));
     console.log(`Release files: ${path.join(outputDirectory, name)}.*`);
   } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
+    fs.rmSync(temporary, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 }
 

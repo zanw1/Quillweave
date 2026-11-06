@@ -266,15 +266,12 @@ func streamArchiveProject(db documentDB, out io.Writer, id string) (string, erro
 
 // exportArchiveTo uses a dedicated WAL reader so model checkpoints can continue during a large export.
 func (store *Store) exportArchiveTo(ctx context.Context, id string, out io.Writer, limit int64) (string, error) {
-	database, err := sql.Open("sqlite", store.path)
+	database, err := sql.Open("sqlite", sqliteDSN(store.path))
 	if err != nil {
 		return "", err
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
-	if _, err := database.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
-		return "", err
-	}
 	transaction, err := database.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return "", err

@@ -165,6 +165,15 @@ func (engine *Engine) reconcileJobsLocked() error {
 			continue
 		}
 		if err != nil {
+			live, liveErr := engine.ownerHasLiveWork(id)
+			if liveErr != nil {
+				return liveErr
+			}
+			// Windows can return access denied while a peer's lock is still DELETE_PENDING.
+			// An owner with no queued or running work has nothing to publish.
+			if !live && platform.RetryableFileError(err) {
+				continue
+			}
 			return err
 		}
 		if !acquired {
@@ -216,6 +225,18 @@ func (engine *Engine) recoverTerminalTurns() error {
 		}
 	}
 	return nil
+}
+
+// ownerHasLiveWork reports unfinished jobs or searches still charged to one runtime owner.
+func (engine *Engine) ownerHasLiveWork(ownerID string) (bool, error) {
+	var searches, jobs int
+	if err := engine.store.db.QueryRow("SELECT COUNT(*) FROM search_runs WHERE execution_owner=? AND status IN ('queued','running')", ownerID).Scan(&searches); err != nil {
+		return false, err
+	}
+	if err := engine.store.db.QueryRow("SELECT COUNT(*) FROM runs WHERE json_extract(document,'$.status')='running' AND COALESCE(json_extract(document,'$.execution_owner'),'')=?", ownerID).Scan(&jobs); err != nil {
+		return false, err
+	}
+	return searches+jobs > 0, nil
 }
 
 // recoverOwner reads one abandoned owner's rows and commits each result together with its conversation turn.
