@@ -32,6 +32,29 @@ func reject(t *testing.T, engine *Engine, command string, args any) {
 	}
 }
 
+type acceptedProposal struct {
+	Project Project
+	Job     Job
+}
+
+// acceptProposalAfterPreview exercises legacy adaptation and the separate exact-version confirmation command.
+func acceptProposalAfterPreview(t *testing.T, engine *Engine, args map[string]any) acceptedProposal {
+	t.Helper()
+	before := invoke[Project](t, engine, "get_project", map[string]any{"project_id": args["project_id"]})
+	preview := invoke[struct {
+		Project   Project   `json:"project"`
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "review_proposal", args)
+	assert(t, preview.Project.Revision == before.Revision && preview.ChangeSet.ReviewToken != "", "Legacy review bypassed preview or omitted confirmation data")
+	result := invoke[struct {
+		Project Project `json:"project"`
+	}](t, engine, "apply_changeset", map[string]any{
+		"project_id": before.ID, "changeset_id": preview.ChangeSet.ID, "revision": preview.ChangeSet.PreviewRevision, "review_token": preview.ChangeSet.ReviewToken,
+	})
+	job := invoke[Job](t, engine, "get_job", map[string]any{"job_id": args["job_id"]})
+	return acceptedProposal{Project: result.Project, Job: job}
+}
+
 // assert provides a focused semantic assertion message.
 func assert(t *testing.T, ok bool, message string) {
 	t.Helper()

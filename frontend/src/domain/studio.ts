@@ -1,3 +1,26 @@
+export interface WorldLocation {
+  id: string;
+  name: string;
+  kind: "place" | "region";
+  region_id: string;
+  description: string;
+  x: number;
+  y: number;
+  entity_ids: string[];
+  plan_ids: string[];
+  chapter_ids: string[];
+}
+
+export interface WorldRoute {
+  id: string;
+  from_id: string;
+  to_id: string;
+  transport: string;
+  travel_hours: number;
+  bidirectional: boolean;
+  description: string;
+}
+
 export interface StoryPlan {
   id: string;
   parent_id: string;
@@ -45,6 +68,94 @@ export interface StoryDecision {
   session_id: string;
   created_at: string;
 }
+export type StepStatus = "not_started" | "in_progress" | "ready";
+
+export interface FlowStepReadiness {
+  index: number;
+  key: "setup" | "world" | "plan" | "write";
+  status: StepStatus;
+  count: number;
+  hint: string;
+}
+
+export interface FlowReadiness {
+  steps: FlowStepReadiness[];
+  recommended_step: number;
+}
+
+export type ChangeTargetKind =
+  | "project_meta"
+  | "studio_goal"
+  | "decision"
+  | "entity"
+  | "memory"
+  | "plan"
+  | "chapter";
+export type MapTargetKind = "location" | "route";
+
+export type ChangeOpType =
+  | "upsert"
+  | "delete"
+  | "append_prose"
+  | "replace_prose";
+
+export type ChangeSetStatus =
+  | "staged"
+  | "applied"
+  | "undone"
+  | "rejected"
+  | "conflicted";
+
+export interface ChangeOperation {
+  proposal_id?: string;
+  id: string;
+  target_kind: ChangeTargetKind | MapTargetKind;
+  target_id: string;
+  op_type: ChangeOpType;
+  title: string;
+  summary: string;
+  before_value?: unknown;
+  preview_value?: unknown;
+  after_value: unknown;
+}
+
+export interface ChangeSet {
+  impacts?: { kind: string; id: string; title: string }[];
+  id: string;
+  project_id: string;
+  session_id?: string;
+  turn_id?: string;
+  job_id?: string;
+  proposal_links_version?: number;
+  before_fact_references?: {
+    fact_id: string;
+    entity: string;
+    related_entity: string;
+  }[] | null;
+  source: string;
+  commit_policy: string;
+  status: ChangeSetStatus;
+  base_revision: number;
+  applied_revision?: number;
+  preview_revision?: number;
+  review_token?: string;
+  skipped_operations?: ChangeOperation[];
+  archived?: boolean;
+  summary: string;
+  operations: ChangeOperation[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceContext {
+  active_step?: string;
+  active_chapter_id?: string;
+  active_entity_id?: string;
+  active_plan_id?: string;
+  active_source_id?: string;
+  selected_text?: string;
+}
+
 export interface StudioState {
   language: string;
   mode: string;
@@ -62,6 +173,9 @@ export interface StudioState {
   plans: StoryPlan[];
   memories: StoryMemory[];
   decisions: StoryDecision[];
+  changesets?: ChangeSet[];
+  locations?: WorldLocation[];
+  routes?: WorldRoute[];
 }
 export interface ConversationTurn {
   id: string;
@@ -116,7 +230,6 @@ export interface IntegrationSettings {
   providers: SearchProvider[];
   search_enabled: boolean;
   max_searches: number;
-  hindsight_url: string;
 }
 export interface IntegrationResponse {
   settings: IntegrationSettings;

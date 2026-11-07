@@ -41,7 +41,7 @@ async page => {
   await page.getByRole("textbox",{name:"暂定名称（可选）",exact:true}).fill("搜索闭环验收");
   await page.getByRole("button",{name:"开始找灵感",exact:true}).click();
   const projectId=(await command("list_projects"))[0].id;
-  await page.getByRole("button",{name:"模型设置",exact:true}).click();
+  await page.locator(".sidebar-bottom").getByRole("button",{name:"设置",exact:true}).click();
   await page.getByRole("button",{name:"搜索配置",exact:true}).click();
   await page.getByRole("heading",{name:"搜索连接",exact:true}).waitFor();
   check(!(await command("get_search_settings")).settings.profiles.filter(p=>["deepseek","kimi","openrouter"].includes(p.family)).some(p=>p.enabled),"New paid profiles enabled automatically");
@@ -122,7 +122,8 @@ async page => {
 
   await page.getByRole("button",{name:"我的作品",exact:true}).click();
   await page.getByText("搜索闭环验收",{exact:true}).click();
-  await page.getByRole("button",{name:"资料研究",exact:true}).click();
+  await page.getByRole("button",{name:"资料与搜索",exact:true}).click();
+  await page.getByRole("tab",{name:"联网资料研究",exact:true}).click();
   await choose(page,"本次请求的搜索配置","验收 DeepSeek");
   await page.getByRole("textbox",{name:"检索词",exact:true}).fill("明代官制真实执行问题");
   await page.getByRole("button",{name:"搜索资料",exact:true}).click();
@@ -155,8 +156,9 @@ async page => {
   await parent.getByRole("button",{name:"关闭对话框",exact:true}).click();
   check(await page.getByRole("button",{name:"搜索资料",exact:true}).isDisabled(),"Global off did not override explicit profile choice");
   await page.reload();
-  if (!await page.getByRole("button",{name:"资料研究",exact:true}).count()) await page.locator("tbody tr").getByText("搜索闭环验收",{exact:true}).click();
-  await page.getByRole("button",{name:"资料研究",exact:true}).click();
+  if (!await page.getByRole("button",{name:"资料与搜索",exact:true}).count()) await page.locator("tbody tr").getByText("搜索闭环验收",{exact:true}).click();
+  await page.getByRole("button",{name:"资料与搜索",exact:true}).click();
+  await page.getByRole("tab",{name:"联网资料研究",exact:true}).click();
   await page.getByText("已读取网页内容",{exact:true}).waitFor();
   checks.push("S09: global hard-off and restored durable result after reload");
 

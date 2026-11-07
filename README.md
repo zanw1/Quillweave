@@ -20,13 +20,27 @@ Quillweave uses Go, Wails 3, React, and TypeScript. The interface supports Engli
 - Explore a knowledge graph, filter by chapter or entry type, and inspect the evidence behind a connection.
 - Compile source evidence into story memory, review the proposed knowledge, and check for stale sources or unresolved relationships.
 - Track world rules, character state, knowledge boundaries, reader promises, and foreshadowing with source quotes and chapter ranges.
-- Configure web research with attributable excerpts, optionally connect Hindsight, and compare author-scored exploration policies in a replay lab.
+- Use four main areas for the work, settings, outline, and manuscript, with one persistent creative partner and a shared sources panel.
+- Review editable changes to characters, world rules, maps, plans, prose, and chapter records, then confirm a version-bound save and open the saved items.
+- Build locations and travel routes with chapter links, and inspect related plans and chapters when the map changes.
+- Configure web research with attributable excerpts and compare author-scored exploration policies in a replay lab.
+- Continue durable conversations from the desktop or CLI, recover original tool results, and inspect provider-reported token and cache usage.
 - Assign independent model profiles to planning, writing, review, Wiki extraction, and memory compilation.
 - Import older Quillweave projects and UTF-8 TXT or Markdown sources, and export Markdown or a complete JSON project backup.
 
 ## Interface
 
-These screenshots show the built-in **Letters at Low Tide** sample. Its story and demonstration evidence are supplied with the app. Model settings show a credential-free example configuration.
+### Creation workflow
+
+Start a discussion in **Workspace overview** and use the same creative partner while moving through **Story settings**, **Outline**, and **Manuscript**. **Sources & research** opens local material and web research from the workspace header. Writing approaches are built into the assistant and selected according to the task and story form.
+
+Ask the partner to organize settled ideas into a save preview. Review the before-and-after fields, edit values or deselect individual operations, then choose **Update preview** followed by **Confirm changes**. The receipt opens the persisted records. A newer project edit requires a fresh preview. Undo checks for later edits before restoring earlier values.
+
+The world map records places, regions, routes, travel time, and explicit plan/chapter references. Chapter prose and chapter-end records use the same preview service. The next chapter can use the newly confirmed records.
+
+Long discussions retain original turns and complete tool results locally. The selected model produces reusable conversation checkpoints when the input budget requires compression. These summary requests appear separately in **Request usage**. Missing provider counters display as unreported. Actual cache savings and summary quality depend on the model and require measurement.
+
+These reference captures show the built-in **Letters at Low Tide** sample with the earlier navigation layout. Its story and demonstration evidence are supplied with the app. Model settings show a credential-free example configuration.
 
 ### Chapter writing
 
@@ -110,19 +124,38 @@ The studio distinguishes author settings, plans, source facts, and inferences. C
 
 ### Research and experiments
 
-Open **Research → Search and memory integrations** to enable research and configure providers. Supported adapters are Tavily, Bocha, Exa, Serper, SearXNG, and Wikipedia. Wikipedia can work without a key; a SearXNG instance needs JSON output enabled. Other services may require credentials or have account-specific limits. Search is disabled until enabled. Results retain a URL, title, excerpt, retrieval time, and provider; accepting a result adds a source for later discussion and review.
+Open **Sources & research → Web research** to search and review sources. Manage connections under **Settings → Search profiles**. Supported adapters include Tavily, Bocha, Exa, Serper, SearXNG, Wikipedia, DeepSeek, Kimi, and OpenRouter. Wikipedia can work without a key. A SearXNG instance needs JSON output enabled. Other services may require credentials or have account-specific limits. Search is disabled until enabled. Results retain a URL, title, excerpt, retrieval time, and provider. Accepting a result adds a source for later discussion and review.
 
-Hindsight is optional. Configure an endpoint and explicitly choose confirmed memories to send; recall and reflect use separate story/branch banks. External responses remain reference material. Integration keys are process-only, like model keys. Restarting requires entering them again.
+Local story records, conversation checkpoints, and source indexes provide persistent memory. The workspace upgrade retires Hindsight settings and execution paths. The replay lab is available under **Settings → Advanced & experiments**.
+
+The assistant uses native tool calls across the six model protocols and preserves paired results across conversation turns and restarts. An explicit model rejection of native tools enables a bounded compatibility retry. Research and review specialists receive the parent goal, story revision, focused context, evidence references, and a shared call budget. Provider-reported usage and exact request comparisons are available in task details.
+
+### CLI and external agents
+
+The desktop executable accepts headless commands against the same local database. On macOS, the bundled executable is `build/bin/Quillweave.app/Contents/MacOS/Quillweave`. Use `--db` to select an isolated database. API keys remain process-local, and `QUILLWEAVE_API_KEY` supplies the default profile's key for a CLI process.
+
+```sh
+QW="./build/bin/Quillweave.app/Contents/MacOS/Quillweave"
+"$QW" projects --json
+"$QW" session create --project PROJECT_ID --title "Story discussion" --json
+"$QW" agent "Develop the protagonist and world rules" --project PROJECT_ID --session SESSION_ID --json
+"$QW" change list --project PROJECT_ID --status staged --json
+"$QW" change preview CHANGESET_ID --project PROJECT_ID --json
+"$QW" change apply CHANGESET_ID --project PROJECT_ID --confirm REVIEW_TOKEN --json
+"$QW" read --project PROJECT_ID --json
+```
+
+External agents can read a work with `read`, then submit a JSON file containing `summary` and typed `operations` with `change stage --input proposal.json --project PROJECT_ID --json`. The candidate appears in the desktop workspace for author review. `job list`, `job show JOB_ID`, and `agent "Continue the task" --resume JOB_ID` support task inspection and recovery. The desktop also offers **Resume task** for interrupted agents. Use **Load older conversations** or `session list --offset 100` to page through longer histories. `agent --apply` directs callers to the explicit preview and confirmation flow.
 
 The replay lab borrows the discovery-history idea from [Dream-RSI](https://github.com/google-research/dream-rsi). It compares bounded exploration orders using frozen, author-scored cases, training/held-out splits, and cost penalties. It does not run the official policy-code evolution framework or change production prompts or model weights. Passing its replay threshold is not evidence of improved literary quality.
 
 ### Storage and backups
 
-Chapters and knowledge records are saved incrementally in SQLite with local full-text retrieval. Before upgrading an existing pre-studio database, the app keeps a recovery copy beside it named `<database>.before-studio.sqlite3`, then migrates in a transaction. Retain that copy when testing a downgrade.
+Chapters and knowledge records are saved incrementally in SQLite with local full-text retrieval. Before upgrading an existing pre-studio database, the app keeps a recovery copy beside it named `<database>.before-studio.sqlite3`, then migrates in a transaction. The unified-workspace upgrade uses schema version 4 and preserves a `<database>.before-workspace.sqlite3` recovery copy for an existing work. Existing chapter discussions move into the project conversation list with their original chapter recorded in metadata. Retain the recovery copy when testing a downgrade.
 
 Complete JSON backups include conversations, branches, public task/proposal records, and experiments, while excluding credentials and private model continuation state. Imported backups receive new runtime IDs so they do not overwrite the original work. Current local retrieval uses text matching and structured memory ranking rather than bundled embedding models.
 
-Full backups use bounded file transfers while keeping the `quillweave-1` JSON format. The supported limits are 4 GiB per archive and 256 MiB per record. Desktop saves stream directly to a file; browser streaming requires File System Access support, with a 128 MiB compatibility-download limit in other browsers. The legacy single-command JSON interface remains limited to 40 MB; the app's file import supports larger archives. Interrupted uploads are discarded without publishing a partial work, and completion retries reuse the same restored work.
+Full backups use bounded file transfers and the `quillweave-2` JSON format, including map and review records. Import supports both `quillweave-1` and `quillweave-2` backups. The supported limits are 4 GiB per archive and 256 MiB per record. Desktop saves stream directly to a file; browser streaming requires File System Access support, with a 128 MiB compatibility-download limit in other browsers. The legacy single-command JSON interface remains limited to 40 MB; the app's file import supports larger archives. Interrupted uploads are discarded without publishing a partial work, and completion retries reuse the same restored work.
 
 ## Build from source
 
@@ -195,11 +228,11 @@ gh repo create zanw1/Quillweave --public --source=. --remote=origin --push
 
 The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, creates the DMG and standalone EXE, calculates SHA-256 checksums, and creates a **draft prerelease** with these files, optional ZIP packages, and license notices attached.
 
-The tag must match `package.json`. The current version uses `v3.1.2`.
+The tag must match `package.json`. The current version uses `v3.2.0`.
 
 ```sh
-git tag -a v3.1.2 -m "Quillweave v3.1.2"
-git push origin v3.1.2
+git tag -a v3.2.0 -m "Quillweave v3.2.0"
+git push origin v3.2.0
 ```
 
 Open the repository's **Actions** tab and wait for **Build release** to finish. Open **Releases**, review the draft's notes and assets, test the downloaded applications, and select **Publish release**. A workflow rerun can replace assets on the draft. Published releases require a new version.

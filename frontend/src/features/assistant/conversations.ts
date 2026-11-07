@@ -72,6 +72,9 @@ export function useConversations(
   const [sessions, setSessions] = useState<Conversation[]>([]);
   const [session, setSession] = useState<Conversation | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const nextOffset = useRef(0);
   const current = useRef<Conversation | null>(null);
   const restoreRef = useRef(restore);
   restoreRef.current = restore;
@@ -83,21 +86,68 @@ export function useConversations(
   /** Load session metadata and retain the current selection when a task finishes. */
   async function reload(selectId?: string) {
     const version = ++sequence.current;
+    setLoadingMore(false);
     const list = await api<Conversation[]>("list_conversations", {
       project_id: projectId,
       chapter_id: chapterId,
     });
     if (version !== sequence.current) return;
-    setSessions(list);
     const selected =
       selectId ?? current.current?.id ?? localDraft(selectionKey);
-    const next = list.find((item) => item.id === selected) || list[0] || null;
+    let next = list.find((item) => item.id === selected) || null;
+    if (selected && !next) {
+      try {
+        const older = await api<Conversation>("get_conversation", {
+          project_id: projectId,
+          session_id: selected,
+        });
+        if (older.project_id === projectId && older.chapter_id === chapterId)
+          next = older;
+      } catch {
+        /* Fall back to an available session if the remembered one was removed. */
+      }
+    }
+    if (version !== sequence.current) return;
+    nextOffset.current = list.length;
+    setHasMore(list.length === 100);
+    if (!next) next = list[0] || null;
+    setSessions(
+      next && !list.some((item) => item.id === next.id)
+        ? [next, ...list]
+        : list,
+    );
     const changed = next?.id !== current.current?.id;
     current.current = next;
     setSession(next);
     setLoading(false);
     if (next) saveLocalDraft(selectionKey, next.id);
     if (changed && next) await restoreSession(next, version);
+  }
+
+  /** Page through older sessions while preserving a selected conversation outside the first page. */
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    const version = sequence.current;
+    const offset = nextOffset.current;
+    setLoadingMore(true);
+    try {
+      const list = await api<Conversation[]>("list_conversations", {
+        project_id: projectId,
+        chapter_id: chapterId,
+        offset,
+      });
+      if (version !== sequence.current) return;
+      setSessions((current) => [
+        ...new Map(
+          [...current, ...list].map((item) => [item.id, item]),
+        ).values(),
+      ]);
+      const end = offset + list.length;
+      if (end >= nextOffset.current) setHasMore(list.length === 100);
+      nextOffset.current = Math.max(nextOffset.current, end);
+    } finally {
+      if (version === sequence.current) setLoadingMore(false);
+    }
   }
 
   /** Restore a selected draft and its latest task while ignoring stale asynchronous responses. */
@@ -232,6 +282,9 @@ export function useConversations(
     sessions,
     session,
     loading,
+    hasMore,
+    loadingMore,
+    loadMore,
     draftKey,
     reload,
     create,

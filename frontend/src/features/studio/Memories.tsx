@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import {
@@ -68,10 +68,12 @@ export function Memories({
   project,
   onProject,
   onWiki,
+  focusId,
 }: {
   project: Project;
   onProject: (project: Project) => void;
   onWiki: () => void;
+  focusId?: string;
 }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
@@ -80,6 +82,13 @@ export function Memories({
   const [base, setBase] = useState(project.revision);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const focused = project.studio.memories.find((item) => item.id === focusId);
+    if (focused) {
+      setQuery(focused.title);
+      setKind("all");
+    }
+  }, [focusId]);
 
   /** Bind an editing session to the revision the author inspected. */
   function open(memory: StoryMemory) {

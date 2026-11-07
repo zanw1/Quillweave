@@ -56,6 +56,247 @@ async page => {
     return completed(result.result.id);
   }
 
+  /** Confirm the exact rendered candidate and verify its persisted receipt. */
+  async function confirmJob(job) {
+    const card = page.locator(`[data-job-id="${job.id}"] .change-review`).first();
+    await card.getByRole("button", { name: "确认写入", exact: true }).click();
+    await card.getByText("已入库至故事设定", { exact: true }).waitFor();
+    const saved = await command("get_project", { project_id: job.project_id });
+    check(saved.studio.changesets.some(item => item.id === job.changesets[0].id && item.status === "applied"), "Rendered receipt lacks a persistent commit");
+    return card;
+  }
+
+  /** Navigate within the four project areas without replacing the global conversation. */
+  async function navigate(name) {
+    await page.getByRole("navigation", { name: "作品工作区", exact: true }).getByRole("button", { name, exact: true }).click();
+  }
+
+  /** Check remote review conflicts, chapter selection ownership and context changes after a lost acknowledgement. */
+  async function reviewAndSelectionRegressions(originalProjectId) {
+    const original = await command("get_project", { project_id: originalProjectId });
+    let project = await command("create_project", { title: "Review regression", genre: "Mystery", premise: "Two distinct chapter contexts" });
+    for (const title of ["Selection chapter A", "Selection chapter B"]) {
+      project = await command("new_chapter", { project_id: project.id, revision: project.revision, title, target_words: null });
+      const chapter = project.chapters.at(-1);
+      project = await command("save_chapter", { project_id: project.id, revision: project.revision, chapter_id: chapter.id, title, body: title === "Selection chapter A" ? "FIRST_CHAPTER_SELECTION" : "SECOND_CHAPTER_SELECTION", synopsis: "", status: "draft", target_words: null });
+    }
+    await page.evaluate(id => localStorage.setItem("quillweave-project", id), project.id);
+    await page.reload();
+    await page.locator(".project-name").filter({ hasText: "Review regression" }).click();
+    const staged = await command("stage_changeset", { project_id: project.id, changeset: {
+      source: "author", summary: "Keep local review edits", operations: [
+        { id: "keep", target_kind: "entity", op_type: "upsert", title: "Retained edit", after_value: { name: "Retained edit", kind: "character", aliases: [], description: "Original candidate" } },
+        { id: "skip", target_kind: "entity", op_type: "upsert", title: "Excluded edit", after_value: { name: "Excluded edit", kind: "character", aliases: [], description: "Remain excluded" } },
+      ],
+    } });
+    const card = page.locator(`.workspace-content [data-changeset-id="${staged.id}"]`);
+    await page.waitForFunction(id => {
+      const element = document.querySelector(`.workspace-content [data-changeset-id="${id}"]`);
+      return [...(element?.querySelectorAll("button") || [])].some(button => button.textContent.trim() === "确认写入" && !button.disabled);
+    }, staged.id);
+    const operation = card.locator(".change-review-operation").filter({ has: page.getByRole("checkbox", { name: "Retained edit", exact: true }) });
+    const field = operation.locator("fieldset").filter({ has: page.locator("legend").getByText("描述", { exact: true }) });
+    await field.locator("summary").click();
+    const editor = field.locator("textarea");
+    await editor.fill("LOCAL_REVIEW_EDIT");
+    await card.getByRole("checkbox", { name: "Excluded edit", exact: true }).uncheck();
+    await page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.command === "get_project");
+    check(await editor.inputValue() === "LOCAL_REVIEW_EDIT", "Unchanged polling discarded a review edit");
+    let saved = await command("get_project", { project_id: project.id });
+    const prior = saved.studio.changesets.find(item => item.id === staged.id);
+    const changed = await command("preview_changeset", { project_id: project.id, changeset_id: staged.id, operations: prior.operations.map(op => ({ ...op, after_value: { ...op.after_value, description: "REMOTE_REVIEW_EDIT" } })) });
+    await page.waitForResponse(async response => {
+      if (!response.url().endsWith("/api/command") || response.request().postDataJSON()?.command !== "get_project") return false;
+      const result = await response.json();
+      return result.result?.studio?.changesets?.some(item => item.id === staged.id && item.review_token === changed.changeset.review_token);
+    });
+    await card.getByRole("alert").waitFor();
+    check(await editor.inputValue() === "LOCAL_REVIEW_EDIT" && !await card.getByRole("checkbox", { name: "Excluded edit", exact: true }).isChecked(), "Remote preview replaced local fields or selection");
+    check(await card.getByRole("button", { name: "确认写入", exact: true }).isDisabled(), "A conflicting local review could be confirmed directly");
+    await card.getByRole("button", { name: "更新预览", exact: true }).click();
+    await card.getByRole("button", { name: "确认写入", exact: true }).click();
+    await card.getByText("已入库至故事设定", { exact: true }).waitFor();
+    saved = await command("get_project", { project_id: project.id });
+    check(saved.entities.length === 1 && saved.entities[0].description === "LOCAL_REVIEW_EDIT", "Re-reviewed local content was not the committed selection");
+    check(saved.studio.changesets.find(item => item.id === staged.id).skipped_operations.length === 1, "Conflict resolution lost the skipped operation");
+
+    const clean = await command("stage_changeset", { project_id: project.id, changeset: { source: "author", summary: "Clean review refresh", operations: [{ id: "clean", target_kind: "entity", op_type: "upsert", title: "Clean candidate", after_value: { name: "Clean candidate", kind: "character", aliases: [], description: "Original clean candidate" } }] } });
+    const cleanCard = page.locator(`.workspace-content [data-changeset-id="${clean.id}"]`);
+    await cleanCard.getByRole("button", { name: "确认写入", exact: true }).waitFor();
+    const cleanPreview = await command("preview_changeset", { project_id: project.id, changeset_id: clean.id });
+    await command("preview_changeset", { project_id: project.id, changeset_id: clean.id, operations: cleanPreview.changeset.operations.map(op => ({ ...op, after_value: { ...op.after_value, description: "REMOTE_CLEAN_PREVIEW" } })) });
+    await cleanCard.locator(".change-review-comparison p").filter({ hasText: /^REMOTE_CLEAN_PREVIEW$/ }).waitFor();
+    check(await cleanCard.getByRole("alert").count() === 0, "An untouched preview was incorrectly marked as conflicting");
+    await cleanCard.getByRole("button", { name: "否决", exact: true }).click();
+
+    await navigate("正文");
+    const prose = page.getByRole("textbox", { name: "章节正文", exact: true });
+    await prose.focus();
+    await prose.press("Meta+A");
+    await page.waitForFunction(() => document.querySelector(".workspace-focus")?.textContent.includes("已选文字"));
+    await page.locator(".chapter-nav .chapter-item").filter({ hasText: "Selection chapter B" }).click();
+    const prepared = page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.command === "prepare_ai");
+    const composer = page.getByRole("textbox", { name: "写作请求", exact: true });
+    await composer.fill("Check the current selection");
+    await page.getByRole("button", { name: "预览上下文", exact: true }).click();
+    const request = (await prepared).request().postDataJSON().args;
+    check(request.chapter_id === project.chapters[1].id && !request.workspace_context.selected_text, "Chapter B carried chapter A's selection");
+    await page.locator("dialog:modal header button").click();
+    await page.locator(".chapter-nav .chapter-item").filter({ hasText: "Selection chapter A" }).click();
+    check(!(await page.locator(".workspace-focus").innerText()).includes("已选文字"), "Returning to a chapter revived its old selection");
+
+    let lostJob = "";
+    let lostRequest = "";
+    const retryText = "Retry this request with the currently focused chapter";
+    /** Lose one acknowledgement after the real backend accepts it, keeping the accepted request identity observable. */
+    async function loseAcknowledgement(route) {
+      const body = route.request().postDataJSON();
+      if (!lostJob && body?.command === "start_ai" && body.args?.project_id === project.id && body.args?.instruction === retryText) {
+        const result = await (await route.fetch()).json();
+        check(result.ok, result.error || "The initial request was rejected");
+        lostJob = result.result.id;
+        lostRequest = body.args.request_id;
+        await route.abort("failed");
+      } else await route.continue();
+    }
+    await page.route("**/api/command", loseAcknowledgement);
+    await composer.fill(retryText);
+    await composer.press("Enter");
+    await page.getByRole("alert").last().waitFor();
+    let acknowledged;
+    const completionDeadline = Date.now() + 15000;
+    do {
+      acknowledged = await command("get_job", { job_id: lostJob });
+      if (acknowledged.status !== "running") break;
+      await page.waitForTimeout(100);
+    } while (Date.now() < completionDeadline);
+    check(acknowledged?.status === "done", `The accepted task did not finish: ${acknowledged?.status} ${acknowledged?.error}`);
+    await page.unroute("**/api/command", loseAcknowledgement);
+    const completedSession = await command("get_conversation", { project_id: project.id, session_id: acknowledged.session_id });
+    check(completedSession.turns.every(turn => turn.status !== "running"), `A completed task left a running turn: ${JSON.stringify(completedSession.turns.map(({ role, status, job_id, request_id }) => ({ role, status, job_id, request_id })))}`);
+    await page.locator(".chapter-nav .chapter-item").filter({ hasText: "Selection chapter B" }).click();
+    const retriedRequest = page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.command === "start_ai");
+    let retried;
+    try {
+      retried = await send(retryText);
+    } catch (cause) {
+      const latest = await command("get_conversation", { project_id: project.id, session_id: acknowledged.session_id });
+      throw new Error(`${String(cause)}; retry state ${JSON.stringify(latest.turns.map(({ role, status, job_id, request_id }) => ({ role, status, job_id, request_id })))}`);
+    }
+    const retryArgs = (await retriedRequest).request().postDataJSON().args;
+    check(retried.id !== lostJob && retryArgs.request_id !== lostRequest && retried.chapter_id === project.chapters[1].id, "A changed chapter reused an earlier context's accepted request");
+
+    saved = await command("get_project", { project_id: project.id });
+    await command("delete_project", { project_id: project.id, revision: saved.revision });
+    await page.evaluate(id => localStorage.setItem("quillweave-project", id), originalProjectId);
+    await page.reload();
+    await page.locator(".project-name").filter({ hasText: original.title }).click();
+    controlAudit.push({ section: "review conflicts and chapter selection", localEditsPreserved: true, selectionPreserved: true, cleanRefresh: true, staleSelectionCleared: true, changedContextUsesNewRequest: true });
+  }
+
+  /** Exercise an external candidate, map references and chapter-two continuation through visible controls. */
+  async function mapAndSecondChapter(projectId) {
+    const external = await command("stage_changeset", { project_id: projectId, changeset: {
+      source: "cli", summary: "外部 Agent 待审阅资料", operations: [
+        { id: "character", target_kind: "entity", op_type: "upsert", title: "林舟", after_value: { id: "external-lin", name: "林舟", kind: "character", aliases: [], description: "交出钥匙的人" } },
+        { id: "skipped", target_kind: "decision", op_type: "upsert", title: "待取消的决定", after_value: { title: "待取消的决定", content: "这项候选应保留为未采纳" } },
+      ],
+    } });
+    await navigate("作品");
+    const externalCard = page.locator(`.workspace-content [data-changeset-id="${external.id}"]`);
+    await externalCard.waitFor({ timeout: 10000 });
+    await externalCard.getByRole("checkbox").nth(1).uncheck();
+    await externalCard.getByRole("button", { name: "更新预览", exact: true }).click();
+    await externalCard.getByRole("button", { name: "确认写入", exact: true }).click();
+    await externalCard.getByText("已入库至故事设定", { exact: true }).waitFor();
+    let saved = await command("get_project", { project_id: projectId });
+    check(saved.entities.some(item => item.name === "林舟") && !saved.studio.decisions.some(item => item.title === "待取消的决定"), "Partial confirmation saved an excluded operation");
+    check(saved.studio.changesets.find(item => item.id === external.id).skipped_operations.length === 1, "The excluded candidate lost its review history");
+
+    await navigate("设定");
+    await page.getByRole("tab", { name: "世界地图", exact: true }).click();
+    for (const name of ["北塔", "旧驿站"]) {
+      await page.getByRole("button", { name: "添加地点", exact: true }).click();
+      const form = page.getByRole("dialog", { name: "地点", exact: true });
+      await form.getByRole("textbox", { name: "名称", exact: true }).fill(name);
+      await form.getByRole("textbox", { name: "描述", exact: true }).fill(`${name}与铜钥匙的转移相关。`);
+      await form.locator("summary").filter({ hasText: "关联章节" }).click();
+      await form.getByRole("checkbox", { name: "第一章：铜钥匙", exact: true }).check();
+      await form.getByRole("button", { name: "预览修改", exact: true }).click();
+      await form.waitFor({ state: "detached" });
+      check(!((await command("get_project", { project_id: projectId })).studio.locations || []).some(item => item.name === name), "A location was saved before confirmation");
+      const card = page.locator(".world-map .change-review").filter({ has: page.getByRole("button", { name: "确认写入", exact: true }) });
+      await card.getByRole("button", { name: "确认写入", exact: true }).click();
+      await page.locator(".world-map-canvas").getByRole("button", { name, exact: true }).waitFor();
+    }
+    await page.getByRole("button", { name: "添加路线", exact: true }).click();
+    const route = page.getByRole("dialog", { name: "移动路线", exact: true });
+    await route.getByRole("spinbutton", { name: "移动时间（小时）", exact: true }).fill("3.5");
+    await route.getByRole("button", { name: "预览修改", exact: true }).click();
+    await route.waitFor({ state: "detached" });
+    const routeCard = page.locator(".world-map .change-review").filter({ has: page.getByRole("button", { name: "确认写入", exact: true }) });
+    await routeCard.getByRole("button", { name: "确认写入", exact: true }).click();
+    await page.locator(".world-map-route").waitFor();
+    saved = await command("get_project", { project_id: projectId });
+    check(saved.studio.locations.length === 2 && saved.studio.routes[0].travel_hours === 3.5, "Map geometry or travel time did not persist");
+    const locationNode = page.locator(".world-map-canvas").getByRole("button", { name: "北塔", exact: true });
+    await locationNode.focus();
+    await locationNode.press("Enter");
+    await page.locator(".map-location-detail").getByRole("heading", { name: "北塔", exact: true }).waitFor();
+    await page.locator(".workspace-content").evaluate(element => { element.scrollTop = 0; });
+    await page.screenshot({ path: `${artifacts}/world-map.png` });
+    await page.locator(".map-location-detail").getByRole("button", { name: "第一章：铜钥匙", exact: true }).click();
+    await page.getByRole("textbox", { name: "章节正文", exact: true }).waitFor();
+
+    await navigate("大纲");
+    await page.locator(".plan-card").filter({ has: page.getByRole("heading", { name: "第一卷：北塔", exact: true }) }).getByRole("button", { name: "新增规划", exact: true }).click();
+    const plan = page.getByRole("dialog", { name: "新增规划", exact: true });
+    await choose(plan, "层级", "章节");
+    await plan.getByRole("textbox", { name: "标题", exact: true }).fill("第二章：旧驿站");
+    await plan.getByRole("spinbutton", { name: "起始章节", exact: true }).fill("2");
+    await plan.getByRole("spinbutton", { name: "结束章节", exact: true }).fill("2");
+    await plan.getByRole("textbox", { name: "目标", exact: true }).fill("携带铜钥匙前往旧驿站");
+    await plan.getByRole("button", { name: "保存", exact: true }).click();
+    await plan.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "建立章节草稿", exact: true }).click();
+    await navigate("大纲");
+    await page.locator(".plan-card").filter({ has: page.getByRole("heading", { name: "第二章：旧驿站", exact: true }) }).getByRole("button", { name: "进入章节", exact: true }).click();
+    const prose = await send("为第二章生成正文，沿用已经确认的钥匙转移事实。");
+    check(JSON.stringify(prose.prompt).includes("铜钥匙转移"), "The second chapter request omitted the confirmed chapter-one memory");
+    await confirmJob(prose);
+    saved = await command("get_project", { project_id: projectId });
+    check(saved.chapters.length === 2 && saved.chapters[1].body.includes("沿山路走向旧驿站"), "Confirmed prose did not reach chapter two");
+    check(saved.chapters[0].body.includes("他再也想不起母亲的声音"), "Chapter-two confirmation overwrote chapter one");
+    const failedStart = page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.command === "start_ai");
+    await page.getByRole("textbox", { name: "写作请求", exact: true }).fill("中断代理恢复验收，继续讨论下一步。");
+    await page.getByRole("textbox", { name: "写作请求", exact: true }).press("Enter");
+    const failed = (await (await failedStart).json()).result;
+    await page.locator(`[data-job-id="${failed.id}"]`).getByRole("button", { name: "继续任务", exact: true }).waitFor();
+    const resumedStart = page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.args?.resume_job_id === failed.id);
+    await page.locator(`[data-job-id="${failed.id}"]`).getByRole("button", { name: "继续任务", exact: true }).click();
+    const resumedPayload = await (await resumedStart).json();
+    check(resumedPayload.ok, resumedPayload.error || "Agent recovery was rejected");
+    const resumed = await completed(resumedPayload.result.id);
+    check(resumed.session_id === failed.session_id && JSON.stringify(resumed.prompt).includes(`Resume task ${failed.id}`), "Desktop recovery lost the task's conversation or saved context");
+    const selected = await command("get_conversation", { project_id: projectId, session_id: resumed.session_id });
+    for (let index = 0; index < 105; index++) {
+      await command("create_conversation", { project_id: projectId, chapter_id: "", title: `旧会话 ${index}` });
+    }
+    const draft = "翻页切换后仍保留的草稿";
+    await page.getByRole("textbox", { name: "写作请求", exact: true }).fill(draft);
+    await page.locator(".conversation-tools > button").first().click();
+    const conversations = page.getByRole("dialog", { name: "会话", exact: true });
+    await conversations.getByRole("button", { name: "加载更早的会话", exact: true }).click();
+    await conversations.locator(".history-row").filter({ has: page.getByText("旧会话 0", { exact: true }) }).click();
+    await conversations.waitFor({ state: "detached" });
+    check(await page.getByRole("textbox", { name: "写作请求", exact: true }).inputValue() === "", "Selecting an older empty conversation copied another session's draft");
+    await page.locator(".conversation-tools > button").first().click();
+    await conversations.getByRole("button", { name: "加载更早的会话", exact: true }).click();
+    await conversations.locator(".history-row").filter({ has: page.getByText(selected.title, { exact: true }) }).click();
+    await conversations.waitFor({ state: "detached" });
+    check(await page.getByRole("textbox", { name: "写作请求", exact: true }).inputValue() === draft, "The selected conversation outside page one lost its draft or identity");
+  }
+
   /** Wait for a completed browser paint after resizing before measuring or capturing the layout. */
   async function viewport(width, height) {
     await page.setViewportSize({ width, height });
@@ -104,7 +345,7 @@ async page => {
     checks.push("new key: exact replace request, secret omitted from response, masked after save");
 
     await page.getByRole("button", { name: "我的作品", exact: true }).click();
-    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page.locator(".sidebar-bottom").getByRole("button", { name: "设置", exact: true }).click();
     model = await field(modelName, true);
     check(!(await page.locator("body").textContent()).includes(firstKey), "Reopening the form exposed a key");
     checks.push("reopened configured field: mask only, no secret readback");
@@ -146,34 +387,15 @@ async page => {
     await field(modelName, false);
     checks.push("keyboard clear: explicit clear request, empty field, focus restored");
 
-    await field("Hindsight 密钥", false);
-    check(await page.getByRole("checkbox", { name: /清除密钥/ }).count() === 0, "Legacy clear checkboxes remain");
-    const hindsight = page.getByLabel("Hindsight 密钥", { exact: true });
-    await hindsight.fill("acceptance-only-memory-first");
-    saved = await save("save_integrations", "保存记忆服务");
-    check(saved.args.key_updates.hindsight.value === "acceptance-only-memory-first" && saved.result.key_status.hindsight, "Memory key did not save directly");
-    check(!JSON.stringify(saved.result).includes("acceptance-only-"), "Memory response returned a key");
-    await field("Hindsight 密钥", true);
-    checks.push("memory field: blank, direct entry, masked after save");
-    await page.getByRole("textbox", { name: "Hindsight 接口地址", exact: true }).fill(`${mock}/memory-review`);
-    saved = await save("save_integrations", "保存记忆服务");
-    check(Object.keys(saved.args.key_updates).length === 0 && !saved.result.key_status.hindsight, "Changing the credential destination retained a memory key");
-    checks.push("memory endpoint change: old destination credential invalidated");
-    await hindsight.fill("acceptance-only-memory-replacement");
-    saved = await save("save_integrations", "保存记忆服务");
-    check(saved.args.key_updates.hindsight.value === "acceptance-only-memory-replacement", "Memory replacement failed");
-    await field("Hindsight 密钥", true);
-    await page.getByRole("button", { name: "清除密钥 · Hindsight 密钥", exact: true }).click();
-    saved = await save("save_integrations", "保存记忆服务");
-    check(saved.args.key_updates.hindsight.action === "clear" && !saved.result.key_status.hindsight, "Memory clear did not persist");
-    await field("Hindsight 密钥", false);
-    checks.push("memory replace and clear: exact requests, blank afterward");
+    check(await page.getByLabel("Hindsight 密钥", { exact: true }).count() === 0, "Retired external-memory credentials remain visible");
+    check(!(await command("get_integrations")).settings.hindsight_url, "Retired endpoint survived migration");
+    checks.push("retired external-memory controls and destination removed");
 
     await viewport(860, 640);
     await model.scrollIntoViewIfNeeded();
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Direct credential controls overflow the minimum window");
     const geometry = await page.locator(".secret-input-row > input").evaluateAll(inputs => inputs.map(input => ({ height:input.getBoundingClientRect().height, font:getComputedStyle(input).fontSize, radius:getComputedStyle(input).borderRadius })));
-    check(geometry.length === 2 && geometry.every(input => input.height === 40 && input.font === "13px" && input.radius === "8px"), "Secret inputs diverged from the shared field geometry");
+    check(geometry.length === 1 && geometry.every(input => input.height === 40 && input.font === "13px" && input.radius === "8px"), "Secret inputs diverged from the shared field geometry");
     checks.push("minimum window and geometry: no overflow, 40px / 13px / 8px");
     await viewport(1440, 900);
     controlAudit.push({ section: "direct secret inputs", checks, geometry });
@@ -184,7 +406,8 @@ async page => {
   await page.getByRole("button", { name: "开始新故事", exact: true }).click();
   await page.getByRole("textbox", { name: "暂定名称（可选）", exact: true }).fill("北塔借忆人 · 完整验收");
   await page.getByRole("button", { name: "开始找灵感", exact: true }).click();
-  await page.getByRole("navigation", { name: "创作工作台", exact: true }).waitFor();
+  await page.getByRole("navigation", { name: "作品工作区", exact: true }).waitFor();
+  check(await page.getByRole("navigation", { name: "作品工作区", exact: true }).getByRole("button").count() === 4, "The four primary project destinations are missing");
   let project = (await command("list_projects"))[0];
   const projectId = project.id;
   const input = page.getByRole("textbox", { name: "写作请求", exact: true });
@@ -196,20 +419,30 @@ async page => {
   check((await input.inputValue()).endsWith("\n"), "Shift+Enter did not insert a newline");
   const first = await send("我想写一个靠记忆交易生存的长篇故事。");
   check((await input.inputValue()) === "", "Successful send did not clear the composer");
-  check(await page.getByRole("dialog").count() === 0, "Discussion opened an unsolicited dialog");
+  check(await page.locator("dialog:modal").count() === 0, "Discussion opened an unsolicited modal");
   check(await page.getByRole("button", { name: "根据讨论生成大纲", exact: true }).count() === 0, "Discussion prematurely pushed a complete outline");
-  await page.getByRole("button", { name: "采纳", exact: true }).click();
-  await page.locator(".proposal-card").getByText("已采纳", { exact: true }).waitFor();
+  const firstCard = page.locator(`[data-job-id="${first.id}"] .change-review`);
+  check((await command("get_project", { project_id: projectId })).studio.decisions.length === 0, "Generation saved a decision before preview confirmation");
+  const editContent = firstCard.getByRole("textbox", { name: "编辑内容", exact: true, includeHidden: true });
+  await editContent.locator("xpath=ancestor::details").locator("summary").click();
+  await editContent.fill("每次交易都要放弃一段重要且真实的记忆。");
+  check(await firstCard.getByRole("button", { name: "确认写入", exact: true }).isDisabled(), "An edited preview remained confirmable without re-review");
+  await firstCard.getByRole("button", { name: "更新预览", exact: true }).click();
+  await confirmJob(first);
   project = await command("get_project", { project_id: projectId });
-  check(project.studio.decisions.length === 1, "Accepted proposal did not become shared author knowledge");
+  check(project.studio.decisions.length === 1 && project.studio.decisions[0].content.includes("重要且真实"), "Edited candidate did not become shared author knowledge");
 
-  await page.getByRole("button", { name: "写作方法", exact: true }).click();
-  await page.locator(".method-card").first().getByRole("button").click();
-  await page.locator(".drawer").getByRole("button", { name: "讨论这些问题", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('textarea[aria-label="写作请求"]')?.value.includes("一句话"));
+  await input.fill("跨页面保留的讨论草稿");
+  await navigate("设定");
+  await page.locator(".knowledge-graph").waitFor();
+  const graphBox = await page.locator(".knowledge-graph").boundingBox();
+  check(graphBox && graphBox.width >= 500, `Knowledge graph collapsed inside the shared workspace: ${JSON.stringify(graphBox)}`);
+  await navigate("大纲");
+  await navigate("正文");
+  await navigate("作品");
   await page.locator(`[data-job-id="${first.id}"] .answer-heading`).getByText("已完成", { exact: true }).waitFor();
-  check((await input.inputValue()).includes("一句话"), "Applying a method to a story without chapters lost its seed while restoring the existing conversation");
-  check((await command("get_project", { project_id: projectId })).chapters.length === 0, "A writing method unexpectedly required or created a chapter");
+  check((await input.inputValue()) === "跨页面保留的讨论草稿", "Page switching replaced the global conversation draft");
+  check(await page.getByRole("button", { name: "写作方法", exact: true }).count() === 0 && await page.getByRole("combobox", { name: "AI 任务", exact: true }).count() === 0, "Obsolete method or chat-mode navigation remains");
 
   await page.getByRole("button", { name: "重命名会话", exact: true }).click();
   await page.getByRole("textbox", { name: "会话名称", exact: true }).fill("北塔核心创意");
@@ -274,7 +507,7 @@ async page => {
   await page.getByText("网文连载", { exact: true }).waitFor();
   await page.screenshot({ path: `${artifacts}/discussion.png` });
 
-  await page.getByRole("button", { name: "分层规划", exact: true }).click();
+  await navigate("大纲");
   await page.getByRole("button", { name: "新增规划", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "新增规划", exact: true });
   await dialog.getByRole("textbox", { name: "标题", exact: true }).fill("第一卷：北塔");
@@ -294,14 +527,13 @@ async page => {
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
   await page.getByRole("button", { name: "建立章节草稿", exact: true }).click();
-  await page.getByRole("button", { name: "章节写作", exact: true }).click();
+  await navigate("正文");
   await page.getByRole("textbox", { name: "章节正文", exact: true }).fill("林舟把铜钥匙交给岑月。北塔的钟声随即响起，他再也想不起母亲的声音。");
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await choose(page, "AI 任务", "整理章节记忆");
-  await send("整理本章有原文依据的事实与人物变化，先作为建议让我审阅。");
-  await page.getByRole("button", { name: "采纳", exact: true }).click();
-  await page.getByRole("button", { name: "故事规划", exact: true }).click();
-  await page.getByRole("button", { name: "故事记忆", exact: true }).click();
+  const memoryJob = await send("整理本章有原文依据的事实与人物变化，先作为建议让我审阅。");
+  await confirmJob(memoryJob);
+  await navigate("设定");
+  await page.getByRole("tab", { name: /状态与伏笔/ }).click();
   await page.getByRole("heading", { name: "铜钥匙转移", exact: true }).waitFor();
   project = await command("get_project", { project_id: projectId });
   check(project.studio.memories.some(memory => memory.source_id === project.chapters[0].id && memory.quote === "林舟把铜钥匙交给岑月。"), "Memory adoption lost its source quote");
@@ -317,8 +549,6 @@ async page => {
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
 
-  await page.getByRole("button", { name: "资料研究", exact: true }).click();
-  await page.getByRole("button", { name: "故事记忆", exact: true }).click();
   await page.getByRole("button", { name: "新增记忆", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "新增记忆", exact: true });
   await choose(dialog, "记忆类型", "人物知情范围");
@@ -340,7 +570,9 @@ async page => {
   await page.getByRole("spinbutton", { name: "查看指定章节的记忆", exact: true }).fill("12");
   check(await knowledgeCard.count() === 1 && (await knowledgeCard.innerText()).includes("岑月"), "The later knowledge version is missing or duplicated");
   await page.getByRole("spinbutton", { name: "查看指定章节的记忆", exact: true }).fill("");
-  await page.getByRole("button", { name: "资料研究", exact: true }).click();
+  await mapAndSecondChapter(projectId);
+  await page.getByRole("button", { name: "资料与搜索", exact: true }).click();
+  await page.getByRole("tab", { name: "联网资料研究", exact: true }).click();
   await page.getByRole("button", { name: "搜索设置", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "搜索设置", exact: true });
   await dialog.getByRole("textbox", { name: "筛选搜索配置", exact: true }).fill("SearXNG");
@@ -354,8 +586,6 @@ async page => {
   await dialog.getByRole("switch", { name: "启用联网搜索", exact: true }).check();
   await choose(dialog, "默认搜索配置", "SearXNG");
   await dialog.getByRole("button", { name: "保存搜索策略", exact: true }).click();
-  await dialog.getByRole("textbox", { name: "Hindsight 接口地址", exact: true }).fill(mock);
-  await dialog.getByRole("button", { name: "保存记忆服务", exact: true }).click();
   await dialog.getByRole("status").filter({ hasText: "已保存" }).last().waitFor();
   await dialog.getByRole("button", { name: "关闭对话框", exact: true }).click();
   await page.getByRole("textbox", { name: "检索词", exact: true }).fill("明朝锦衣卫官制");
@@ -369,14 +599,10 @@ async page => {
   check(project.sources.some(source => source.content.includes("明朝锦衣卫官制")) && !project.sources.some(source => source.content.includes("尚未发送的新查询")), "Adopting old results recorded an unsent query as provenance");
   await page.screenshot({ path: `${artifacts}/research.png` });
 
-  await page.getByRole("button", { name: "方法与实验", exact: true }).click();
-  await page.locator(".external-memory summary").filter({ hasText: "选择要发送的记忆" }).click();
-  await page.getByRole("checkbox", { name: /交易必须付出记忆/ }).check();
-  await page.getByRole("button", { name: "存入所选记忆", exact: true }).click();
-  await page.locator(".external-result").filter({ hasText: "测试记忆响应" }).waitFor();
-  await page.getByRole("textbox", { name: "检索词", exact: true }).fill("记忆交易代价");
-  await page.getByRole("button", { name: "召回", exact: true }).click();
-  await page.getByRole("button", { name: "反思分析", exact: true }).click();
+  await page.getByRole("dialog", { name: "资料与搜索", exact: true }).getByRole("button", { name: "关闭对话框", exact: true }).click();
+  await input.fill("失败期间输入的新草稿必须保留。");
+  await page.locator(".sidebar-bottom").getByRole("button", { name: "设置", exact: true }).click();
+  await page.locator("details").filter({ has: page.locator("summary").getByText("高级与实验", { exact: true }) }).locator("summary").first().click();
   await page.getByRole("button", { name: "新增评测案例", exact: true }).click();
   await page.getByRole("combobox", { name: "已完成候选稿", exact: true }).click();
   const popupFrames = await page.locator(".qw-select-popup").evaluate(async element => {
@@ -396,18 +622,21 @@ async page => {
 
   const archive = await command("export", { project_id: projectId, format: "archive" });
   const backup = JSON.parse(archive.content);
-  check(backup.project.conversations.length >= 3 && backup.project.jobs.length >= 3 && backup.project.experiments.length === 1, "Complete backup omitted conversation, proposal or experiment records");
+  check(backup.project.conversations.length >= 2 && backup.project.jobs.length >= 3 && backup.project.experiments.length === 1, "Complete backup omitted conversation, proposal or experiment records");
   check(!archive.content.includes("provider_context"), "Backup exposed model-private continuation state");
 
-  await page.getByRole("button", { name: "共创讨论", exact: true }).click();
+  await navigate("作品");
   await page.waitForFunction(() => document.querySelector('textarea[aria-label="写作请求"]')?.value === "失败期间输入的新草稿必须保留。");
-  check((await input.inputValue()) === "失败期间输入的新草稿必须保留。", "Returning from another tab resurrected an already-consumed writing method over the saved draft");
+  check((await input.inputValue()) === "失败期间输入的新草稿必须保留。", "Returning from settings lost the saved conversation draft");
   await viewport(1280, 720);
   const height = await page.locator(".assistant-messages").evaluate(element => element.getBoundingClientRect().height);
   check(height >= 180, `Conversation was squeezed to ${height}px on a laptop viewport`);
   await page.screenshot({ path: `${artifacts}/laptop.png` });
   await viewport(1024, 768);
   check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "Studio overflows the viewport horizontally");
+  await page.getByRole("button", { name: "创作搭档", exact: true }).click();
+  await input.waitFor({ state: "visible" });
+  check(await input.evaluate(element => element.closest("dialog")?.matches(":modal")), "Compact partner did not become a modal drawer");
   await page.screenshot({ path: `${artifacts}/compact.png` });
   await viewport(860, 640);
   const sendButton = await page.locator(".assistant-composer").getByRole("button", { name: "发送", exact: true }).boundingBox();
@@ -439,6 +668,8 @@ async page => {
   await page.unroute("**/api/command");
   check(recoveredAck.id === acceptedWithoutAck && (await command("get_runs", { project_id: projectId })).length === beforeLost + 1, "An unacknowledged retry generated twice");
 
+  await reviewAndSelectionRegressions(projectId);
+
   await page.evaluate(() => Object.defineProperty(window, "showSaveFilePicker", { value: undefined, configurable: true }));
   const downloadEvent = page.waitForEvent("download");
   const exportFinished = page.waitForResponse(response => response.url().endsWith("/api/command") && response.request().postDataJSON()?.command === "finish_archive_transfer");
@@ -468,8 +699,9 @@ async page => {
   check(lostBackupAcks.size === 2, "Backup acceptance did not exercise both lost acknowledgements");
   const restoredStories = await command("list_projects");
   check(restoredStories.length === 2 && restoredStories.some(story => story.id !== projectId), "Browser backup import did not create a separate restored work");
-  await page.getByRole("button", { name: "模型设置", exact: true }).click();
-  await page.getByRole("heading", { name: "外部记忆设置", exact: true }).waitFor();
+  await page.locator(".sidebar-bottom").getByRole("button", { name: "设置", exact: true }).click();
+  await page.locator(".model-editor").waitFor();
+  check(await page.getByRole("heading", { name: "外部记忆设置", exact: true }).count() === 0, "Retired Hindsight settings remain visible");
   await regularFields(page.locator(".model-editor"), "model settings");
   const compact = await page.locator(".model-editor-heading .button").evaluateAll(elements => elements.map(e => ({height:e.getBoundingClientRect().height,font:getComputedStyle(e).fontSize})));
   check(compact.length > 0 && compact.every(e => e.height === 34 && e.font === "12px"), `Compact actions disagree: ${JSON.stringify(compact)}`);

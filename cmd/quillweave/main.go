@@ -45,6 +45,9 @@ func run() error {
 
 // main reports startup failures using credential-free diagnostics.
 func main() {
+	if len(os.Args) > 1 && core.IsCLICommand(os.Args[1]) {
+		os.Exit(core.RunCLI(os.Args[1:], os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

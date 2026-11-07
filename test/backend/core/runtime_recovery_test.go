@@ -249,7 +249,7 @@ func TestRepairedCachedCompletionRecovery(t *testing.T) {
 	insertProject(t, engine, p)
 	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": p.ID, "chapter_id": ""})
 	job := Job{ID: newID(), ProjectID: p.ID, SessionID: session.ID, Status: "done", Action: "wiki", Text: "Reused compilation", CreatedAt: now(), Prompt: Prompt{Messages: []Message{}, Context: []ContextItem{}}, ownerID: engine.owner.id, BaseRevision: p.Revision}
-	if err := engine.store.beginDurableJob(AIRequest{ProjectID: p.ID, SessionID: session.ID, RequestID: "cached", Instruction: "Reuse"}, &job); err != nil {
+	if _, err := engine.store.beginDurableJob(AIRequest{ProjectID: p.ID, SessionID: session.ID, RequestID: "cached", Instruction: "Reuse"}, &job); err != nil {
 		t.Fatal(err)
 	}
 	var initial string

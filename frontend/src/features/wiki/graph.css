@@ -1,5 +1,6 @@
 /* Control graph density in a dedicated workspace. */
 .wiki-graph-page {
+  width: 100%;
   max-width: none;
   padding: 24px 28px 20px;
 }

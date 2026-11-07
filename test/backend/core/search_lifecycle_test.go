@@ -272,7 +272,7 @@ func TestSearchMigrationBackupAndLegacyGuard(t *testing.T) {
 	legacy := invoke[struct {
 		Settings IntegrationSettings `json:"settings"`
 	}](t, restarted, "get_integrations", nil)
-	assert(t, legacy.Settings.HindsightURL == old.HindsightURL && legacy.Settings.MaxSearches == 4, "Hindsight or legacy limits changed")
+	assert(t, legacy.Settings.HindsightURL == "" && legacy.Settings.MaxSearches == 4, "Retirement or legacy search limits were lost")
 	assert(t, invoke[Project](t, restarted, "get_project", map[string]any{"project_id": project.ID}).Title == project.Title, "Migration changed a story")
 	stat, err := os.Stat(path + ".before-search.sqlite3")
 	if err != nil {
@@ -347,7 +347,7 @@ func TestSearchNativeCallsReachParentHistory(t *testing.T) {
 		if err := decodeJSON(readBodyForStudioTest(t, r), &body); err != nil {
 			t.Error(err)
 		}
-		if body["tools"] != nil {
+		if body["tools"] != nil && !strings.Contains(jsonText(body["tools"]), nativeAgentFunction) {
 			native.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"choices":[{"message":{"content":"Cited research","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.org/a","content":"source"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)

@@ -70,9 +70,11 @@ func TestResearchAdaptersAndFallback(t *testing.T) {
 	assert(t, err == nil && len(response.Warnings) == 1 && len(response.Results) == 1 && response.Provider == "Fallback", "Rate-limit fallback lost provenance or errors")
 }
 
-// TestExternalMemoryUsesSelectedEvidenceAndBranchBank validates Hindsight operations without a real account.
-func TestExternalMemoryUsesSelectedEvidenceAndBranchBank(t *testing.T) {
+// TestExternalMemoryRetirement rejects legacy operations before any network request.
+func TestExternalMemoryRetirement(t *testing.T) {
+	engine := testEngine(t)
 	project := testProject()
+	insertProject(t, engine, project)
 	project.Studio.Memories = []StoryMemory{{ID: "approved", Kind: "rule", Title: "Cost", Content: "Magic has a cost", Status: "confirmed"}, {ID: "unapproved", Kind: "setting", Content: "Must not be sent", Status: "proposed"}}
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,13 +88,13 @@ func TestExternalMemoryUsesSelectedEvidenceAndBranchBank(t *testing.T) {
 	t.Cleanup(server.Close)
 	settings := defaultIntegrations()
 	settings.HindsightURL = server.URL
+	view := invoke[map[string]any](t, engine, "save_integrations", map[string]any{"settings": settings, "key_updates": map[string]SecretUpdate{"hindsight": {Action: "replace", Value: "RETIRED_TEST_SECRET"}}})
+	assert(t, !strings.Contains(jsonText(view), server.URL) && !strings.Contains(jsonText(view), "RETIRED_TEST_SECRET"), "retired service remains exposed")
 	for _, operation := range []string{"retain_external", "recall_external", "reflect_external"} {
-		_, err := externalMemory(context.Background(), settings, &project, "branch-a", operation, "magic", []string{"approved", "unapproved"})
-		if err != nil {
-			t.Fatal(err)
-		}
+		_, err := engine.Dispatch(operation, rawMessage(map[string]any{"project_id": project.ID, "query": "magic"}))
+		assert(t, err != nil && strings.Contains(err.Error(), "retired"), "legacy operation was accepted")
 	}
-	assert(t, len(paths) == 3 && strings.Contains(paths[0], project.ID+"-branch-a") && strings.HasSuffix(paths[1], "/memories/recall") && strings.HasSuffix(paths[2], "/reflect"), "Hindsight operation or bank isolation is incorrect")
+	assert(t, len(paths) == 0, "retired service received a request")
 }
 
 // TestAgentToolsStageChangesAndRespectCallBounds checks real model-tool-model iteration and author control.

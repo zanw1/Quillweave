@@ -231,10 +231,10 @@ func streamArchiveProject(db documentDB, out io.Writer, id string) (string, erro
 			return err
 		}
 		studio := archiveObject{writer: out}
-		if err := studio.scalarFields(fields, "plans", "memories", "decisions"); err != nil {
+		if err := studio.scalarFields(fields, "plans", "memories", "decisions", "changesets", "locations", "routes"); err != nil {
 			return err
 		}
-		for _, collection := range []struct{ key, kind string }{{"plans", "plan"}, {"memories", "memory"}, {"decisions", "decision"}} {
+		for _, collection := range []struct{ key, kind string }{{"plans", "plan"}, {"memories", "memory"}, {"decisions", "decision"}, {"changesets", "changeset"}, {"locations", "location"}, {"routes", "route"}} {
 			kind := collection.kind
 			if err := studio.field(collection.key, func(out io.Writer) error {
 				return streamArchiveRows(db, out, "SELECT document FROM project_parts WHERE project_id=? AND kind=? ORDER BY position,id", id, kind)
@@ -278,7 +278,7 @@ func (store *Store) exportArchiveTo(ctx context.Context, id string, out io.Write
 	}
 	defer transaction.Rollback()
 	bounded := &archiveWriter{writer: out, ctx: ctx, limit: limit}
-	if _, err := io.WriteString(bounded, `{"format":"quillweave-1","project":`); err != nil {
+	if _, err := io.WriteString(bounded, `{"format":"quillweave-2","project":`); err != nil {
 		return "", err
 	}
 	title, err := streamArchiveProject(transaction, bounded, id)

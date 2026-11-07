@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { t } from "../../lib/i18n";
 import { api, message } from "../../lib/api";
 import {
@@ -67,15 +67,27 @@ export function Plans({
   project,
   onProject,
   onAsk,
+  onFocus,
+  onChapter,
+  focusId,
 }: {
   project: Project;
   onProject: (project: Project) => void;
   onAsk: (text: string, action?: string) => void;
+  onFocus?: (id: string) => void;
+  onChapter?: (id: string) => void;
+  focusId?: string;
 }) {
   const [editing, setEditing] = useState<StoryPlan | null>(null);
   const [base, setBase] = useState(project.revision);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (focusId)
+      document
+        .getElementById(`plan-${focusId}`)
+        ?.scrollIntoView({ block: "nearest" });
+  }, [focusId]);
 
   /** Capture the revision belonging to the draft so stale edits cannot overwrite newer plans. */
   function open(plan: StoryPlan) {
@@ -100,6 +112,8 @@ export function Plans({
       });
       onProject(next);
       setEditing(null);
+      if (command === "create_planned_chapters" && next.chapters.length)
+        onChapter?.(next.chapters[0].id);
     } catch (error) {
       setError(message(error));
     } finally {
@@ -154,6 +168,9 @@ export function Plans({
           <article
             className="plan-card"
             key={plan.id}
+            id={`plan-${plan.id}`}
+            onClick={() => onFocus?.(plan.id)}
+            onFocusCapture={() => onFocus?.(plan.id)}
             style={{ marginLeft: Math.min(depth, 4) * 18 }}
           >
             <header>
@@ -176,6 +193,22 @@ export function Plans({
               {plan.pacing}
             </p>
             <div className="studio-actions">
+              {plan.level === "chapter" &&
+                project.chapters.some(
+                  (chapter) => chapter.number === plan.start_chapter,
+                ) && (
+                  <Button
+                    onClick={() =>
+                      onChapter?.(
+                        project.chapters.find(
+                          (chapter) => chapter.number === plan.start_chapter,
+                        )!.id,
+                      )
+                    }
+                  >
+                    {t("Open chapter")}
+                  </Button>
+                )}
               <Button onClick={() => open(plan)}>{t("Edit")}</Button>
               <Button onClick={() => open(blankPlan(plan))}>
                 {t("Add plan")}

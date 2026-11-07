@@ -11,8 +11,8 @@ export const pageNames: Record<Page, string> = {
   home: "My projects",
   write: "Chapters",
   plan: "Story planning",
+  outline: "Outline",
   wiki: "Character Wiki",
   knowledge: "Library",
-  methods: "Writing methods",
   settings: "Model settings",
 };

@@ -158,6 +158,7 @@ type ProviderConfig struct {
 	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
 	APIVersion      string       `json:"api_version,omitempty"`
 	ModelLimits     *ModelLimits `json:"model_limits,omitempty"`
+	nativeTools     bool
 }
 
 // ModelProfile preserves the existing JSON fields and persistence format.
@@ -179,40 +180,57 @@ type ModelSettings struct {
 
 // AIRequest preserves the existing JSON fields and persistence format.
 type AIRequest struct {
-	ProjectID       string           `json:"project_id"`
-	ChapterID       string           `json:"chapter_id"`
-	Action          string           `json:"action"`
-	Instruction     string           `json:"instruction"`
-	SourceID        string           `json:"source_id"`
-	History         []Message        `json:"history"`
-	Force           bool             `json:"force"`
-	SessionID       string           `json:"session_id,omitempty"`
-	RequestID       string           `json:"request_id,omitempty"`
-	UILanguage      string           `json:"ui_language,omitempty"`
-	Language        string           `json:"language,omitempty"`
-	ResumeJobID     string           `json:"resume_job_id,omitempty"`
-	SearchSelection *SearchSelection `json:"search_selection,omitempty"`
-	Retrieved       []ContextItem    `json:"-"`
-	systemAppend    string
+	ProjectID        string            `json:"project_id"`
+	ChapterID        string            `json:"chapter_id"`
+	Action           string            `json:"action"`
+	Instruction      string            `json:"instruction"`
+	SourceID         string            `json:"source_id"`
+	History          []Message         `json:"history"`
+	Force            bool              `json:"force"`
+	SessionID        string            `json:"session_id,omitempty"`
+	RequestID        string            `json:"request_id,omitempty"`
+	UILanguage       string            `json:"ui_language,omitempty"`
+	Language         string            `json:"language,omitempty"`
+	ResumeJobID      string            `json:"resume_job_id,omitempty"`
+	ExtractionJobID  string            `json:"extraction_job_id,omitempty"`
+	IntentHint       string            `json:"intent_hint,omitempty"`
+	CommitPolicy     string            `json:"commit_policy,omitempty"`
+	WorkspaceContext *WorkspaceContext `json:"workspace_context,omitempty"`
+	SearchSelection  *SearchSelection  `json:"search_selection,omitempty"`
+	Retrieved        []ContextItem     `json:"-"`
+	systemAppend     string
+	conversation     *Conversation
+	historyGroups    []HistoryGroup
 }
 
 // Message preserves the existing JSON fields and persistence format.
 type Message struct {
-	Role             string `json:"role"`
-	Content          string `json:"content"`
-	SourceJobID      string `json:"source_job_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	SourceJobID      string           `json:"source_job_id,omitempty"`
+	CacheControl     *CacheControl    `json:"cache_control,omitempty"`
+	ToolCalls        []NativeToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ToolName         string           `json:"tool_name,omitempty"`
 	reasoningContent string
 	encryptedContent string
+	providerFormat   string
+	providerBlocks   []json.RawMessage
 }
 
 // Prompt preserves the existing JSON fields and persistence format.
 type Prompt struct {
-	Warning    string        `json:"warning,omitempty"`
-	Messages   []Message     `json:"messages"`
-	Context    []ContextItem `json:"context"`
-	SourceHash string        `json:"source_hash"`
-	SourceID   string        `json:"source_id"`
-	Chars      int           `json:"chars"`
+	Warning       string                  `json:"warning,omitempty"`
+	Messages      []Message               `json:"messages"`
+	Context       []ContextItem           `json:"context"`
+	SourceHash    string                  `json:"source_hash"`
+	SourceID      string                  `json:"source_id"`
+	Chars         int                     `json:"chars"`
+	ToolChars     int                     `json:"tool_chars,omitempty"`
+	HistoryGroups []HistoryGroup          `json:"history_groups,omitempty"`
+	Checkpoint    *ConversationCheckpoint `json:"checkpoint,omitempty"`
+	BibleCurrent  string                  `json:"bible_current,omitempty"`
+	BibleBaseline string                  `json:"bible_baseline,omitempty"`
 }
 
 // LintFinding preserves the existing JSON fields and persistence format.

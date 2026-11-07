@@ -61,6 +61,9 @@ func studioTask(project *Project, action string) (string, bool) {
 
 // studioGuidance carries shared author decisions into every stage without promoting plans to facts.
 func studioGuidance(project *Project, action string, chapter *Chapter) string {
+	if action == "agent" {
+		return agentCraftGuidance()
+	}
 	s := project.Studio
 	if s.Language == "" {
 		s.Language = "inherit"
@@ -114,8 +117,15 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 			lines = append(lines, fmt.Sprintf("Plan excerpt (future, not a past fact) [%s]: %s. Chapters %d–%d. Goal: %s. Conflict: %s. Consequence: %s.", p.ID, p.Title, p.StartChapter, p.EndChapter, goal, conflict, consequence))
 		}
 	}
+	activeSkills := map[string]bool{}
+	for _, id := range s.Skills {
+		activeSkills[id] = true
+	}
+	for _, skill := range resolveBuiltinSkills(s.Mode, s.Stage) {
+		activeSkills[skill.ID] = true
+	}
 	for _, skill := range writingSkills() {
-		if contains(s.Skills, skill.ID) && (contains(skill.Modes, "all") || contains(skill.Modes, s.Mode)) {
+		if activeSkills[skill.ID] && (contains(skill.Modes, "all") || (action == "agent" && (s.Mode == "undecided" || s.Mode == "hybrid")) || contains(skill.Modes, s.Mode)) {
 			lines = append(lines, "Selected craft approach: "+skill.Description)
 		}
 	}

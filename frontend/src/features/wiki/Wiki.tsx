@@ -42,10 +42,18 @@ interface Props {
   project: Project;
   onProject: (p: Project) => void;
   onChapter: (id: string) => void;
+  focusId?: string;
+  onFocus?: (id: string) => void;
 }
 
 /** Organize entities, evidence, and chapter trajectories with explicit inference labels. */
-export function Wiki({ project, onProject, onChapter }: Props) {
+export function Wiki({
+  project,
+  onProject,
+  onChapter,
+  focusId,
+  onFocus,
+}: Props) {
   const [tab, setTab] = useState("graph");
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
@@ -56,6 +64,13 @@ export function Wiki({ project, onProject, onChapter }: Props) {
   const [hashes, setHashes] = useState<Record<string, string>>({});
   const [source, setSource] = useState<Fact | null>(null);
   const [trajectory, setTrajectory] = useState("");
+  useEffect(() => {
+    if (focusId && project.entities.some((item) => item.id === focusId))
+      setSelected(focusId);
+  }, [focusId]);
+  useEffect(() => {
+    if (selected) onFocus?.(selected);
+  }, [selected]);
   useEffect(() => {
     let active = true;
     Promise.all(

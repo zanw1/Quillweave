@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -34,6 +35,14 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 	if prior != "" {
 		return task, nil
 	}
+	if request.ChapterID != "" && findChapter(&project, request.ChapterID) == nil {
+		return task, errors.New("Select a chapter from this project")
+	}
+	if request.SourceID != "" {
+		if _, _, found := project.SourceText(request.SourceID); !found {
+			return task, errors.New("Select a source from this project")
+		}
+	}
 	request, task.resumeText, err = engine.resumeRequest(&project, request)
 	if err != nil {
 		return task, err
@@ -53,6 +62,7 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 		task.selected = SelectedModel{Config: ProviderConfig{ContextChars: 24000}}
 	}
 	modelReady := err == nil
+	task.selected.Config.nativeTools = modelReady && request.Action == "agent" && !engine.nativeToolFallback[nativeCapabilityKey(task.selected)]
 	task.synthesis = task.selected
 	if request.Action == "wiki" {
 		task.synthesis, err = engine.models.Select(&project, "wiki_compile")
@@ -66,16 +76,36 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 		if err != nil {
 			return task, err
 		}
-		request.Retrieved, err = engine.contextPassages(&project, request)
-		if err != nil {
-			return task, err
-		}
-		task.prompt, err = prepareAI(&project, request, int(task.selected.Config.ContextChars))
-		if err == nil && request.Action == "agent" {
-			if err = engine.refreshIntegrationsLocked(); err == nil {
-				task.prompt, err = prepareAgentPrompt(task.prompt, engine.agentSearchPolicyLocked(request, task.selected.ProfileID), int(task.selected.Config.ContextChars))
+		if request.Action != "agent" {
+			request.Retrieved, err = engine.contextPassages(&project, request)
+			if err != nil {
+				return task, err
 			}
 		}
+		if request.ExtractionJobID != "" {
+			selected, loadErr := engine.loadStoredJob(request.ExtractionJobID)
+			if loadErr != nil {
+				return task, loadErr
+			}
+			if selected.ProjectID != project.ID || selected.Status != "done" || strings.TrimSpace(selected.Text) == "" {
+				return task, errors.New("Select a completed response from this project")
+			}
+			request.IntentHint = "commit_extract"
+			request.Retrieved = append(request.Retrieved, ContextItem{ID: "J:" + selected.ID, Kind: "selected_response", Title: "Author-selected response", Text: selected.Text})
+		}
+		toolChars := nativeToolChars(task.selected.Config)
+		budget := int(task.selected.Config.ContextChars) - toolChars
+		if budget <= 0 {
+			return task, errors.New("Native tool definitions exceed the model context budget")
+		}
+		task.prompt, err = prepareAI(&project, request, budget)
+		if err == nil && request.Action == "agent" {
+			if err = engine.refreshIntegrationsLocked(); err == nil {
+				task.prompt, err = prepareAgentPrompt(task.prompt, engine.agentSearchPolicyLocked(request, task.selected.ProfileID), budget)
+			}
+		}
+		task.prompt.ToolChars = toolChars
+		task.prompt.Chars += toolChars
 	}
 	task.project, task.request = project, request
 	if !modelReady {
@@ -92,6 +122,21 @@ func (engine *Engine) resumeRequest(project *Project, request AIRequest) (AIRequ
 	previous, err := engine.loadJob(request.ResumeJobID, request.ProjectID)
 	if err != nil {
 		return request, "", err
+	}
+	if request.Action == "agent" {
+		if previous.Action != "agent" || previous.Status == "running" || previous.Status == "done" || previous.SessionID != request.SessionID {
+			return request, "", errors.New("Select an interrupted agent task in this conversation")
+		}
+		steps := []string{}
+		for _, step := range previous.Steps {
+			steps = append(steps, fmt.Sprintf("%s %s [J:%s:%s]", step.Tool, step.Status, previous.ID, step.ID))
+		}
+		for _, candidate := range previous.ChangeSets {
+			steps = append(steps, fmt.Sprintf("Existing candidate %s (%s): %s. Continue its review before proposing the same changes again.", candidate.ID, candidate.Status, truncateSummary(candidate.Summary, 180)))
+		}
+		context := fmt.Sprintf("Resume task %s. Original goal: %s\nPrevious project revision: %d; current revision: %d. Reread changed story records. Completed tools are recoverable with get_task_step. Existing candidate proposals still require preview and confirmation.\n%s", previous.ID, previous.Instruction, previous.BaseRevision, project.Revision, strings.Join(steps, "\n"))
+		request.Retrieved = append(request.Retrieved, ContextItem{ID: "J:" + previous.ID, Kind: "selected_response", Title: "Interrupted task to resume", Text: context})
+		return request, "", nil
 	}
 	if previous.Status == "running" || previous.Status == "done" || previous.ChapterID != request.ChapterID || contains([]string{"wiki", "memory_update", "agent"}, request.Action) {
 		return request, "", errors.New("Only interrupted prose in the same chapter can be continued")

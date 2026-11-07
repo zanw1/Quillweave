@@ -24,6 +24,18 @@ export function ProposalCards({
   const [targets, setTargets] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const changesets = job.changesets || [];
+  const legacyUnbound = changesets.some((cs) =>
+    cs.operations.some((op) => !op.proposal_id),
+  );
+  const visibleProposals = legacyUnbound
+    ? []
+    : (job.proposals || []).filter(
+        (proposal) =>
+          !changesets.some((cs) =>
+            cs.operations.some((op) => op.proposal_id === proposal.id),
+          ),
+      );
 
   /** Apply a single explicit decision and refresh both the shared work and current job snapshot. */
   async function review(id: string, decision: string) {
@@ -63,6 +75,74 @@ export function ProposalCards({
 
   return (
     <div className="proposal-section">
+      {!!job.metrics?.length && (
+        <details className="agent-trace request-metrics">
+          <summary>
+            {t("Request usage")} · {job.metrics.length}
+          </summary>
+          {job.metrics.map((metric, index) => (
+            <div className="agent-step" key={`${metric.request_hash}-${index}`}>
+              <strong>
+                {t(
+                  metric.purpose === "compaction"
+                    ? "Conversation summary"
+                    : "Model request",
+                )}
+              </strong>
+              <span>
+                {metric.model} · {(metric.duration_ms / 1000).toFixed(2)} s
+              </span>
+              <dl>
+                <dt>{t("Input tokens")}</dt>
+                <dd>{metric.usage.input_tokens ?? t("Not reported")}</dd>
+                <dt>{t("Output tokens")}</dt>
+                <dd>{metric.usage.output_tokens ?? t("Not reported")}</dd>
+                <dt>{t("Cache read tokens")}</dt>
+                <dd>{metric.usage.cache_read_tokens ?? t("Not reported")}</dd>
+                {metric.usage.reasoning_tokens !== undefined && (
+                  <>
+                    <dt>{t("Reasoning tokens included")}</dt>
+                    <dd>{metric.usage.reasoning_tokens}</dd>
+                  </>
+                )}
+                <dt>{t("Cache write tokens")}</dt>
+                <dd>{metric.usage.cache_write_tokens ?? t("Not reported")}</dd>
+                <dt>{t("First text latency")}</dt>
+                <dd>
+                  {metric.first_text_ms === undefined
+                    ? t("Not reported")
+                    : `${metric.first_text_ms} ms`}
+                </dd>
+                <dt>{t("Prefix fingerprint")}</dt>
+                <dd>
+                  <code>{metric.prefix_hash.slice(0, 12)}</code>
+                </dd>
+                {metric.change_reason && (
+                  <>
+                    <dt>{t("Request comparison")}</dt>
+                    <dd>
+                      {t(metric.change_reason)}
+                      {metric.request_change_path && <code> · {metric.request_change_path}</code>}
+                    </dd>
+                  </>
+                )}
+                {metric.shared_prefix_bytes !== undefined && (
+                  <>
+                    <dt>{t("Shared prefix bytes")}</dt>
+                    <dd>{metric.shared_prefix_bytes}</dd>
+                  </>
+                )}
+                {metric.first_changed_message !== undefined && (
+                  <>
+                    <dt>{t("First changed message")}</dt>
+                    <dd>{metric.first_changed_message}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
+          ))}
+        </details>
+      )}
       {!!job.steps?.length && (
         <details className="agent-trace" open={job.status === "running"}>
           <summary>
@@ -90,12 +170,12 @@ export function ProposalCards({
           ))}
         </details>
       )}
-      {!!job.proposals?.length && (
+      {!!visibleProposals.length && (
         <p className="muted">
           {t("No changes are applied until you accept them.")}
         </p>
       )}
-      {job.proposals?.map((proposal) => (
+      {visibleProposals.map((proposal) => (
         <article className="proposal-card" key={proposal.id}>
           <header>
             <strong>{proposal.title}</strong>
@@ -231,7 +311,7 @@ export function ProposalCards({
                   }
                   onClick={() => void review(proposal.id, "accepted")}
                 >
-                  {t("Accept")}
+                  {t("Review changes")}
                 </Button>
                 <Button
                   disabled={!!busy}

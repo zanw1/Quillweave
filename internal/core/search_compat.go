@@ -22,9 +22,6 @@ func (engine *Engine) refreshSearchCompatLocked() error {
 	view.SearchEnabled = settings.Enabled
 	view.Providers = []SearchProvider{}
 	view.MaxSearches = 2
-	if raw.HindsightURL == engine.integrations.HindsightURL {
-		view.HindsightKey = engine.integrations.HindsightKey
-	}
 	for _, profile := range settings.Profiles {
 		if profile.LegacyID == "" {
 			continue
@@ -42,7 +39,7 @@ func (engine *Engine) refreshSearchCompatLocked() error {
 	return nil
 }
 
-// legacySearchMetadata compares only public search fields, leaving memory-service settings independent.
+// legacySearchMetadata compares the public fields of the retained legacy search view.
 func legacySearchMetadata(settings IntegrationSettings) string {
 	return jsonText(struct {
 		Providers []SearchProvider
@@ -68,20 +65,11 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 	if input.MaxSearches < 1 || input.MaxSearches > 5 || len(input.Providers) > 20 {
 		return nil, errors.New("Search budgets must be between 1 and 5")
 	}
-	if input.HindsightURL != "" {
-		if err := validateEndpoint(input.HindsightURL); err != nil {
-			return nil, err
-		}
-	}
 	nextKeys := map[string]searchSecret{}
 	for id, key := range engine.searchKeys {
 		nextKeys[id] = key
 	}
 	changed := map[string]bool{}
-	memoryKey := ""
-	if input.HindsightURL == currentView.HindsightURL {
-		memoryKey = currentView.HindsightKey
-	}
 	err := engine.store.withWriteTransaction(func(db *sql.Conn) error {
 		raw, err := readIntegrations(db)
 		if err != nil {
@@ -165,15 +153,6 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 		}
 		for id, update := range updates {
 			if id == "hindsight" {
-				switch update.Action {
-				case "replace":
-					memoryKey = update.Value
-				case "clear":
-					memoryKey = ""
-				case "preserve":
-				default:
-					return errors.New("Invalid credential operation")
-				}
 				continue
 			}
 			var profile *websearch.Profile
@@ -214,7 +193,7 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 		raw.SearchRevision = 0
 		raw.Providers = []SearchProvider{}
 		raw.SearchEnabled = false
-		raw.HindsightURL = input.HindsightURL
+		raw.HindsightURL = ""
 		raw.HindsightKey = ""
 		_, err = db.ExecContext(background(), "UPDATE integrations SET document=? WHERE id=1", jsonText(raw))
 		return err
@@ -223,8 +202,6 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 		return nil, err
 	}
 	engine.searchKeys = nextKeys
-	engine.integrations.HindsightURL = input.HindsightURL
-	engine.integrations.HindsightKey = memoryKey
 	engine.cancelSearchProfiles(changed)
 	if err := engine.refreshSearchCompatLocked(); err != nil {
 		return nil, err

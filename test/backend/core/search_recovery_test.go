@@ -126,13 +126,17 @@ func TestReconcileKeepsUnreadableOwnerWithLiveSearch(t *testing.T) {
 	}
 }
 
-// TestOpenStoreKeepsBusyTimeoutAfterReconnect binds durability pragmas to the next physical connection.
+// TestOpenStoreKeepsBusyTimeoutAfterReconnect checks every connection pragma and dependent deletion after replacement.
 func TestOpenStoreKeepsBusyTimeoutAfterReconnect(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "pragma.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	project := testProject()
+	assert(t, store.Insert(&project) == nil, "Insert the reconnect fixture")
+	_, err = store.createConversation(project.ID, "", "Reconnect fixture")
+	assert(t, err == nil, "Create the dependent conversation")
 	connection, err := store.db.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +152,16 @@ func TestOpenStoreKeepsBusyTimeoutAfterReconnect(t *testing.T) {
 	}
 	if timeout != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", timeout)
+	}
+	var foreignKeys, synchronous int
+	var journal string
+	assert(t, store.db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys) == nil && foreignKeys == 1, "Reconnection disabled foreign keys")
+	assert(t, store.db.QueryRow("PRAGMA synchronous").Scan(&synchronous) == nil && synchronous == 2, "Reconnection changed FULL synchronization")
+	assert(t, store.db.QueryRow("PRAGMA journal_mode").Scan(&journal) == nil && journal == "wal", "Reconnection changed the journal mode")
+	assert(t, store.DeleteProject(project.ID, project.Revision) == nil, "Delete the fixture after reconnect")
+	for _, table := range []string{"project_parts", "conversations"} {
+		var remaining int
+		assert(t, store.db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE project_id=?", project.ID).Scan(&remaining) == nil && remaining == 0, "Deletion left records in "+table)
 	}
 }
 

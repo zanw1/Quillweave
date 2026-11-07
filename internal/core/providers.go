@@ -357,13 +357,19 @@ func modelWireMessages(messages []Message, config ProviderConfig) []map[string]a
 			role = "developer"
 		}
 		item := map[string]any{"role": role, "content": message.Content}
-		if preservesProviderContext(config) {
+		if message.CacheControl != nil && (config.Protocol == "anthropic" || config.ProviderID == "openrouter") {
+			item["content"] = []map[string]any{{"type": "text", "text": message.Content, "cache_control": message.CacheControl}}
+		}
+		if config.Protocol == "openai" && preservesProviderContext(config) {
 			if message.reasoningContent != "" {
 				item["reasoning_content"] = message.reasoningContent
 			}
 			if message.encryptedContent != "" {
 				item["encrypted_content"] = message.encryptedContent
 			}
+		}
+		if config.Protocol == "openai" || config.Protocol == "ollama" {
+			item = nativeChatMessage(message, config, item)
 		}
 		result = append(result, item)
 	}
@@ -399,6 +405,7 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 	switch config.Protocol {
 	case "openai":
 		body["messages"] = modelWireMessages(messages, config)
+		body["stream_options"] = map[string]bool{"include_usage": true}
 		if config.ProviderID == "openai" || config.ProviderID == "ark" || config.ProviderID == "bailian" || config.ProviderID == "moonshot" && strings.HasPrefix(config.Model, "kimi-k3") {
 			body["max_completion_tokens"] = config.MaxTokens
 		} else {
@@ -431,7 +438,7 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 			body["reasoning_split"] = true
 		}
 	case "responses":
-		body["input"] = modelWireMessages(messages, config)
+		body["input"] = nativeResponsesInput(messages, config)
 		body["max_output_tokens"], body["store"] = config.MaxTokens, false
 		if config.Temperature != nil {
 			body["temperature"] = *config.Temperature
@@ -440,10 +447,21 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 			body["reasoning"] = map[string]string{"effort": effort}
 		}
 	case "anthropic":
-		system, turns := splitSystemMessages(messages)
-		body["messages"], body["max_tokens"] = modelWireMessages(turns, config), config.MaxTokens
-		if system != "" {
-			body["system"] = []map[string]string{{"type": "text", "text": system}}
+		_, turns := splitSystemMessages(messages)
+		body["messages"], body["max_tokens"] = nativeAnthropicMessages(turns, config), config.MaxTokens
+		system := []map[string]any{}
+		for _, message := range messages {
+			if message.Role != "system" && message.Role != "developer" {
+				continue
+			}
+			block := map[string]any{"type": "text", "text": message.Content}
+			if message.CacheControl != nil {
+				block["cache_control"] = message.CacheControl
+			}
+			system = append(system, block)
+		}
+		if len(system) > 0 {
+			body["system"] = system
 		}
 		headers.Set("anthropic-version", anthropicVersion(config))
 		if anthropicVersion(config) == "2023-06-01" {
@@ -465,15 +483,7 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 			headers.Set("x-goog-api-key", config.APIKey)
 		}
 		system, turns := splitSystemMessages(messages)
-		input := []map[string]any{}
-		for _, message := range turns {
-			kind := "user_input"
-			if message.Role == "assistant" {
-				kind = "model_output"
-			}
-			input = append(input, map[string]any{"type": kind, "content": []map[string]string{{"type": "text", "text": message.Content}}})
-		}
-		body["input"], body["store"] = input, false
+		body["input"], body["store"] = nativeGeminiInput(turns), false
 		if system != "" {
 			body["system_instruction"] = system
 		}
@@ -493,15 +503,7 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 		delete(body, "model")
 		delete(body, "stream")
 		system, turns := splitSystemMessages(messages)
-		contents := []map[string]any{}
-		for _, message := range turns {
-			role := "user"
-			if message.Role == "assistant" {
-				role = "model"
-			}
-			contents = append(contents, map[string]any{"role": role, "parts": []map[string]string{{"text": message.Content}}})
-		}
-		body["contents"] = contents
+		body["contents"] = nativeGeminiContents(turns)
 		if system != "" {
 			body["systemInstruction"] = map[string]any{"parts": []map[string]string{{"text": system}}}
 		}
@@ -527,11 +529,15 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 	default:
 		return nil, nil, fmt.Errorf("Unsupported API protocol: %s", config.Protocol)
 	}
+	applyNativeTools(body, config)
 	return body, headers, nil
 }
 
 // preservesProviderContext restores reasoning only for supported compatible protocols.
 func preservesProviderContext(config ProviderConfig) bool {
+	if config.nativeTools {
+		return true
+	}
 	if config.Protocol != "openai" || optionalMode(config.ThinkingMode) == "disabled" {
 		return false
 	}

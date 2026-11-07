@@ -13,6 +13,46 @@ import (
 	"testing"
 )
 
+// TestSpecialistHandoffCarriesParentEvidence verifies scoped context and actual child costs through normal Agent execution.
+func TestSpecialistHandoffCarriesParentEvidence(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	project.Studio.Decisions = []StoryDecision{{ID: newID(), Title: "Keep the cost", Content: "MAGIC_COSTS_MEMORY", Status: "accepted"}}
+	insertProject(t, engine, project)
+	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": project.ID, "chapter_id": ""})
+	var controlCalls, childCalls atomic.Int32
+	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["tools"] == nil {
+			childCalls.Add(1)
+			text := jsonText(body)
+			for _, required := range []string{"PARENT_AUTHOR_GOAL", "PRIOR_EVIDENCE", "MAGIC_COSTS_MEMORY", "SELECTED_PASSAGE", session.ID, project.ID, "project_revision", "parent_model_calls_remaining", "open questions"} {
+				if !strings.Contains(text, required) {
+					t.Errorf("Specialist handoff omitted %s", required)
+				}
+			}
+			fmt.Fprint(w, streamPayload("Scoped conclusion with evidence and an open question."))
+			return
+		}
+		text := `{"tool":"finish","text":"Review the specialist conclusion."}`
+		switch controlCalls.Add(1) {
+		case 1:
+			text = `{"tool":"plan","text":"PRIOR_EVIDENCE"}`
+		case 2:
+			text = `{"tool":"researcher","query":"Investigate the letter"}`
+		}
+		fmt.Fprint(w, streamPayload(text))
+	})
+	config := nativeConfig("openai")
+	config.BaseURL = server.URL
+	configureModel(t, engine, config)
+	request := AIRequest{ProjectID: project.ID, ChapterID: project.Chapters[0].ID, SessionID: session.ID, Action: "agent", Instruction: "PARENT_AUTHOR_GOAL", WorkspaceContext: &WorkspaceContext{SelectedText: "SELECTED_PASSAGE"}, History: []Message{}}
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", request))
+	assert(t, job.Status == "done" && job.Calls == 4 && controlCalls.Load() == 3 && childCalls.Load() == 1, "Specialist did not complete within the parent's request budget: "+job.Error)
+	assert(t, len(job.Steps) == 3 && job.Steps[1].Tool == "researcher" && job.Steps[1].Status == "done" && strings.Contains(job.Steps[1].Detail, "Scoped conclusion"), "Specialist evidence was not retained in the parent trace")
+}
+
 // TestRepairedMemoryMeaningPreservesVersions covers each semantic field instead of only content/state.
 func TestRepairedMemoryMeaningPreservesVersions(t *testing.T) {
 	cases := []struct {
@@ -131,9 +171,7 @@ func TestRepairedAIStateAcceptanceReplacesOnlyTheReviewedAttribute(t *testing.T)
 		if chapter.Number == 12 && job.Proposals[0].Memory.Supersedes != p.Studio.Memories[0].ID {
 			t.Fatal("The author was not shown an explicit replacement target")
 		}
-		result := invoke[struct {
-			Project Project `json:"project"`
-		}](t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
+		result := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
 		p = result.Project
 	}
 	early := jsonText(memoryContext(&p, 6))
@@ -192,7 +230,12 @@ func TestRepairedReviewPreservesPrivateContinuation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			invoke[map[string]any](t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": first.ID, "proposal_id": first.Proposals[0].ID, "decision": decision})
+			args := map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": first.ID, "proposal_id": first.Proposals[0].ID, "decision": decision}
+			if decision == "accepted" {
+				acceptProposalAfterPreview(t, engine, args)
+			} else {
+				invoke[map[string]any](t, engine, "review_proposal", args)
+			}
 			after, _, err := engine.store.RunProviderContext(p.ID, first.ID)
 			if err != nil || jsonText(before) != jsonText(after) {
 				t.Fatal("Review modified private continuation bytes")
@@ -235,7 +278,7 @@ func TestRepairedIntegrationRevisionAcrossEngines(t *testing.T) {
 	refreshed := invoke[struct {
 		Settings IntegrationSettings `json:"settings"`
 	}](t, a, "get_integrations", nil).Settings
-	if refreshed.Revision != 2 || !refreshed.SearchEnabled || refreshed.HindsightURL == "" {
+	if refreshed.Revision != 2 || !refreshed.SearchEnabled || refreshed.HindsightURL != "" {
 		t.Fatal("Shared metadata did not refresh")
 	}
 }
@@ -342,29 +385,22 @@ func TestRepairedDelegateBudgetChecksCompleteInstructions(t *testing.T) {
 				p := testProject()
 				p.Chapters[0].Body = ""
 				p.requestLanguage, p.taskLanguage = "en", "en"
-				task := "ask"
-				suffix := "\nReturn a scoped report to the coordinating assistant; do not execute tools or apply changes. Role: " + role
-				if role == "reviewer" {
-					task = "review"
-				}
-				if role == "writer" {
-					task = "continue"
-					suffix = "\nReturn only the requested prose. Do not call tools or apply changes."
-				}
-				request := AIRequest{ProjectID: p.ID, ChapterID: p.Chapters[0].ID, Action: task, Instruction: "Bounded scene task", Retrieved: []ContextItem{}}
-				base, err := prepareAI(&p, request, 4000)
+				parent := Job{ID: strings.Repeat("j", 36), ProjectID: p.ID, ChapterID: p.Chapters[0].ID, Instruction: "Delegate a scene task", Language: "en"}
+				request := scopedAgentRequest(&p, parent, agentStepEnvelope{Tool: role, Query: "Bounded scene task"}, 7)
+				task, suffix := request.Action, request.systemAppend
+				base, err := prepareAI(&p, request, 24000)
 				if err != nil {
 					t.Fatal(err)
 				}
-				expected := 4000
+				budget := max(4000, base.Chars+300)
+				expected := budget
 				if boundary == "below" {
 					expected--
 				}
 				if boundary == "role_overflow" {
 					expected += charCount(suffix)
 				}
-				p.Chapters[0].Body = strings.Repeat("x", expected-base.Chars-charCount(suffix))
-				request.systemAppend = suffix
+				p.Chapters[0].Body = strings.Repeat("x", expected-base.Chars)
 				// Recount the generated length guidance, whose digit count also depends on the fixture body.
 				for attempt := 0; attempt < 4; attempt++ {
 					full, err := prepareAI(&p, request, 24000)
@@ -399,7 +435,7 @@ func TestRepairedDelegateBudgetChecksCompleteInstructions(t *testing.T) {
 				})
 				child := testProfile("child")
 				child.Config = nativeConfig("openai")
-				child.Config.BaseURL, child.Config.ContextChars = childServer.URL, 4000
+				child.Config.BaseURL, child.Config.ContextChars = childServer.URL, uint64(budget)
 				var controlCalls atomic.Int32
 				controlServer := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
 					if controlCalls.Add(1) == 1 {
@@ -476,9 +512,7 @@ func TestRepairedMemoryProposalTargets(t *testing.T) {
 				}
 				return
 			}
-			result := invoke[struct {
-				Project Project `json:"project"`
-			}](t, engine, "review_proposal", args).Project
+			result := acceptProposalAfterPreview(t, engine, args).Project
 			if len(result.Studio.Memories) != 3 || result.Studio.Memories[1].Status != "confirmed" {
 				t.Fatal("An unrelated attribute was replaced")
 			}
@@ -552,7 +586,7 @@ func TestRepairedSharedSettingsKeepKeysOnlyForMatchingDestinations(t *testing.T)
 	view.Settings.MaxSearches = 3
 	invoke[map[string]any](t, b, "save_integrations", map[string]any{"settings": view.Settings})
 	snapshot, _, err := a.researchSnapshot()
-	if err != nil || snapshot.MaxSearches != 3 || snapshot.Providers[0].APIKey != "TEST_SEARCH_SECRET" || snapshot.HindsightKey != "TEST_MEMORY_SECRET" {
+	if err != nil || snapshot.MaxSearches != 3 || snapshot.Providers[0].APIKey != "TEST_SEARCH_SECRET" || snapshot.HindsightKey != "" {
 		t.Fatal("Matching destinations lost their process-local credentials")
 	}
 	view = invoke[struct {

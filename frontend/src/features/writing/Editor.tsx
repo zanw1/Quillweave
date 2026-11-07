@@ -23,11 +23,42 @@ interface Props {
   onWiki: () => void;
   seed: string;
   onSeedConsumed?: () => void;
+  embedded?: boolean;
+  onRegisterSave?: (save: (() => Promise<Project | null>) | null) => void;
+  onSelection?: (text: string) => void;
 }
 type Draft = Pick<
   Chapter,
   "title" | "body" | "synopsis" | "status" | "target_words"
->;
+> & { base_version?: string };
+
+/** Identify a saved chapter revision using its durable version history. */
+function chapterVersion(chapter: Chapter): string {
+  return `${chapter.id}:${chapter.versions.at(-1)?.id || "initial"}`;
+}
+
+/** Compare the editable chapter fields without draft-cache metadata. */
+function sameDraft(left: Draft, right: Draft): boolean {
+  return (
+    left.title === right.title &&
+    left.body === right.body &&
+    left.synopsis === right.synopsis &&
+    left.status === right.status &&
+    left.target_words === right.target_words
+  );
+}
+
+/** Build a clean editor draft from the currently saved chapter. */
+function savedDraft(chapter: Chapter): Draft {
+  return {
+    title: chapter.title,
+    body: chapter.body,
+    synopsis: chapter.synopsis,
+    status: chapter.status,
+    target_words: chapter.target_words,
+    base_version: chapterVersion(chapter),
+  };
+}
 
 /** Restore uncommitted local drafts across navigation or reload. */
 function readDraft(key: string, chapter: Chapter): Draft {
@@ -41,6 +72,7 @@ function readDraft(key: string, chapter: Chapter): Draft {
     )
       return {
         ...value,
+        base_version: value.base_version || chapterVersion(chapter),
         target_words:
           value.target_words === undefined
             ? chapter.target_words
@@ -49,13 +81,7 @@ function readDraft(key: string, chapter: Chapter): Draft {
   } catch {
     /* Retain database text when a local draft is corrupted. */
   }
-  return {
-    title: chapter.title,
-    body: chapter.body,
-    synopsis: chapter.synopsis,
-    status: chapter.status,
-    target_words: chapter.target_words,
-  };
+  return savedDraft(chapter);
 }
 
 /** Provide chapter navigation, an editor, and a collapsible AI panel. */
@@ -68,6 +94,9 @@ export function Writing({
   onWiki,
   seed,
   onSeedConsumed,
+  embedded,
+  onRegisterSave,
+  onSelection,
 }: Props) {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
@@ -155,6 +184,9 @@ export function Writing({
             onWiki,
             seed,
             onSeedConsumed,
+            embedded,
+            onRegisterSave,
+            onSelection,
           }}
         />
       ) : (
@@ -228,17 +260,25 @@ function Editor({
   onWiki,
   seed,
   onSeedConsumed,
+  embedded,
+  onRegisterSave,
+  onSelection,
 }: Props & { chapter: Chapter }) {
   const draftKey = `quillweave-draft-${project.id}-${chapter.id}`;
   const [draft, setDraftState] = useState<Draft>(() =>
     readDraft(draftKey, chapter),
   );
   const draftRef = useRef(draft);
+  const previousChapter = useRef(chapter);
+  const saveRef = useRef<() => Promise<Project | null>>(() =>
+    Promise.resolve(project),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [history, setHistory] = useState(false);
   const [showAI, setShowAI] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
+  const pendingSave = useRef<Promise<Project | null> | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string>("");
   const dirty =
     draft.title !== chapter.title ||
@@ -246,6 +286,26 @@ function Editor({
     draft.synopsis !== chapter.synopsis ||
     draft.status !== chapter.status ||
     draft.target_words !== chapter.target_words;
+
+  useEffect(() => {
+    const local = draftRef.current;
+    if (
+      sameDraft(local, previousChapter.current) ||
+      sameDraft(local, chapter)
+    ) {
+      setDraft(savedDraft(chapter));
+      previousChapter.current = chapter;
+    } else if (local.base_version !== chapterVersion(chapter)) {
+      setError(
+        "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.",
+      );
+    }
+  }, [chapter, project.revision]);
+
+  useEffect(() => {
+    onRegisterSave?.(() => saveRef.current());
+    return () => onRegisterSave?.(null);
+  }, [chapter.id, onRegisterSave]);
 
   useEffect(() => {
     if (!dirty) {
@@ -279,26 +339,48 @@ function Editor({
 
   /** Save a revision while letting current dirty state own draft-cache cleanup. */
   async function save(): Promise<Project | null> {
+    if (pendingSave.current) return pendingSave.current;
     if (!dirty) return project;
-    if (saving) return null;
+    if (draft.base_version !== chapterVersion(chapter)) {
+      setError(
+        "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.",
+      );
+      return null;
+    }
     setSaving(true);
     setError("");
-    try {
-      const next = await api<Project>("save_chapter", {
-        project_id: project.id,
-        revision: project.revision,
-        chapter_id: chapter.id,
-        ...draft,
+    const submitted = draftRef.current;
+    const request = api<Project>("save_chapter", {
+      project_id: project.id,
+      revision: project.revision,
+      chapter_id: chapter.id,
+      ...submitted,
+    })
+      .then((next) => {
+        const persisted = next.chapters.find((item) => item.id === chapter.id);
+        if (persisted) {
+          previousChapter.current = persisted;
+          setDraft((current) =>
+            sameDraft(current, submitted)
+              ? savedDraft(persisted)
+              : { ...current, base_version: chapterVersion(persisted) },
+          );
+        }
+        onProject(next);
+        return next;
+      })
+      .catch((cause) => {
+        setError(message(cause));
+        return null;
+      })
+      .finally(() => {
+        pendingSave.current = null;
+        setSaving(false);
       });
-      onProject(next);
-      return next;
-    } catch (e) {
-      setError(message(e));
-      return null;
-    } finally {
-      setSaving(false);
-    }
+    pendingSave.current = request;
+    return request;
   }
+  saveRef.current = save;
 
   /** Refresh derived project data while retaining ongoing local edits. */
   async function refresh() {
@@ -353,7 +435,9 @@ function Editor({
   }
   const version = chapter.versions.find((v) => v.id === selectedVersion);
   return (
-    <div className={`editor-and-assistant ${showAI ? "" : "focus-mode"}`}>
+    <div
+      className={`editor-and-assistant ${showAI && !embedded ? "" : "focus-mode"}`}
+    >
       <section className="editor-panel">
         <header className="editor-toolbar">
           <div>
@@ -376,21 +460,23 @@ function Editor({
             >
               <IconHistory size={18} />
             </button>
-            <button
-              className="icon-button"
-              aria-label={
-                showAI
-                  ? t("Collapse writing assistant")
-                  : t("Expand writing assistant")
-              }
-              onClick={() => setShowAI(!showAI)}
-            >
-              {showAI ? (
-                <IconLayoutSidebarRightCollapse size={19} />
-              ) : (
-                <IconLayoutSidebarRightExpand size={19} />
-              )}
-            </button>
+            {!embedded && (
+              <button
+                className="icon-button"
+                aria-label={
+                  showAI
+                    ? t("Collapse writing assistant")
+                    : t("Expand writing assistant")
+                }
+                onClick={() => setShowAI(!showAI)}
+              >
+                {showAI ? (
+                  <IconLayoutSidebarRightCollapse size={19} />
+                ) : (
+                  <IconLayoutSidebarRightExpand size={19} />
+                )}
+              </button>
+            )}
             <Button primary disabled={!dirty || saving} onClick={() => save()}>
               <IconDeviceFloppy size={16} />
               {saving ? t("Saving") : t("Save")}
@@ -484,6 +570,12 @@ function Editor({
               spellCheck={false}
               value={draft.body}
               onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+              onSelect={(event) => {
+                const field = event.currentTarget;
+                onSelection?.(
+                  field.value.slice(field.selectionStart, field.selectionEnd),
+                );
+              }}
             />
             <div className="chapter-end">{t("— The story continues —")}</div>
           </div>
@@ -500,7 +592,7 @@ function Editor({
           </button>
         </footer>
       </section>
-      {showAI && (
+      {showAI && !embedded && (
         <Assistant
           project={project}
           chapter={chapter}

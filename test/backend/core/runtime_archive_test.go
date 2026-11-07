@@ -34,9 +34,7 @@ func TestRuntimeArchiveRetainsReviewableProposalsAndBranches(t *testing.T) {
 	assert(t, len(sessions) == 2, "Conversation branch was omitted from the backup")
 	runs := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": restored.ID})
 	assert(t, len(runs) == 1 && runs[0].ID != done.ID && runs[0].SessionID != session.ID && len(runs[0].Proposals) == 1, "Pending proposals or session links were lost during rekeying")
-	accepted := invoke[struct {
-		Project Project `json:"project"`
-	}](t, engine, "review_proposal", map[string]any{"project_id": restored.ID, "revision": restored.Revision, "job_id": runs[0].ID, "proposal_id": runs[0].Proposals[0].ID, "decision": "accepted"})
+	accepted := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": restored.ID, "revision": restored.Revision, "job_id": runs[0].ID, "proposal_id": runs[0].Proposals[0].ID, "decision": "accepted"})
 	assert(t, len(accepted.Project.Studio.Decisions) == 1, "Restored pending proposal could not be reviewed")
 	original := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	assert(t, len(original.Studio.Decisions) == 0, "Review of an imported proposal changed the original work")

@@ -1,30 +1,206 @@
 /** Localize the shared creation workflow and its recoverable operations. */
 export const zhStudio: Record<string, string> = {
-  "The app restarted. Continue from the saved conversation.": "应用曾意外退出，可从已保存会话继续。",
-  "Unable to save task and conversation: {0}": "无法保存任务和会话，将保留结果以便重试：{0}",
+  "This older rename has no fact-reference snapshot. Review the current facts before reverting":
+    "这条旧改名记录缺少事实引用快照，请先核对当前事实再恢复。",
+  "Unsupported proposal link version": "不支持的建议关联格式版本",
+  "This preview changed elsewhere. Your edits are kept. Update the preview before confirming.":
+    "预览已在其他位置更新，本地编辑已保留。请更新预览后再确认写入。",
+  "This change was reviewed elsewhere. Your local edits are kept here for copying.":
+    "这项修改已在其他位置完成审阅，本地编辑已保留，可先复制保存。",
+  "Discard local edits and load the saved review":
+    "放弃本地编辑并加载已保存版本",
+  "Older proposal source links are ambiguous. Create a new reviewed change from the saved story":
+    "这条旧建议的来源关联不明确，请基于当前已保存内容生成新的修改预览。",
+  "Request usage": "请求用量",
+  "Resume task": "继续任务",
+  "Load older conversations": "加载更早的会话",
+  "This task ended before returning text.": "任务在返回正文前已结束。",
+  "Conversation summary": "会话压缩",
+  "Model request": "模型请求",
+  "Input tokens": "输入 Token",
+  "Output tokens": "输出 Token",
+  "Reasoning tokens included": "其中推理 Token",
+  "Cache read tokens": "缓存读取 Token",
+  "Cache write tokens": "缓存写入 Token",
+  "First text latency": "首字延迟",
+  "Prefix fingerprint": "前缀指纹",
+  "Request comparison": "请求变化",
+  "Shared prefix bytes": "相同前缀字节数",
+  "First changed message": "首处变化的消息",
+  "First comparable request": "首次可对照请求",
+  "Request configuration changed": "请求配置发生变化",
+  "Message content changed": "消息内容发生变化",
+  "History appended": "历史追加新内容",
+  "History shortened": "历史已缩短",
+  "Identical request": "请求内容一致",
+  "Scoped task request": "限定范围的子任务请求",
+  "Not reported": "供应商未返回",
+  "World map": "世界地图",
+  "Related plans and chapters": "需核对的关联大纲与章节",
+  "Places, regions and travel constraints linked to your story.":
+    "管理地点、区域与移动时间，并关联人物、大纲和章节。",
+  "Add location": "添加地点",
+  "Add route": "添加路线",
+  "Add the first place in your world": "建立第一个地点",
+  "Discuss locations with your creative partner or prepare a location here.":
+    "可以与创作搭档讨论地理设定，也可以在这里创建地点预览。",
+  "Travel routes": "移动路线",
+  hours: "小时",
+  "Whole world": "全世界",
+  "Use existing location entries": "关联已有地点条目",
+  "Linked world entries": "关联人物与世界条目",
+  "Linked plans": "关联大纲",
+  "Linked chapters": "关联章节",
+  "No entries yet": "暂无条目",
+  "Preview changes": "预览修改",
+  "Remove map location {0}": "删除地图地点{0}",
+  "Remove travel route": "删除移动路线",
+  "Change history": "保存记录",
+  "Map locations require unique names and IDs and a valid place or region type":
+    "地点名称和编号须唯一，类型应为地点或区域。",
+  "Map regions must exist and have no containment cycles":
+    "所属区域须存在，区域归属不能形成循环。",
+  "Routes require unique IDs and two existing locations":
+    "路线编号须唯一，起终点须为两个已存在的地点。",
+  "A map reference is missing from this project":
+    "地图关联的条目在本作品中不存在，请检查引用。",
+  "Map target no longer exists": "该地图条目已被删除，请刷新后重试。",
+  "Enter a valid route description and travel time between 0 and 87,600 hours":
+    "请输入有效的路线描述和 0 至 87600 小时的移动时间。",
+  "This is an imported history record. Prepare a new reviewed change to restore its values":
+    "这是导入的历史回执，恢复其中内容时请创建新的修改预览。",
+  "Setting records": "人物与规则",
+  "Narrative state & clues": "状态与伏笔",
+  "Workspace overview": "作品",
+  "Story settings": "设定",
+  Outline: "大纲",
+  Manuscript: "正文",
+  "Story workspace": "作品工作区",
+  "Sources & research": "资料与搜索",
+  "Local sources": "本地资料",
+  "What would you like to work on?": "这次想推进哪一部分？",
+  "Discuss your story here. Review proposed changes before saving.":
+    "在这里讨论作品，修改会先生成预览，由你确认保存。",
+  "Discuss the story": "讨论故事方向",
+  "Develop the setting": "完善人物与世界",
+  "Plan the next chapters": "规划后续章节",
+  "Continue writing": "继续写作",
+  "Prepare setting changes": "整理设定并预览",
+  "Prepare structured changes from this discussion for review.":
+    "请根据我选中的讨论回答，提取人物、世界规则、地点、大纲及创作目标等内容，匹配已有条目，调用 propose_changes 生成结构化修改预览，等待我确认。",
+  "Review our discussion and prepare a structured setting preview for my confirmation.":
+    "请整理我们已讨论的创作内容，生成分门别类的设定修改预览，由我确认写入。",
+  "Help me explore the central idea, character motivation and main conflict. Ask about the most important missing detail first.":
+    "帮我梳理核心创意、人物动机和主要冲突，先追问最关键的缺口。",
+  "Review this source and propose useful story material with citations.":
+    "请阅读当前选中的资料，引用来源，提炼可用于本作品的内容并生成待审阅建议。",
+  "Characters & world entries": "人物与世界条目",
+  "Confirmed plans": "已确认规划",
+  "Written chapters": "已写章节",
+  "Pending changes": "待确认修改",
+  "Open outline": "打开大纲",
+  "Open chapter": "进入章节",
+  "Selected text": "已选文字",
+  "Model assignments": "模型分配",
+  "Advanced & experiments": "高级与实验",
+  "Open a project to inspect its experiments.":
+    "打开作品后可以查看对应的实验记录。",
+  "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.":
+    "章节已在其他位置更新，当前本地草稿已保留。请核对已保存版本后再处理草稿。",
+  "External memory integration has been retired. Use local story records":
+    "外部记忆集成已退役，请使用本地作品记录。",
+  "The selected response exceeds the context budget. Increase the model context budget before extracting it":
+    "选中的回答超过当前上下文预算，请增大模型上下文预算后再提取。",
+  "Only pending changes can be rejected": "只有待确认的修改可以拒绝。",
+  "Preview edited operations before confirming":
+    "请先更新修改预览，再确认写入。",
+  "Selected operation changed its target. Create a new proposal":
+    "修改目标已改变，请重新生成提案。",
+  "Changeset operation IDs must be unique": "变更操作编号必须唯一。",
+  Name: "名称",
+  Description: "描述",
+  Region: "区域",
+  Type: "类型",
+  "Chapter word target": "单章目标字数",
+  "Narrative viewpoint": "叙事视角",
+  "Forbidden names": "禁用名称",
+  "Author preferences": "作品偏好",
+  Clues: "伏笔",
+  "Related character": "关联人物",
+  "Valid through chapter": "有效截止章节",
+  "Review changes": "审阅修改",
+  "Confirm changes": "确认写入",
+  "Update preview": "更新预览",
+  "Edit proposed value": "编辑候选内容",
+  "Edit {0}": "编辑{0}",
+  Before: "修改前",
+  After: "修改后",
+  Empty: "空",
+  "Open saved item": "打开已保存条目",
+  "Saved revision": "保存版本",
+  "Skipped changes": "已跳过的修改",
+  "Review each change, then confirm to save it to your story.":
+    "请审阅各项修改，确认后将正式写入作品。",
+  "Update the preview to review your edits before confirming.":
+    "请先更新预览，核对编辑后的结果再确认写入。",
+  "Preview these changes and confirm the reviewed version first":
+    "请先查看修改预览，再确认该版本。",
+  "The project changed after this preview. Refresh the preview before confirming":
+    "作品在预览后有了修改，请更新预览后再次确认。",
+  "The project changed. Refresh the preview before confirming":
+    "作品已变化，请更新预览后再次确认。",
+  "The story has later edits. Review a new change before reverting":
+    "作品已有后续编辑，请通过新的修改预览恢复所需内容。",
+  "The reviewed changes changed. Refresh the preview":
+    "候选内容已变化，请重新查看预览。",
+  "Only pending changes can be previewed": "只有待确认的修改可以生成预览。",
+  Location: "地点",
+  "Travel route": "移动路线",
+  "Travel hours": "移动时间（小时）",
+  "From location": "起点",
+  "To location": "终点",
+  "Two-way route": "双向路线",
+  Transport: "交通方式",
+  "Horizontal position": "横向位置",
+  "Vertical position": "纵向位置",
+  "The app restarted. Continue from the saved conversation.":
+    "应用曾意外退出，可从已保存会话继续。",
+  "Unable to save task and conversation: {0}":
+    "无法保存任务和会话，将保留结果以便重试：{0}",
   "Unable to save a recovery checkpoint: {0}": "无法保存恢复检查点：{0}",
-  "Task ownership changed; the result was not published": "任务所有权已改变，结果未写入作品。",
+  "Task ownership changed; the result was not published":
+    "任务所有权已改变，结果未写入作品。",
   "Invalid task recovery intent": "任务恢复记录无效，请保留数据以便核查。",
-  "Four backup transfers are already active. Finish or cancel one first": "已有四个备份传输，请先完成或取消其中一个。",
+  "Four backup transfers are already active. Finish or cancel one first":
+    "已有四个备份传输，请先完成或取消其中一个。",
   "Backup transfer not found": "找不到备份传输，请重新选择文件。",
-  "Backup transfer is closed or has a different operation": "备份传输已关闭或操作类型不匹配，请重试。",
+  "Backup transfer is closed or has a different operation":
+    "备份传输已关闭或操作类型不匹配，请重试。",
   "Invalid backup size or offset": "备份大小或传输位置无效。",
   "Backup chunk exceeds the transfer frame limit": "备份分块超过单次传输上限。",
   "Invalid backup chunk": "备份分块数据无效。",
   "This backup has already been imported": "该备份已经导入。",
-  "A retried backup chunk differs from the original": "重试的备份分块与原数据不一致，请重新导入。",
-  "Backup chunks must be uploaded in order within the declared size": "备份分块须按顺序上传，且不得超过文件大小。",
+  "A retried backup chunk differs from the original":
+    "重试的备份分块与原数据不一致，请重新导入。",
+  "Backup chunks must be uploaded in order within the declared size":
+    "备份分块须按顺序上传，且不得超过文件大小。",
   "Backup offset exceeds the file size": "备份传输位置超过文件大小。",
   "The backup upload is incomplete": "备份尚未上传完整，请重试。",
-  "Select a nonempty backup within the supported file size": "请选择非空且不超过 4 GiB 的备份文件。",
-  "Use the streaming backup transfer for archives larger than 40 MB": "超过 40 MB 的备份请使用界面的文件导入或完整备份功能。",
+  "Select a nonempty backup within the supported file size":
+    "请选择非空且不超过 4 GiB 的备份文件。",
+  "Use the streaming backup transfer for archives larger than 40 MB":
+    "超过 40 MB 的备份请使用界面的文件导入或完整备份功能。",
   "The archive exceeds the supported file size": "备份超过 4 GiB 的文件上限。",
-  "One archive record exceeds the supported size": "备份中的单条记录超过 256 MiB 上限。",
+  "One archive record exceeds the supported size":
+    "备份中的单条记录超过 256 MiB 上限。",
   "Too many conversations for one archive": "备份中的会话数量超过上限。",
-  "Too many turns in one archived conversation": "备份中单个会话的消息数量超过上限。",
+  "Too many turns in one archived conversation":
+    "备份中单个会话的消息数量超过上限。",
   "Too many runtime records in one archive": "备份中的任务或实验数量超过上限。",
-  "The backup transfer returned an invalid offset": "备份传输返回了无效位置，请重试。",
-  "Use the desktop app or a browser with streaming file saving for this backup": "该备份较大，请使用桌面版或支持文件流式保存的浏览器。",
+  "The backup transfer returned an invalid offset":
+    "备份传输返回了无效位置，请重试。",
+  "Use the desktop app or a browser with streaming file saving for this backup":
+    "该备份较大，请使用桌面版或支持文件流式保存的浏览器。",
   "Invalid UTF-8 in backup": "备份包含无效的 UTF-8 文本。",
   "Incomplete UTF-8 in backup": "备份中的 UTF-8 文本不完整。",
   "The backup has an invalid structure": "备份结构无效。",
@@ -33,12 +209,17 @@ export const zhStudio: Record<string, string> = {
   "The backup contains trailing data": "备份末尾包含多余数据。",
   "Backup files must use .json": "备份文件须使用 .json 扩展名。",
   "Select an existing memory to reject": "请选择已有记忆进行退役。",
-  "This memory version is archived. Edit the current version or create a new memory": "该记忆版本已归档，请编辑当前版本或新增记忆。",
-  "Reject the confirmed memory instead of turning it into a proposal": "已确认记忆不能改为待审阅状态，可将其退役。",
-  "The memory update target changed. Review the current version": "记忆更新目标已变更，请重新核对当前版本。",
-  "Memory versions contain a missing predecessor or cycle": "记忆版本存在缺失的前序记录或循环关联。",
+  "This memory version is archived. Edit the current version or create a new memory":
+    "该记忆版本已归档，请编辑当前版本或新增记忆。",
+  "Reject the confirmed memory instead of turning it into a proposal":
+    "已确认记忆不能改为待审阅状态，可将其退役。",
+  "The memory update target changed. Review the current version":
+    "记忆更新目标已变更，请重新核对当前版本。",
+  "Memory versions contain a missing predecessor or cycle":
+    "记忆版本存在缺失的前序记录或循环关联。",
   "Select a valid memory update target": "请选择有效的记忆更新目标。",
-  "The project changed. Refresh before starting this task": "作品已变更，请刷新后再开始任务。",
+  "The project changed. Refresh before starting this task":
+    "作品已变更，请刷新后再开始任务。",
   "API keys stay in this app process. Enter them again after restarting.":
     "API 密钥仅保留在当前应用进程中，重启后需要重新输入。",
   "A chapter plan must identify one chapter number":
@@ -321,8 +502,6 @@ export const zhStudio: Record<string, string> = {
   "Search results are references, not verified story facts.":
     "搜索结果是参考资料，采纳后仍需核对史实与虚构改编。",
   "External memory": "外部记忆",
-  "Hindsight endpoint": "Hindsight 接口地址",
-  "Hindsight API key": "Hindsight 密钥",
   "Local memory works without an external service.":
     "不配置外部服务也可使用本地故事记忆。",
   "Select memories to send": "选择要发送的记忆",
@@ -372,7 +551,6 @@ export const zhStudio: Record<string, string> = {
     "应用已重启，可从已保存会话重试。",
   "Enable web research in integration settings first":
     "请先在服务设置中启用联网研究",
-  "Configure a Hindsight endpoint first": "请先配置 Hindsight 接口",
   "External service could not be reached": "无法连接外部服务",
   "External service returned invalid JSON": "外部服务返回的 JSON 无效",
   "External service returned HTTP {0}": "外部服务返回 HTTP {0}",
@@ -393,4 +571,52 @@ export const zhStudio: Record<string, string> = {
   "This proposal was already reviewed": "该建议已经审阅过",
   "The project changed. Refresh before applying this proposal":
     "作品已变更，请刷新后采纳建议",
+  "Creation flow (5 steps)": "创作流程（5 步）",
+  "1. Story Setup": "1. 作品立项",
+  "2. Characters & World": "2. 角色与世界",
+  "3. Volumes & Outlines": "3. 分卷与细纲",
+  "4. Chapter Prose": "4. 章节正文",
+  "5. Research & Sources": "5. 资料与搜索",
+  "Creation progress": "创作进度",
+  Recommended: "推荐下一步",
+  "Recommended next step:": "推荐下一步：",
+  "Go to step": "前往该步骤",
+  "Quick intents": "快捷意图",
+  "Quick intent hints": "快捷意图标签",
+  "Intent hint:": "当前意图：",
+  "Brainstorm directions": "发散方向",
+  "Titles & character names": "书名与起名",
+  "Characters & world check": "角色与设定梳理",
+  "Volume & chapter outline": "细纲拆解",
+  "Prose continuation & polish": "正文润色",
+  "Extract & commit settings": "入库当前设定",
+  "Clear intent hint": "清除意图标签",
+  "Commit all changes": "一键全部入库",
+  "Undo commit": "一键撤销",
+  "Extract & stage settings": "提取设定并入库",
+  "Staged changeset": "待入库变更集",
+  "Staged setting changes": "待入库设定变更",
+  "Committed to story bible": "已入库至故事设定",
+  "Ready to commit": "待确认入库",
+  "Structured setting update": "结构化设定变更",
+  operations: "项变更",
+  "Committing…": "正在入库…",
+  "Reverting…": "正在撤销…",
+  "Story Setup": "作品基本信息",
+  "Character / World entry": "角色与世界设定",
+  "Story plan": "分层细纲",
+  Committed: "已入库",
+  Reverted: "已撤销",
+  "Auto-committed": "已自动入库",
+  "Story setup": "作品基本信息",
+  "Character / World": "角色与世界设定",
+  "Hierarchical plan": "分层细纲",
+  "Chapter prose": "章节正文",
+  "Edit operation content": "编辑入库内容",
+  Discard: "丢弃",
+  "Character & World Wiki": "角色与世界 Wiki",
+  "Built-in writing craft (auto-assembled)": "内置写作方法（默认自动装配）",
+  "Default active": "默认生效",
+  "Writing craft methods are automatically assembled into the static prompt prefix based on your story form and current step.":
+    "核心写作方法已根据作品形态与当前创作阶段自动集成进静态提示词前缀，无需手动选择切换。",
 };

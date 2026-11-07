@@ -14,21 +14,22 @@ import (
 )
 
 type Engine struct {
-	mu            sync.Mutex
-	store         *Store
-	models        ModelSettings
-	closed        bool
-	jobsMu        sync.Mutex
-	jobs          map[string]*Job
-	ctx           context.Context
-	cancel        context.CancelFunc
-	workers       sync.WaitGroup
-	integrations  IntegrationSettings
-	owner         *runtimeOwner
-	transfersMu   sync.Mutex
-	transfers     map[string]*archiveTransfer
-	searchKeys    map[string]searchSecret
-	searchRuntime searchRuntime
+	mu                 sync.Mutex
+	store              *Store
+	models             ModelSettings
+	closed             bool
+	jobsMu             sync.Mutex
+	jobs               map[string]*Job
+	ctx                context.Context
+	cancel             context.CancelFunc
+	workers            sync.WaitGroup
+	integrations       IntegrationSettings
+	owner              *runtimeOwner
+	transfersMu        sync.Mutex
+	transfers          map[string]*archiveTransfer
+	searchKeys         map[string]searchSecret
+	searchRuntime      searchRuntime
+	nativeToolFallback map[string]bool
 }
 type arguments struct {
 	fields map[string]json.RawMessage
@@ -242,6 +243,9 @@ func (engine *Engine) mutateLocked(args *arguments, change func(*Project) error)
 	if args.err != nil {
 		return nil, args.err
 	}
+	if err := validateWorldMap(&project); err != nil {
+		return nil, err
+	}
 	if err := engine.store.Save(&project, expected); err != nil {
 		return nil, err
 	}
@@ -283,9 +287,11 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		return engine.dispatchSearch(command, raw, args)
 	}
 	switch command {
+	case "preview_changeset", "reject_changeset":
+		return engine.studioCommand(command, args, raw)
 	case "begin_archive_export", "read_archive_chunk", "begin_archive_import", "write_archive_chunk", "complete_archive_import", "finish_archive_transfer", "import_archive":
 		return engine.archiveCommand(command, args)
-	case "studio", "save_studio", "save_plan", "delete_plan", "create_planned_chapters", "save_memory", "save_decision", "review_proposal", "list_conversations", "create_conversation", "update_conversation", "fork_conversation", "get_conversation", "get_integrations", "save_integrations", "search_web", "test_search", "retain_external", "recall_external", "reflect_external", "evaluate_policy", "list_experiments", "record_experiment", "writing_skills":
+	case "studio", "get_flow_readiness", "stage_changeset", "apply_changeset", "undo_changeset", "extract_changeset", "list_changesets", "save_studio", "save_plan", "delete_plan", "create_planned_chapters", "save_memory", "save_decision", "review_proposal", "list_conversations", "create_conversation", "update_conversation", "fork_conversation", "get_conversation", "get_integrations", "save_integrations", "search_web", "test_search", "retain_external", "recall_external", "reflect_external", "evaluate_policy", "list_experiments", "record_experiment", "writing_skills":
 		return engine.studioCommand(command, args, raw)
 	case "start_ai":
 		var request AIRequest
@@ -778,7 +784,9 @@ func saveEntity(project *Project, raw json.RawMessage) error {
 			return nil
 		}
 	}
-	entity.ID = newID()
+	if entity.ID == "" {
+		entity.ID = newID()
+	}
 	project.Entities = append(project.Entities, entity)
 	return nil
 }
@@ -786,6 +794,9 @@ func saveEntity(project *Project, raw json.RawMessage) error {
 // validateProject validates chapter, source, and entity identity before importing a complete project.
 func validateProject(project *Project) error {
 	if err := validateStudio(&project.Studio); err != nil {
+		return err
+	}
+	if err := validateWorldMap(project); err != nil {
 		return err
 	}
 	if _, err := validateName(project.Title); err != nil {

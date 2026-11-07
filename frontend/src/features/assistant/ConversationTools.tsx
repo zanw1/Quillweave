@@ -20,12 +20,14 @@ export function ConversationTools({
   const [error, setError] = useState("");
 
   /** Surface recoverable session operations without blocking the writing workspace. */
-  async function operate(operation: () => Promise<unknown>) {
+  async function operate(operation: () => Promise<unknown>, close = true) {
     setError("");
     try {
       await operation();
-      setVisible(false);
-      setRenaming(false);
+      if (close) {
+        setVisible(false);
+        setRenaming(false);
+      }
     } catch (error) {
       setError(message(error));
     }
@@ -36,7 +38,10 @@ export function ConversationTools({
       <button
         className="text-button"
         disabled={disabled || manager.loading}
-        onClick={() => setVisible(true)}
+        onClick={() => {
+          setVisible(true);
+          void operate(() => manager.reload(), false);
+        }}
       >
         <IconGitBranch size={15} />
         {t(manager.session?.title || "Conversations")}
@@ -96,6 +101,15 @@ export function ConversationTools({
                   </button>
                 ))}
             </div>
+            {error && <ErrorBox>{error}</ErrorBox>}
+            {manager.hasMore && (
+              <Button
+                disabled={manager.loadingMore}
+                onClick={() => void operate(manager.loadMore, false)}
+              >
+                {t("Load older conversations")}
+              </Button>
+            )}
           </div>
         </Modal>
       )}
@@ -123,6 +137,7 @@ export function ConversationTools({
             <Button primary type="submit">
               {t("Save")}
             </Button>
+            {error && <ErrorBox>{error}</ErrorBox>}
           </form>
         </Modal>
       )}

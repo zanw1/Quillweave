@@ -27,10 +27,12 @@ export function Library({
   project,
   onProject,
   onSettings,
+  onAskSource,
 }: {
   project: Project;
   onProject: (p: Project) => void;
   onSettings: () => void;
+  onAskSource?: (source: Source) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({
@@ -364,7 +366,8 @@ export function Library({
               <Button
                 primary
                 onClick={() => {
-                  setAnalyze(selected);
+                  if (onAskSource) onAskSource(selected);
+                  else setAnalyze(selected);
                   setSelected(null);
                 }}
               >

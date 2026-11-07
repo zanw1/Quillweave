@@ -81,6 +81,9 @@ func decodeStoredJob(raw string) (Job, error) {
 	}
 	err := decodeJSON([]byte(raw), &saved)
 	saved.Job.providerContext, saved.Job.ownerID = saved.ProviderContext, saved.Owner
+	if err == nil {
+		normalizeLegacyProposalStates(&saved.Job)
+	}
 	return saved.Job, err
 }
 
@@ -100,6 +103,8 @@ func (engine *Engine) commitTerminalLocked(current *Job) error {
 		return err
 	}
 	current.Status, current.Error, current.Progress = desired.Status, desired.Error, desired.Progress
+	current.Text = desired.Text
+	current.ChangeSets = append([]ChangeSet{}, desired.ChangeSets...)
 	current.pendingFinal = nil
 	_ = os.Remove(engine.owner.terminalPath(current.ID))
 	return nil
@@ -312,6 +317,19 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 		if stored.ownerID != job.ownerID {
 			return errors.New("Task ownership changed; the result was not published")
 		}
+		if job.Status == "done" {
+			job.Text = stripModelToolJSON(job.Text)
+		}
+		if len(job.ChangeSets) > 0 {
+			staged := append([]ChangeSet{}, job.ChangeSets...)
+			for i := range staged {
+				staged[i].CommitPolicy, staged[i].Status = "review", ChangeSetStaged
+			}
+			if err := persistStagedChangeSetsInDB(connection, job.ProjectID, staged); err != nil {
+				return err
+			}
+			job.ChangeSets = staged
+		}
 		if _, err := connection.ExecContext(context.Background(), "UPDATE runs SET document=? WHERE id=? AND project_id=?", storedJob(job), job.ID, job.ProjectID); err != nil {
 			return err
 		}
@@ -324,6 +342,9 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 	session, err := readConversation(connection, job.ProjectID, job.SessionID)
 	if err != nil {
 		return err
+	}
+	if job.Status == "done" && job.Prompt.BibleCurrent != "" {
+		session.LastBibleHash = hashText(job.Prompt.BibleCurrent)
 	}
 	answered, changed := false, false
 	for i := range session.Turns {

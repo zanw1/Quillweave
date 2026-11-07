@@ -9,26 +9,31 @@ import (
 )
 
 type Job struct {
-	ID                   string           `json:"id"`
-	ProjectID            string           `json:"project_id"`
-	ChapterID            string           `json:"chapter_id"`
-	Action               string           `json:"action"`
-	Instruction          string           `json:"instruction"`
-	Status               string           `json:"status"`
-	Text                 string           `json:"text"`
-	Error                string           `json:"error"`
-	Progress             string           `json:"progress"`
-	CreatedAt            string           `json:"created_at"`
-	Model                string           `json:"model"`
-	Prompt               Prompt           `json:"prompt"`
-	SessionID            string           `json:"session_id,omitempty"`
-	Language             string           `json:"language,omitempty"`
-	Steps                []AgentStep      `json:"steps"`
-	Proposals            []StudioProposal `json:"proposals"`
-	Calls                int              `json:"calls"`
-	SearchSelection      *SearchSelection `json:"search_selection,omitempty"`
-	SearchModelProfileID string           `json:"search_model_profile_id,omitempty"`
-	BaseRevision         uint64           `json:"base_revision"`
+	ID                   string            `json:"id"`
+	ProjectID            string            `json:"project_id"`
+	ChapterID            string            `json:"chapter_id"`
+	Action               string            `json:"action"`
+	Instruction          string            `json:"instruction"`
+	Status               string            `json:"status"`
+	Text                 string            `json:"text"`
+	Error                string            `json:"error"`
+	Progress             string            `json:"progress"`
+	CreatedAt            string            `json:"created_at"`
+	Model                string            `json:"model"`
+	Prompt               Prompt            `json:"prompt"`
+	SessionID            string            `json:"session_id,omitempty"`
+	Language             string            `json:"language,omitempty"`
+	IntentHint           string            `json:"intent_hint,omitempty"`
+	CommitPolicy         string            `json:"commit_policy,omitempty"`
+	WorkspaceContext     *WorkspaceContext `json:"workspace_context,omitempty"`
+	Steps                []AgentStep       `json:"steps"`
+	Proposals            []StudioProposal  `json:"proposals"`
+	ChangeSets           []ChangeSet       `json:"changesets,omitempty"`
+	Calls                int               `json:"calls"`
+	Metrics              []ModelCallMetric `json:"metrics,omitempty"`
+	SearchSelection      *SearchSelection  `json:"search_selection,omitempty"`
+	SearchModelProfileID string            `json:"search_model_profile_id,omitempty"`
+	BaseRevision         uint64            `json:"base_revision"`
 	checkpointedAt       time.Time
 	ctx                  context.Context
 	cancel               context.CancelFunc
@@ -36,13 +41,19 @@ type Job struct {
 	providerContext      *providerContext
 	ownerID              string
 	pendingFinal         *Job
+	lastRequestBody      string
+	lastRequestConfig    string
 }
 
 type providerContext struct {
-	Fingerprint string `json:"fingerprint"`
-	Reasoning   string `json:"reasoning,omitempty"`
-	Encrypted   string `json:"encrypted,omitempty"`
-	VisibleText string `json:"visible_text,omitempty"`
+	Fingerprint       string          `json:"fingerprint"`
+	Reasoning         string          `json:"reasoning,omitempty"`
+	Encrypted         string          `json:"encrypted,omitempty"`
+	VisibleText       string          `json:"visible_text,omitempty"`
+	Messages          []replayMessage `json:"messages,omitempty"`
+	UserContent       string          `json:"-"`
+	LastRequestBody   string          `json:"last_request_body,omitempty"`
+	OptionFingerprint string          `json:"option_fingerprint,omitempty"`
 }
 
 // storedJob persists private context for completed planning turns in a separate local field.
@@ -60,7 +71,14 @@ func storedJob(job *Job) string {
 
 // restoreProviderHistory restores completed planning context only for a matching project and model identity.
 func (engine *Engine) restoreProviderHistory(request AIRequest, config ProviderConfig, profileID string) (AIRequest, error) {
-	if !conversationAction(request.Action) || !preservesProviderContext(config) {
+	if !conversationAction(request.Action) {
+		request.conversation = nil
+		return request, nil
+	}
+	if request.conversation != nil {
+		return engine.restoreConversationHistory(request, config, profileID)
+	}
+	if !preservesProviderContext(config) {
 		return request, nil
 	}
 	request.History = append([]Message{}, request.History...)
@@ -73,7 +91,7 @@ func (engine *Engine) restoreProviderHistory(request AIRequest, config ProviderC
 		if err != nil {
 			return request, err
 		}
-		if private.Fingerprint == providerIdentity(config, profileID) && text == message.Content {
+		if providerContextMatches(private, config, profileID) && text == message.Content {
 			message.reasoningContent, message.encryptedContent = private.Reasoning, private.Encrypted
 			if private.VisibleText != "" {
 				message.Content = private.VisibleText
@@ -85,13 +103,16 @@ func (engine *Engine) restoreProviderHistory(request AIRequest, config ProviderC
 
 // retainProviderOutput binds private continuation state to the exact visible provider response.
 func (engine *Engine) retainProviderOutput(jobID string, selected SelectedModel, output modelOutput) {
-	if !preservesProviderContext(selected.Config) || (output.Reasoning == "" && output.Encrypted == "") {
-		return
-	}
 	engine.jobsMu.Lock()
 	defer engine.jobsMu.Unlock()
 	if current := engine.jobs[jobID]; current != nil {
-		current.providerContext = &providerContext{Fingerprint: providerIdentity(selected.Config, selected.ProfileID), Reasoning: output.Reasoning, Encrypted: output.Encrypted, VisibleText: output.Text}
+		messages := []Message{}
+		if len(current.Prompt.Messages) > 0 {
+			messages = append(messages, current.Prompt.Messages[len(current.Prompt.Messages)-1])
+		}
+		messages = append(messages, Message{Role: "assistant", Content: output.Text, reasoningContent: output.Reasoning, encryptedContent: output.Encrypted})
+		current.providerContext = replayContext(selected, output, messages)
+		current.providerContext.LastRequestBody = compressRequestBody(current.lastRequestBody)
 	}
 }
 
@@ -100,6 +121,8 @@ func (job *Job) snapshot() Job {
 	value := *job
 	value.Steps = append([]AgentStep{}, job.Steps...)
 	value.Proposals = append([]StudioProposal{}, job.Proposals...)
+	value.ChangeSets = append([]ChangeSet{}, job.ChangeSets...)
+	value.Metrics = append([]ModelCallMetric{}, job.Metrics...)
 	return value
 }
 
@@ -118,13 +141,15 @@ func (engine *Engine) start(request AIRequest) (any, error) {
 		return engine.loadJob(prepared.prior, request.ProjectID)
 	}
 	project, request := prepared.project, prepared.request
+	request.CommitPolicy = "review"
 	selected, synthesis, prompt, resumeText := prepared.selected, prepared.synthesis, prepared.prompt, prepared.resumeText
 	ctx, cancel := context.WithCancel(engine.ctx)
-	job := &Job{ID: newID(), ProjectID: request.ProjectID, ChapterID: request.ChapterID, Action: request.Action, Instruction: request.Instruction, Status: "running", Progress: "Connecting to the model…", CreatedAt: now(), Model: selected.ProfileName + " / " + selected.Config.Model, Prompt: prompt, ctx: ctx, cancel: cancel, SessionID: request.SessionID, Language: responseLanguage(&project, request.Language), BaseRevision: project.Revision, Steps: []AgentStep{}, Proposals: []StudioProposal{}}
+	job := &Job{ID: newID(), ProjectID: request.ProjectID, ChapterID: request.ChapterID, Action: request.Action, Instruction: request.Instruction, Status: "running", Progress: "Connecting to the model…", CreatedAt: now(), Model: selected.ProfileName + " / " + selected.Config.Model, Prompt: prompt, ctx: ctx, cancel: cancel, SessionID: request.SessionID, Language: responseLanguage(&project, request.Language), IntentHint: request.IntentHint, CommitPolicy: request.CommitPolicy, WorkspaceContext: request.WorkspaceContext, BaseRevision: project.Revision, Steps: []AgentStep{}, Proposals: []StudioProposal{}, ChangeSets: []ChangeSet{}}
 	job.Text = resumeText
 	job.SearchSelection = request.SearchSelection
 	job.SearchModelProfileID = selected.ProfileID
 	job.ownerID = engine.owner.id
+	engine.seedRequestComparison(job, request)
 	if request.Action == "wiki" {
 		job.Model += " → " + synthesis.ProfileName + " / " + synthesis.Config.Model
 		if !request.Force {
@@ -169,10 +194,14 @@ func (engine *Engine) start(request AIRequest) (any, error) {
 			}
 		}
 	}
-	if err := engine.store.beginDurableJob(request, job); err != nil {
+	prior, err := engine.store.beginDurableJob(request, job)
+	if err != nil || prior != "" {
 		engine.jobsMu.Unlock()
 		cancel()
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		return engine.loadJob(prior, request.ProjectID)
 	}
 	engine.jobs[job.ID] = job
 	result := job.snapshot()
@@ -276,16 +305,27 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 	config := selected.Config
 	project.requestLanguage = job.Language
 	project.taskLanguage = job.Language
+	var err error
+	job, err = engine.compactJobConversation(job, selected)
+	if err != nil {
+		return "", err
+	}
 	if job.Action == "agent" {
 		return engine.runAgent(job, project, selected)
 	}
 	if job.Action != "wiki" {
-		engine.noteModelCall(job.ID)
-		output, err := streamModelOutput(job.ctx, config, job.Prompt.Messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "generation", job.ctx, config, job.Prompt.Messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return "", err
 		}
-		engine.recordProposals(job.ID, output.Text, project)
+		count := engine.recordProposals(job.ID, output.Text, project)
+		if count == 0 && contains([]string{"continue", "rewrite"}, job.Action) {
+			mode := "append"
+			if job.Action == "rewrite" {
+				mode = "replace"
+			}
+			engine.recordProposals(job.ID, jsonText(map[string]any{"proposals": []StudioProposal{{Kind: "chapter", Mode: mode, Title: localText(project, "Chapter prose proposal", "章节正文建议"), Content: job.Text + output.Text}}}), project)
+		}
 		if conversationAction(job.Action) {
 			engine.retainProviderOutput(job.ID, selected, output)
 		}
@@ -306,12 +346,11 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 		if uint64(messageChars(messages)) > config.ContextChars {
 			return "", errors.New("Character details and tracking focus exceed the context budget. Increase the budget")
 		}
-		engine.noteModelCall(job.ID)
-		response, err := streamModel(job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "evidence_extraction", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return "", err
 		}
-		parsed, err := parseCandidates(response, part)
+		parsed, err := parseCandidates(output.Text, part)
 		if err != nil {
 			return "", err
 		}
@@ -397,12 +436,11 @@ func (engine *Engine) compileMemories(job Job, project *Project, config Provider
 			end++
 		}
 		engine.setProgress(job.ID, fmt.Sprintf("Stage 2: Compiling story memory from evidence %d–%d", start+1, end))
-		engine.noteModelCall(job.ID)
-		response, err := streamModel(job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "memory_compilation", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
 		if err != nil {
 			return nil, err
 		}
-		section, err := parseMemory(response, facts[start:end])
+		section, err := parseMemory(output.Text, facts[start:end])
 		if err != nil {
 			return nil, err
 		}

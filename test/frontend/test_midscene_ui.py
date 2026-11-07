@@ -127,6 +127,9 @@ const server=await createServer({root:process.env.STUDIO_FRONTEND_ROOT,configFil
                 if any(view["key_status"].values()):
                     raise AssertionError("Visual clear did not reach the real settings service")
             else:
+                expected_cases = [f"M{index:02d}" for index in range(1, 11)]
+                if [case.get("id") for case in receipt["cases"]] != expected_cases or any(case.get("status") != "passed" for case in receipt["cases"]):
+                    raise AssertionError("Complete visual acceptance must execute every studio case")
                 stories = command(backend, "list_projects", {})
                 if len(stories) != 2:
                     raise AssertionError("Original and exactly one restored work must coexist")

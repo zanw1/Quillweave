@@ -46,6 +46,15 @@ func splitProject(project *Project) (Project, []projectPart) {
 	for i, v := range project.Studio.Decisions {
 		add("decision", v.ID, i, v)
 	}
+	for i, v := range project.Studio.ChangeSets {
+		add("changeset", v.ID, i, v)
+	}
+	for i, v := range project.Studio.Locations {
+		add("location", v.ID, i, v)
+	}
+	for i, v := range project.Studio.Routes {
+		add("route", v.ID, i, v)
+	}
 	metadata.Chapters = []Chapter{}
 	metadata.Entities = []Entity{}
 	metadata.Facts = []Fact{}
@@ -54,6 +63,9 @@ func splitProject(project *Project) (Project, []projectPart) {
 	metadata.Studio.Plans = []StoryPlan{}
 	metadata.Studio.Memories = []StoryMemory{}
 	metadata.Studio.Decisions = []StoryDecision{}
+	metadata.Studio.ChangeSets = nil
+	metadata.Studio.Locations = nil
+	metadata.Studio.Routes = nil
 	metadata.Conversations = nil
 	metadata.ArchiveJobs = nil
 	metadata.Experiments = nil
@@ -73,6 +85,18 @@ func hydrateProject(db documentDB, project *Project) error {
 			return err
 		}
 		switch kind {
+		case "location":
+			var value WorldLocation
+			if err := decodeJSON([]byte(raw), &value); err != nil {
+				return err
+			}
+			project.Studio.Locations = append(project.Studio.Locations, value)
+		case "route":
+			var value WorldRoute
+			if err := decodeJSON([]byte(raw), &value); err != nil {
+				return err
+			}
+			project.Studio.Routes = append(project.Studio.Routes, value)
 		case "chapter":
 			var v Chapter
 			if err := decodeJSON([]byte(raw), &v); err != nil {
@@ -121,6 +145,12 @@ func hydrateProject(db documentDB, project *Project) error {
 				return err
 			}
 			project.Studio.Decisions = append(project.Studio.Decisions, v)
+		case "changeset":
+			var v ChangeSet
+			if err := decodeJSON([]byte(raw), &v); err != nil {
+				return err
+			}
+			project.Studio.ChangeSets = append(project.Studio.ChangeSets, v)
 		}
 	}
 	return rows.Err()
@@ -149,6 +179,12 @@ func saveParts(db documentDB, projectID string, parts []projectPart) error {
 	rows.Close()
 	for _, part := range parts {
 		delete(old, part.kind+":"+part.id)
+		if part.kind == "changeset" {
+			if _, err := db.ExecContext(ctx, "INSERT INTO project_parts(project_id,kind,id,position,document) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,id) DO NOTHING", projectID, part.kind, part.id, part.position, part.document); err != nil {
+				return err
+			}
+			continue
+		}
 		result, err := db.ExecContext(ctx, `INSERT INTO project_parts(project_id,kind,id,position,document) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,id) DO UPDATE SET position=excluded.position,document=excluded.document WHERE position!=excluded.position OR document!=excluded.document`, projectID, part.kind, part.id, part.position, part.document)
 		if err != nil {
 			return err
@@ -164,6 +200,9 @@ func saveParts(db documentDB, projectID string, parts []projectPart) error {
 		}
 	}
 	for _, part := range old {
+		if part.kind == "changeset" {
+			continue
+		}
 		if _, err := db.ExecContext(ctx, "DELETE FROM project_parts WHERE project_id=? AND kind=? AND id=?", projectID, part.kind, part.id); err != nil {
 			return err
 		}

@@ -1,40 +1,26 @@
-import { navigation, pageNames } from "./navigation";
-import {
-  NewStoryDialog,
-  WorkspaceExport,
-  WorkspaceBrand,
-} from "./WorkspaceControls";
+import { pageNames } from "./navigation";
+import { NewStoryDialog, WorkspaceExport } from "./WorkspaceControls";
 import { Select } from "../components/Select";
 import { clearProjectStorage } from "./storage";
 import { t, useLanguage, setLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
-  IconFeather,
-  IconHome,
   IconBook2,
-  IconBulb,
-  IconSettings,
-  IconChevronDown,
   IconPlus,
   IconSearch,
-  IconLayoutGrid,
-  IconList,
-  IconArrowUpRight,
+  IconSparkles,
   IconUpload,
   IconTrash,
-  IconArrowRight,
   IconCircleCheck,
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand,
 } from "@tabler/icons-react";
-import { api, date, message, pickDirectory } from "../lib/api";
+import { api, message, pickDirectory } from "../lib/api";
 import { restoreArchiveFile } from "../lib/archive";
-import { Badge, Button, Empty, ErrorBox, Modal } from "../components/ui";
-import { Writing } from "../features/writing/Editor";
-import { Studio as Planning } from "../features/studio/Studio";
-import { Wiki } from "../features/wiki/Wiki";
-import { Library } from "../features/library/Library";
-import { Methods } from "../features/methods/Methods";
+import { Badge, Button, ErrorBox, Modal } from "../components/ui";
+import { FlowSidebar } from "../features/workspace/FlowSidebar";
+import { ProjectHome } from "../features/workspace/ProjectHome";
+import { Workspace } from "../features/workspace/Workspace";
 import { Settings } from "../features/settings/Settings";
 import type { Page, Project, ProjectCard } from "../domain/types";
 import "../styles/app.css";
@@ -54,9 +40,6 @@ export function App() {
   const [importPath, setImportPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ title: "" });
-  const [query, setQuery] = useState("");
-  const [layout, setLayout] = useState("list");
-  const [seed, setSeed] = useState("");
   const [sidebar, setSidebar] = useState(() => window.innerWidth > 640);
   const [projectPicker, setProjectPicker] = useState<Page | "auto" | null>(
     null,
@@ -65,10 +48,13 @@ export function App() {
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(
+    () => window.innerWidth >= 1280,
+  );
   const deletingRef = useRef(false);
   const projectRequest = useRef(0);
   const archiveFile = useRef<HTMLInputElement>(null);
-  const pendingMethod = useRef("");
 
   useEffect(() => {
     void load();
@@ -112,7 +98,22 @@ export function App() {
 
   /** Update project data and its home summary while retaining the chapter selection. */
   function update(next: Project) {
-    setProject((current) => (current?.id === next.id ? next : current));
+    setProject((current) => {
+      if (current?.id !== next.id || current.revision > next.revision)
+        return current;
+      const candidates = new Map(
+        (next.studio.changesets || []).map((item) => [item.id, item]),
+      );
+      for (const item of current.studio.changesets || []) {
+        const incoming = candidates.get(item.id);
+        if (!incoming || incoming.updated_at < item.updated_at)
+          candidates.set(item.id, item);
+      }
+      return {
+        ...next,
+        studio: { ...next.studio, changesets: [...candidates.values()] },
+      };
+    });
     const request = projectRequest.current;
     api<ProjectCard[]>("list_projects")
       .then((list) => {
@@ -146,19 +147,11 @@ export function App() {
       /* Keep project switching usable when browser storage is blocked. */
     }
     update(p);
-    const method = pendingMethod.current;
-    pendingMethod.current = "";
-    setSeed(method);
     setBusy(false);
     setProjectPicker(null);
     setChapterId(p.chapters[0]?.id || "");
-    setPage(
-      method
-        ? p.chapters.length
-          ? "write"
-          : "plan"
-        : destination || (p.chapters.length ? "write" : "plan"),
-    );
+    setPage(destination || "plan");
+    setSourcesOpen(destination === "knowledge");
   }
 
   /** Resolve global project tools explicitly while keeping in-project navigation scoped. */
@@ -214,7 +207,6 @@ export function App() {
       if (project?.id === deleteTarget.id) {
         setProject(null);
         setChapterId("");
-        setSeed("");
         setPage("home");
       }
       clearProjectStorage(deleteTarget.id);
@@ -302,15 +294,21 @@ export function App() {
     }
   }
 
-  /** Bring a writing-method question into the composer for explicit submission. */
-  function useMethod(prompt: string) {
-    pendingMethod.current = prompt;
-    navigateProject("plan");
+  /** Route the four primary destinations while research opens beside the active workspace. */
+  function selectFlowStep(stepKey: string) {
+    if (stepKey === "research") {
+      setSourcesOpen(true);
+      return;
+    }
+    const destination: Record<string, Page> = {
+      setup: "plan",
+      world: "wiki",
+      plan: "outline",
+      write: "write",
+    };
+    navigateProject(destination[stepKey] || "plan");
   }
 
-  const filtered = projects.filter((p) =>
-    `${p.title} ${p.genre}`.includes(query),
-  );
   const pickerProjects = projects.filter((p) =>
     `${p.title} ${p.genre}`
       .toLocaleLowerCase()
@@ -318,7 +316,21 @@ export function App() {
   );
   const chapter =
     project?.chapters.find((c) => c.id === chapterId) || project?.chapters[0];
-  const selectedPage = ["write", "plan", "wiki", "knowledge"].includes(page);
+  const selectedPage = [
+    "write",
+    "plan",
+    "outline",
+    "wiki",
+    "knowledge",
+  ].includes(page);
+  const activeFlowStep =
+    page === "write"
+      ? "write"
+      : page === "wiki"
+        ? "world"
+        : page === "outline"
+          ? "plan"
+          : "setup";
   return (
     <div className={`app ${sidebar ? "" : "sidebar-collapsed"}`}>
       {sidebar && (
@@ -329,77 +341,18 @@ export function App() {
         />
       )}
       {sidebar && (
-        <aside className="sidebar">
-          <WorkspaceBrand onHome={() => setPage("home")} />
-          <button
-            className="workspace-picker"
-            onClick={switchProject}
-            disabled={loading || busy}
-            aria-label={t("Switch project")}
-          >
-            <span className="workspace-monogram">
-              <IconBook2 size={20} />
-            </span>
-            <span>
-              {project?.title || t("My workspace")}
-              <small>{t("Switch project")}</small>
-            </span>
-            <IconChevronDown size={15} />
-          </button>
-          <div className="sidebar-section-label">{t("Workspace")}</div>
-          <button
-            className={`nav-item ${page === "home" ? "active" : ""}`}
-            onClick={() => setPage("home")}
-          >
-            <IconHome size={20} />
-            {t("My projects")}
-          </button>
-          <div className="sidebar-section-label project-label">
-            {selectedPage && project ? project.title : t("Project tools")}
-          </div>
-          {navigation.map((item) => (
-            <button
-              key={item.page}
-              className={`nav-item ${page === item.page ? "active" : ""}`}
-              disabled={loading || busy}
-              onClick={() => navigateProject(item.page)}
-            >
-              <item.icon size={20} />
-              {t(item.label)}
-              {item.page === "wiki" &&
-                !!project?.facts.filter((f) => f.status === "pending")
-                  .length && (
-                  <span className="nav-count">
-                    {project.facts.filter((f) => f.status === "pending").length}
-                  </span>
-                )}
-            </button>
-          ))}
-          <div className="sidebar-section-label">{t("Writing tools")}</div>
-          <button
-            className={`nav-item ${page === "methods" ? "active" : ""}`}
-            onClick={() => setPage("methods")}
-          >
-            <IconBulb size={20} />
-            {t("Writing methods")}
-          </button>
-          <div className="sidebar-bottom">
-            <button
-              className={`nav-item ${page === "settings" ? "active" : ""}`}
-              onClick={() => setPage("settings")}
-            >
-              <IconSettings size={20} />
-              {t("Model settings")}
-            </button>
-            <div className="local-status">
-              <span className="connection connected" />
-              <div>
-                {t("Your story, your decisions")}
-                <small>{t("Saved locally · Export anytime")}</small>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <FlowSidebar
+          page={page}
+          project={project}
+          loading={loading}
+          busy={busy}
+          selectedPage={selectedPage}
+          activeFlowStep={activeFlowStep}
+          onHome={() => setPage("home")}
+          onSwitchProject={switchProject}
+          onSelectFlowStep={selectFlowStep}
+          onPage={setPage}
+        />
       )}
       <div className="app-main">
         <header className="topbar">
@@ -421,29 +374,22 @@ export function App() {
               {selectedPage && project ? project.title : t(pageNames[page])}
             </strong>
           </div>
-          {project && selectedPage && (
-            <div className="top-tabs">
-              <button
-                className={["write", "plan"].includes(page) ? "active" : ""}
-                onClick={() => setPage("write")}
-              >
-                {t("Write")}
-              </button>
-              <button
-                className={page === "wiki" ? "active" : ""}
-                onClick={() => setPage("wiki")}
-              >
-                {t("Wiki")}
-              </button>
-              <button
-                className={page === "knowledge" ? "active" : ""}
-                onClick={() => setPage("knowledge")}
-              >
-                {t("Sources")}
-              </button>
-            </div>
-          )}
           <div className="topbar-right">
+            {project && selectedPage && (
+              <>
+                <Button onClick={() => setSourcesOpen(true)}>
+                  <IconSearch size={17} />
+                  {t("Sources & research")}
+                </Button>
+                <Button
+                  aria-expanded={assistantOpen}
+                  onClick={() => setAssistantOpen(!assistantOpen)}
+                >
+                  <IconSparkles size={17} />
+                  {t("Creative partner")}
+                </Button>
+              </>
+            )}
             <label className="language-switcher">
               <span className="sr-only">{t("Interface language")}</span>
               <Select
@@ -464,9 +410,6 @@ export function App() {
                 onError={setError}
               />
             )}
-            <span className="workspace-avatar">
-              <IconFeather size={20} />
-            </span>
           </div>
         </header>
         <main className={`page-content page-${page}`}>
@@ -485,284 +428,41 @@ export function App() {
             </div>
           )}
           {page === "home" && (
-            <section className="home-page">
-              <div className="welcome-banner">
-                <p className="eyebrow">
-                  <span className="connection connected" />
-                  {t("QUILLWEAVE WORKSPACE")}
-                </p>
-                <h1>{t("Give your story room to grow.")}</h1>
-                <p className="welcome-description">
-                  {t("From an idea to a whole world.")} <br />
-                  {t("A home for your prose, characters, and ideas.")}
-                </p>
-                <div className="welcome-actions">
-                  <Button
-                    primary
-                    onClick={() => {
-                      setError("");
-                      setCreate(true);
-                    }}
-                  >
-                    <IconPlus size={19} />
-                    {t("Start a new story")}
-                  </Button>
-                  <button
-                    className="text-button"
-                    onClick={example}
-                    disabled={busy}
-                  >
-                    {t("Explore the sample")} <IconArrowRight size={17} />
-                  </button>
-                </div>
-                <div className="welcome-side">
-                  <IconFeather size={44} stroke={1.1} />
-                  <p>{t("Plan · Write · Connect")}</p>
-                  <span>{t("A quiet place for your ideas")}</span>
-                </div>
-              </div>
-              <div className="projects-title">
-                <h2>
-                  {t("My projects")} <span>{projects.length}</span>
-                </h2>
-                <div className="projects-tools">
-                  <label className="search">
-                    <IconSearch size={18} />
-                    <input
-                      aria-label={t("Search projects")}
-                      placeholder={t("Search projects…")}
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                    />
-                  </label>
-                  <div className="segmented">
-                    <button
-                      className={layout === "grid" ? "active" : ""}
-                      onClick={() => setLayout("grid")}
-                      aria-label={t("Grid view")}
-                    >
-                      <IconLayoutGrid size={18} />
-                    </button>
-                    <button
-                      className={layout === "list" ? "active" : ""}
-                      onClick={() => setLayout("list")}
-                      aria-label={t("List view")}
-                    >
-                      <IconList size={20} />
-                    </button>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      setError("");
-                      setImporting(true);
-                    }}
-                  >
-                    <IconUpload size={16} />
-                    {t("Import")}
-                  </Button>
-                </div>
-              </div>
-              {loading ? (
-                <div className="loading">{t("Opening your workspace…")}</div>
-              ) : filtered.length ? (
-                layout === "list" ? (
-                  <div className="table-wrap projects-table">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>{t("Project")}</th>
-                          <th>{t("Premise")}</th>
-                          <th>{t("Length")}</th>
-                          <th>{t("Last updated")}</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((p) => (
-                          <tr key={p.id}>
-                            <td>
-                              <button
-                                className="project-name"
-                                onClick={() => openProject(p.id)}
-                              >
-                                <span className="project-icon">
-                                  <IconBook2 size={25} stroke={1.5} />
-                                </span>
-                                <span>
-                                  <strong>{p.title}</strong>
-                                  <small>{p.genre || t("No genre set")}</small>
-                                </span>
-                              </button>
-                            </td>
-                            <td>
-                              <p className="table-description">
-                                {p.premise || t("A new story is taking shape.")}
-                              </p>
-                            </td>
-                            <td>
-                              <strong className="word-total">
-                                {p.word_count.toLocaleString()}{" "}
-                                {t("characters")}
-                              </strong>
-                              <small className="cell-sub">
-                                {p.chapter_count}{" "}
-                                {p.chapter_count === 1
-                                  ? t("chapter")
-                                  : t("chapters")}
-                              </small>
-                            </td>
-                            <td className="muted">{date(p.updated_at)}</td>
-                            <td>
-                              <div className="project-actions">
-                                <button
-                                  className="icon-button"
-                                  aria-label={t("Open {0}", p.title)}
-                                  disabled={busy}
-                                  onClick={() => openProject(p.id)}
-                                >
-                                  <IconArrowUpRight size={18} />
-                                </button>
-                                <button
-                                  className="icon-button danger"
-                                  aria-label={t("Delete {0}", p.title)}
-                                  title={t("Delete project")}
-                                  disabled={busy}
-                                  onClick={() => requestDelete(p.id)}
-                                >
-                                  <IconTrash size={18} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div className="table-footer">
-                      {projects.length}{" "}
-                      {projects.length === 1 ? t("project") : t("projects")}{" "}
-                      {t("· Every story deserves an ending")}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="project-grid">
-                    {filtered.map((p) => (
-                      <article className="project-card" key={p.id}>
-                        <button
-                          className="project-card-main"
-                          aria-label={t("Open {0}", p.title)}
-                          disabled={busy}
-                          onClick={() => openProject(p.id)}
-                        >
-                          <span className="project-icon">
-                            <IconBook2 size={27} />
-                          </span>
-                          <Badge>{p.genre || t("New project")}</Badge>
-                          <h3>{p.title}</h3>
-                          <p>
-                            {p.premise || t("A new story is taking shape.")}
-                          </p>
-                          <span className="project-card-meta">
-                            <span>
-                              {p.chapter_count}{" "}
-                              {p.chapter_count === 1
-                                ? t("chapter")
-                                : t("chapters")}{" "}
-                              · {p.word_count.toLocaleString()}{" "}
-                              {t("characters")}
-                            </span>
-                            <IconArrowUpRight size={18} />
-                          </span>
-                        </button>
-                        <button
-                          className="icon-button danger project-card-delete"
-                          aria-label={t("Delete {0}", p.title)}
-                          title={t("Delete project")}
-                          disabled={busy}
-                          onClick={() => requestDelete(p.id)}
-                        >
-                          <IconTrash size={18} />
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                )
-              ) : (
-                <Empty
-                  title={
-                    query
-                      ? t("No matching project")
-                      : t("Your first story starts here")
-                  }
-                  detail={
-                    query
-                      ? t("Try a project title or genre keyword.")
-                      : t(
-                          "Create a project, import an older one, or explore the sample.",
-                        )
-                  }
-                >
-                  <Button onClick={() => setCreate(true)}>
-                    <IconPlus size={17} />
-                    {t("New project")}
-                  </Button>
-                </Empty>
-              )}
-              <div className="home-footnote">
-                <IconCircleCheck size={17} />
-                <span>
-                  {t(
-                    "Write offline and use AI when you choose. Projects and versions are stored locally.",
-                  )}
-                </span>
-              </div>
-            </section>
+            <ProjectHome
+              projects={projects}
+              loading={loading}
+              busy={busy}
+              onOpen={openProject}
+              onDelete={requestDelete}
+              onCreate={() => {
+                setError("");
+                setCreate(true);
+              }}
+              onImport={() => {
+                setError("");
+                setImporting(true);
+              }}
+              onExample={example}
+            />
           )}
-          {page === "write" && project && (
-            <Writing
+          {project && selectedPage && (
+            <Workspace
               key={project.id}
               project={project}
               chapter={chapter}
+              page={page}
+              activeStep={activeFlowStep}
+              assistantOpen={assistantOpen}
+              sourcesOpen={sourcesOpen}
+              onAssistantOpen={setAssistantOpen}
+              onSourcesClose={() => setSourcesOpen(false)}
               onProject={update}
               onChapter={setChapterId}
-              onSettings={() => setPage("settings")}
-              onWiki={() => setPage("wiki")}
-              seed={seed}
-              onSeedConsumed={() => setSeed("")}
-            />
-          )}
-          {page === "plan" && project && (
-            <Planning
-              key={project.id}
-              project={project}
-              onProject={update}
-              onSettings={() => setPage("settings")}
-              onWiki={() => setPage("wiki")}
-              onWrite={() => setPage("write")}
-              initialSeed={seed}
-              onSeedConsumed={() => setSeed("")}
-            />
-          )}
-          {page === "wiki" && project && (
-            <Wiki
-              key={project.id}
-              project={project}
-              onProject={update}
-              onChapter={(id) => {
-                setChapterId(id);
-                setPage("write");
-              }}
-            />
-          )}
-          {page === "knowledge" && project && (
-            <Library
-              key={project.id}
-              project={project}
-              onProject={update}
+              onStep={selectFlowStep}
               onSettings={() => setPage("settings")}
             />
           )}
-          {page === "methods" && <Methods onUse={useMethod} />}
-          {page === "settings" && <Settings />}
+          {page === "settings" && <Settings project={project || undefined} />}
         </main>
       </div>
       {toast && (
@@ -781,7 +481,6 @@ export function App() {
           onClose={() => {
             if (!busy) {
               setProjectPicker(null);
-              pendingMethod.current = "";
             }
           }}
         >
@@ -831,7 +530,6 @@ export function App() {
                 disabled={busy}
                 onClick={() => {
                   setProjectPicker(null);
-                  pendingMethod.current = "";
                 }}
               >
                 {t("Cancel")}
@@ -899,12 +597,10 @@ export function App() {
           onCreate={newProject}
           onCancel={() => {
             setCreate(false);
-            pendingMethod.current = "";
           }}
           onClose={() => {
             setCreate(false);
             setError("");
-            pendingMethod.current = "";
           }}
         />
       )}

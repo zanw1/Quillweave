@@ -209,15 +209,15 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	var jobs, experiments int
 	engine.store.db.QueryRow("SELECT COUNT(*) FROM runs WHERE project_id=?", restored.ID).Scan(&jobs)
 	engine.store.db.QueryRow("SELECT COUNT(*) FROM experiments WHERE project_id=?", restored.ID).Scan(&experiments)
-	sessions := invoke[[]Conversation](t, engine, "list_conversations", map[string]any{"project_id": restored.ID, "chapter_id": p.Chapters[0].ID})
-	if jobs != 280 || experiments != 1 || len(sessions) != 1 || len(sessions[0].Turns) != 560 || sessions[0].ID == session.ID || restored.Studio.Memories[0].SessionID != sessions[0].ID {
+	sessions := invoke[[]Conversation](t, engine, "list_conversations", map[string]any{"project_id": restored.ID, "chapter_id": ""})
+	if jobs != 280 || experiments != 1 || len(sessions) != 1 || len(sessions[0].Turns) != 560 || sessions[0].ID == session.ID || sessions[0].OriginChapterID != p.Chapters[0].ID || restored.Studio.Memories[0].SessionID != sessions[0].ID {
 		t.Fatal("A runtime collection or rekeyed provenance link was lost")
 	}
 	rows := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": restored.ID})
 	if len(rows) == 0 || len(rows[0].Proposals) != 1 {
 		t.Fatal("Pending author proposals were lost")
 	}
-	invoke[map[string]any](t, engine, "review_proposal", map[string]any{"project_id": restored.ID, "revision": restored.Revision, "job_id": rows[0].ID, "proposal_id": rows[0].Proposals[0].ID, "decision": "accepted"})
+	acceptProposalAfterPreview(t, engine, map[string]any{"project_id": restored.ID, "revision": restored.Revision, "job_id": rows[0].ID, "proposal_id": rows[0].Proposals[0].ID, "decision": "accepted"})
 	original := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	if len(original.Studio.Decisions) != 0 {
 		t.Fatal("Reviewing the restored book changed the original")
@@ -260,7 +260,7 @@ func TestArchiveImportRejectsMalformedDataAtomically(t *testing.T) {
 	p := testProject()
 	insertProject(t, engine, p)
 	exported := invoke[map[string]string](t, engine, "export", map[string]any{"project_id": p.ID, "format": "archive"})["content"]
-	malformed := []string{exported + "{}", strings.Replace(exported, `"sources":[]`, `"sources":null`, 1), strings.Replace(exported, `"format":"quillweave-1"`, `"format":"unknown"`, 1), strings.Replace(exported, `"project":{`, `"project":{"id":"duplicate",`, 1)}
+	malformed := []string{exported + "{}", strings.Replace(exported, `"sources":[]`, `"sources":null`, 1), strings.Replace(exported, `"format":"quillweave-2"`, `"format":"unknown"`, 1), strings.Replace(exported, `"project":{`, `"project":{"id":"duplicate",`, 1)}
 	for _, content := range malformed {
 		if content == exported {
 			t.Fatal("Malformed fixture did not change its target")

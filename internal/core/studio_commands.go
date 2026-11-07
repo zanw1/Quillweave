@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 )
 
 // studioCommand routes studio capabilities without holding application locks during external requests.
@@ -35,30 +34,7 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 	case "search_web", "test_search":
 		return engine.legacySearchCommand(command, args)
 	case "retain_external", "recall_external", "reflect_external":
-		settings, ctx, err := engine.researchSnapshot()
-		if err != nil {
-			return nil, err
-		}
-		engine.mu.Lock()
-		project, err := engine.store.Get(args.text("project_id"))
-		engine.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		sessionID := args.optionalString("session_id")
-		project.requestLanguage = args.optionalString("ui_language")
-		if sessionID != "" {
-			if _, err := readConversation(engine.store.db, project.ID, sessionID); err != nil {
-				return nil, err
-			}
-		}
-		ids := []string{}
-		if data := args.fields["memory_ids"]; len(data) > 0 {
-			if err := decodeJSON(data, &ids); err != nil {
-				return nil, err
-			}
-		}
-		return externalMemory(ctx, settings, &project, sessionID, command, args.optionalString("query"), ids)
+		return nil, errors.New("External memory integration has been retired. Use local story records")
 	}
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -74,7 +50,15 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 	}
 	switch command {
 	case "list_conversations":
-		return engine.store.Conversations(projectID, args.optionalString("chapter_id"))
+		offset := uint64(0)
+		if raw, exists := args.fields["offset"]; exists {
+			value, ok := unsigned(raw)
+			if !ok || value > 1_000_000 {
+				return nil, errors.New("Invalid conversation offset")
+			}
+			offset = value
+		}
+		return engine.store.Conversations(projectID, args.optionalString("chapter_id"), int(offset))
 	case "create_conversation":
 		return engine.store.createConversation(projectID, args.optionalString("chapter_id"), args.optionalString("title"))
 	case "get_conversation":
@@ -108,7 +92,18 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			return nil, err
 		}
 		project.requestLanguage = args.optionalString("ui_language")
-		return map[string]any{"project": project, "warnings": studioWarnings(&project), "findings": studioFindings(&project, args.optionalString("chapter_id"))}, nil
+		return map[string]any{"project": project, "warnings": studioWarnings(&project), "findings": studioFindings(&project, args.optionalString("chapter_id")), "readiness": computeFlowReadiness(&project)}, nil
+	case "get_flow_readiness":
+		project, err := engine.store.Get(projectID)
+		if err != nil {
+			return nil, err
+		}
+		project.requestLanguage = args.optionalString("ui_language")
+		return computeFlowReadiness(&project), nil
+	case "preview_changeset", "reject_changeset":
+		return engine.reviewChangeSetCommand(command, projectID, args)
+	case "stage_changeset", "apply_changeset", "undo_changeset", "extract_changeset", "list_changesets":
+		return engine.handleChangeSetCommand(command, projectID, args)
 	case "list_experiments", "record_experiment", "evaluate_policy":
 		return engine.experimentCommand(command, args)
 	case "review_proposal":
@@ -127,6 +122,9 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			state.Plans = project.Studio.Plans
 			state.Memories = project.Studio.Memories
 			state.Decisions = project.Studio.Decisions
+			state.ChangeSets = project.Studio.ChangeSets
+			state.Locations = project.Studio.Locations
+			state.Routes = project.Studio.Routes
 			project.Studio = state
 			if data, exists := args.fields["story"]; exists {
 				var story struct {
@@ -248,8 +246,8 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 	})
 }
 
-// upsertPlan enforces hierarchy and count limits while preserving existing unrelated plans.
-func upsertPlan(project *Project, plan StoryPlan) error {
+// upsertPlan validates a single edit or defers validation to the enclosing atomic changeset.
+func upsertPlan(project *Project, plan StoryPlan, deferValidation ...bool) error {
 	if plan.ID == "" {
 		plan.ID = newID()
 	}
@@ -262,17 +260,25 @@ func upsertPlan(project *Project, plan StoryPlan) error {
 	if plan.Level == "chapter" && plan.StartChapter > 0 && plan.EndChapter == 0 {
 		plan.EndChapter = plan.StartChapter
 	}
+	position := -1
 	for i := range project.Studio.Plans {
 		if project.Studio.Plans[i].ID == plan.ID {
-			project.Studio.Plans[i] = plan
-			return validateStudio(&project.Studio)
+			position = i
+			break
 		}
 	}
-	project.Studio.Plans = append(project.Studio.Plans, plan)
+	if position >= 0 {
+		project.Studio.Plans[position] = plan
+	} else {
+		project.Studio.Plans = append(project.Studio.Plans, plan)
+	}
+	if len(deferValidation) > 0 && deferValidation[0] {
+		return nil
+	}
 	return validateStudio(&project.Studio)
 }
 
-// reviewProposal applies only author-selected pending changes through the same domain validators.
+// reviewProposal converts legacy acceptance into a preview and records explicit author rejection.
 func (engine *Engine) reviewProposal(args *arguments) (any, error) {
 	project, err := engine.store.Get(args.text("project_id"))
 	if err != nil {
@@ -280,10 +286,9 @@ func (engine *Engine) reviewProposal(args *arguments) (any, error) {
 	}
 	revision, ok := unsigned(args.fields["revision"])
 	if !ok || revision != project.Revision {
-		return nil, errors.New("The project changed. Refresh before applying this proposal")
+		return nil, errors.New("The project changed. Refresh before reviewing this proposal")
 	}
-	jobID := args.text("job_id")
-	job, err := engine.loadStoredJob(jobID)
+	job, err := engine.loadStoredJob(args.text("job_id"))
 	if err != nil {
 		return nil, err
 	}
@@ -297,95 +302,25 @@ func (engine *Engine) reviewProposal(args *arguments) (any, error) {
 	if !contains([]string{"accepted", "rejected"}, decision) {
 		return nil, errors.New("Choose accept or reject")
 	}
+	_, ambiguous := legacyProposalLinks(&job)
 	found := false
 	for i := range job.Proposals {
-		p := &job.Proposals[i]
-		if p.ID != args.optionalString("proposal_id") {
+		proposal := &job.Proposals[i]
+		if proposal.ID != args.optionalString("proposal_id") {
 			continue
 		}
-		found = true
-		if p.Status != "proposed" {
+		if proposal.Status != "proposed" {
 			return nil, errors.New("This proposal was already reviewed")
 		}
-		if decision == "accepted" {
-			if raw, ok := args.fields["content"]; ok {
-				var text string
-				if decodeJSON(raw, &text) != nil || strings.TrimSpace(text) == "" {
-					return nil, errors.New("Enter non-empty proposal content before accepting")
-				}
-			}
-			if text := args.optionalString("content"); text != "" {
-				p.Content = text
-				if p.Plan != nil {
-					value := *p.Plan
-					value.Goal = text
-					p.Plan = &value
-				}
-				if p.Memory != nil {
-					value := *p.Memory
-					value.Content = text
-					p.Memory = &value
-				}
-			}
-			switch p.Kind {
-			case "plan":
-				if p.Plan == nil {
-					return nil, errors.New("Missing proposed plan")
-				}
-				value := *p.Plan
-				oldID := value.ID
-				value.ID = newID()
-				value.Status = "confirmed"
-				if err := upsertPlan(&project, value); err != nil {
-					return nil, err
-				}
-				for j := range job.Proposals {
-					if oldID != "" && job.Proposals[j].Plan != nil && job.Proposals[j].Plan.ParentID == oldID {
-						child := *job.Proposals[j].Plan
-						child.ParentID = value.ID
-						job.Proposals[j].Plan = &child
-					}
-				}
-				p.Plan = &value
-			case "chapter":
-				chapter := findChapter(&project, job.ChapterID)
-				if chapter == nil {
-					return nil, errors.New("Select a chapter first")
-				}
-				if hashText(chapter.Body) != job.Prompt.SourceHash {
-					return nil, errors.New("The chapter changed after generation. Review the current draft before applying this prose")
-				}
-				mode := p.Mode
-				if requested := args.optionalString("mode"); requested != "" {
-					mode = requested
-				}
-				if !contains([]string{"", "append", "replace"}, mode) {
-					return nil, errors.New("Choose append or replace")
-				}
-				body := p.Content
-				if mode != "replace" && chapter.Body != "" {
-					body = chapter.Body + "\n\n" + p.Content
-				}
-				if len(body) > 5_000_000 {
-					return nil, errors.New("The chapter exceeds 5 MB")
-				}
-				chapter.SetContent(chapter.Title, body, chapter.Synopsis, "draft", chapter.TargetWords)
-				project.Studio.Stage = "writing"
-			case "memory":
-				if err := acceptMemoryProposal(&project, p, job, args); err != nil {
-					return nil, err
-				}
-			case "outline":
-				project.Outline = p.Content
-			case "premise":
-				project.Premise = p.Content
-			default:
-				project.Studio.Decisions = append(project.Studio.Decisions, StoryDecision{ID: newID(), Title: p.Title, Content: p.Content, Status: "accepted", SessionID: job.SessionID, CreatedAt: now()})
-			}
-		} else {
-			project.Studio.Decisions = append(project.Studio.Decisions, StoryDecision{ID: newID(), Title: p.Title, Content: p.Content, Status: "rejected", SessionID: job.SessionID, CreatedAt: now()})
+		if ambiguous[proposal.ID] {
+			return nil, errors.New("Older proposal source links are ambiguous. Create a new reviewed change from the saved story")
 		}
-		p.Status = decision
+		if decision == "accepted" {
+			return engine.previewLegacyProposal(project, job, i, args)
+		}
+		found = true
+		proposal.Status = "rejected"
+		project.Studio.Decisions = append(project.Studio.Decisions, StoryDecision{ID: newID(), Title: proposal.Title, Content: proposal.Content, Status: "rejected", SessionID: job.SessionID, CreatedAt: now()})
 	}
 	if !found {
 		return nil, errors.New("Proposal not found")
@@ -402,10 +337,5 @@ func (engine *Engine) reviewProposal(args *arguments) (any, error) {
 	}); err != nil {
 		return nil, err
 	}
-	engine.jobsMu.Lock()
-	if current := engine.jobs[job.ID]; current != nil {
-		current.Proposals = job.Proposals
-	}
-	engine.jobsMu.Unlock()
 	return map[string]any{"project": project, "job": job}, nil
 }

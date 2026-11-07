@@ -26,6 +26,9 @@ type StudioState struct {
 	Plans            []StoryPlan     `json:"plans"`
 	Memories         []StoryMemory   `json:"memories"`
 	Decisions        []StoryDecision `json:"decisions"`
+	ChangeSets       []ChangeSet     `json:"changesets,omitempty"`
+	Locations        []WorldLocation `json:"locations,omitempty"`
+	Routes           []WorldRoute    `json:"routes,omitempty"`
 }
 
 type StoryPlan struct {
@@ -79,10 +82,11 @@ type StoryDecision struct {
 }
 
 type AgentStep struct {
-	ID     string `json:"id"`
-	Tool   string `json:"tool"`
-	Status string `json:"status"`
-	Detail string `json:"detail"`
+	ID         string `json:"id"`
+	Tool       string `json:"tool"`
+	Status     string `json:"status"`
+	Detail     string `json:"detail"`
+	FullDetail string `json:"full_detail,omitempty"`
 }
 
 type StudioProposal struct {

@@ -228,10 +228,7 @@ func TestProposalAcceptanceIsExplicitAndAtomic(t *testing.T) {
 	assert(t, job.Status == "done" && len(job.Proposals) == 1, "Model proposal was not staged")
 	untouched := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	assert(t, len(untouched.Studio.Plans) == 0, "Generated text modified author plans without acceptance")
-	result := invoke[struct {
-		Project Project `json:"project"`
-		Job     Job     `json:"job"`
-	}](t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
+	result := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
 	assert(t, len(result.Project.Studio.Plans) == 1 && result.Job.Proposals[0].Status == "accepted", "Acceptance did not update work and proposal together")
 	reject(t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": result.Project.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
 }

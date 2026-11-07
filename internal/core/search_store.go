@@ -42,10 +42,10 @@ func (store *Store) migrateSearchStore() error {
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
+	if version > 4 {
 		return errors.New("This database requires a newer application version")
 	}
-	if version == 3 {
+	if version >= 3 {
 		return nil
 	}
 	if err := store.requireIdleUpgrade(); err != nil {
@@ -73,7 +73,7 @@ func (store *Store) migrateSearchStore() error {
 		if err := db.QueryRowContext(background(), "PRAGMA user_version").Scan(&current); err != nil {
 			return err
 		}
-		if current == 3 {
+		if current == 3 || current == 4 {
 			return nil
 		}
 		if current > 3 {

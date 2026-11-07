@@ -52,6 +52,7 @@ class FixtureServer(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), FixtureHandler)
         self.requests = []
+        self.agent_failure_returned = False
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -80,7 +81,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
         messages = body.get("messages", [])
         self.server.requests.append({"path": self.path, "body": body})
-        if self.path.endswith(("/tools/search", "/tools/search_pro", "/tools/fetch")) or body.get("tools"):
+        native_search = any(tool.get("function", {}).get("name") != "quillweave_step" for tool in body.get("tools", []))
+        if self.path.endswith(("/tools/search", "/tools/search_pro", "/tools/fetch")) or native_search:
             if body.get("query") == "需要备用":
                 self.send_response(503)
                 self.send_header("Content-Type", "application/json")
@@ -93,7 +95,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             source = {"title": "明代官制资料（验收夹具）", "url": "https://example.org/history", "snippet": "隔离测试摘录，不代表真实史实。", "content": "隔离测试资料摘录，用于验证来源采纳。"}
             if self.path.endswith("/tools/fetch"):
                 result = {"title": source["title"], "url": body["url"], "content": source["content"], "markdown": source["content"]}
-            elif body.get("tools"):
+            elif native_search:
                 result = {"choices": [{"message": {"content": "有引用的中文研究回答。", "annotations": [{"type": "url_citation", "url_citation": source}]}}], "usage": {"prompt_tokens": 11, "completion_tokens": 22, "server_tool_use_details": {"web_search_requests": 1}, "cost": .001}}
             else:
                 if not body.get("need_content"):
@@ -107,9 +109,20 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
         system = messages[0].get("content", "") if messages else ""
         current = messages[-1].get("content", "") if messages else ""
-        if "Use one JSON object per step" in system:
+        if "中断代理恢复验收" in current and not self.server.agent_failure_returned:
+            self.server.agent_failure_returned = True
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":{"message":"deterministic agent interruption"}}')
+            return
+        if "Summarize this fiction-author conversation" in system:
+            text = json.dumps({"goal": "完善北塔记忆交易故事", "constraints": ["交易有记忆代价"], "rejected": [], "pending": ["候选设定须确认"], "open_questions": ["主角下一步行动"], "next_steps": ["继续讨论并预览保存"]}, ensure_ascii=False)
+        elif "Use one JSON object per step" in system:
+            boundary = max(index for index, item in enumerate(messages) if item.get("role") == "user" and not item.get("content", "").startswith("<tool_result "))
+            current_request = messages[boundary].get("content", "")
             previous = []
-            for item in messages:
+            for item in messages[boundary + 1:]:
                 if item.get("role") == "assistant":
                     try:
                         previous.append(json.loads(item.get("content", "")).get("tool"))
@@ -117,6 +130,12 @@ class FixtureHandler(BaseHTTPRequestHandler):
                         pass
             if "propose" in previous:
                 response = {"tool": "finish", "text": "我们先打磨人物欲望和记忆交易的代价，由你决定哪些设定值得采纳。"}
+            elif "整理本章有原文依据" in current_request:
+                match = re.search(r"Active chapter \[C:([^\]]+)\]", current_request)
+                source = match.group(1) if match else ""
+                response = {"tool": "propose", "proposal": {"kind": "memory", "title": "铜钥匙转移", "content": "林舟把铜钥匙交给岑月。", "memory": {"kind": "fact", "title": "铜钥匙转移", "entity": "林舟", "content": "林舟把铜钥匙交给岑月。", "state": "active", "source_id": source, "quote": "林舟把铜钥匙交给岑月。"}}}
+            elif "为第二章生成正文" in current_request:
+                response = {"tool": "propose", "proposal": {"kind": "chapter", "mode": "append", "title": "第二章正文候选", "content": "岑月握紧林舟交来的铜钥匙，沿山路走向旧驿站。"}}
             elif "recall" in previous:
                 response = {"tool": "propose", "proposal": {"kind": "decision", "title": "记忆交易的代价", "content": "每次交易都要放弃一段重要记忆。"}}
             else:
@@ -141,7 +160,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 self.wfile.write(("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
                 self.wfile.flush()
                 time.sleep(.025)
-            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":1000,"cache_write_tokens":0}}}\n\ndata: [DONE]\n\n')
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass

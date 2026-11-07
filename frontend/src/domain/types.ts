@@ -1,4 +1,12 @@
-import type { AgentStep, StudioProposal, StudioState } from "./studio";
+import type {
+  AgentStep,
+  ChangeSet,
+  FlowReadiness,
+  StudioProposal,
+  StudioState,
+  WorkspaceContext,
+} from "./studio";
+export type { ChangeSet, FlowReadiness, WorkspaceContext };
 
 export interface Version {
   id: string;
@@ -231,9 +239,12 @@ export interface ContextItem {
   reason?: string;
 }
 export interface Message {
-  role: "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   source_job_id?: string;
+  tool_calls?: { id: string; name: string; arguments: string; provider_call_id?: string }[];
+  tool_call_id?: string;
+  tool_name?: string;
 }
 export interface Prompt {
   warning?: string;
@@ -242,6 +253,7 @@ export interface Prompt {
   source_hash: string;
   source_id: string;
   chars: number;
+  tool_chars?: number;
 }
 export interface Job {
   id: string;
@@ -258,18 +270,45 @@ export interface Job {
   prompt: Prompt;
   session_id?: string;
   language?: string;
+  intent_hint?: string;
+  commit_policy?: string;
+  workspace_context?: WorkspaceContext;
   steps?: AgentStep[];
   proposals?: StudioProposal[];
+  changesets?: ChangeSet[];
   calls?: number;
+  metrics?: ModelCallMetric[];
   base_revision?: number;
+}
+export interface ModelCallMetric {
+  purpose: string;
+  model: string;
+  protocol: string;
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    reasoning_tokens?: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+  };
+  duration_ms: number;
+  first_text_ms?: number;
+  input_chars: number;
+  prefix_hash: string;
+  request_hash: string;
+  shared_prefix_bytes?: number;
+  first_changed_message?: number;
+  change_reason?: string;
+  request_change_path?: string;
+  succeeded: boolean;
 }
 export type Page =
   | "home"
   | "write"
   | "plan"
+  | "outline"
   | "wiki"
   | "knowledge"
-  | "methods"
   | "settings";
 
 export const entityKinds: Record<string, string> = {

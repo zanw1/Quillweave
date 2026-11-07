@@ -337,6 +337,33 @@ func (stage *stagedArchive) readStudio(input *archiveDecoder) (json.RawMessage, 
 		}
 		fields[key] = json.RawMessage("[]")
 		switch key {
+		case "locations":
+			err = readArchiveArray[WorldLocation](input, func(location WorldLocation) error {
+				stage.project.Studio.Locations = append(stage.project.Studio.Locations, location)
+				if len(stage.project.Studio.Locations) > 10000 {
+					return errors.New("Too many map locations")
+				}
+				return nil
+			})
+		case "routes":
+			err = readArchiveArray[WorldRoute](input, func(route WorldRoute) error {
+				stage.project.Studio.Routes = append(stage.project.Studio.Routes, route)
+				if len(stage.project.Studio.Routes) > 30000 {
+					return errors.New("Too many map routes")
+				}
+				return nil
+			})
+		case "changesets":
+			err = readArchiveArray[ChangeSet](input, func(cs ChangeSet) error {
+				if err := validateChangeSet(&cs); err != nil {
+					return err
+				}
+				stage.project.Studio.ChangeSets = append(stage.project.Studio.ChangeSets, cs)
+				if len(stage.project.Studio.ChangeSets) > 20000 {
+					return errors.New("Too many reviewed changes")
+				}
+				return nil
+			})
 		case "plans":
 			err = readArchiveArray[StoryPlan](input, func(plan StoryPlan) error {
 				stage.project.Studio.Plans = append(stage.project.Studio.Plans, plan)
@@ -438,6 +465,7 @@ func (stage *stagedArchive) readProject(input *archiveDecoder) error {
 	}
 	project.Chapters, project.Entities, project.Facts, project.Sources, project.Compilations = stage.project.Chapters, stage.project.Entities, stage.project.Facts, stage.project.Sources, stage.project.Compilations
 	project.Studio.Plans, project.Studio.Memories, project.Studio.Decisions = stage.project.Studio.Plans, stage.project.Studio.Memories, stage.project.Studio.Decisions
+	project.Studio.Locations, project.Studio.Routes, project.Studio.ChangeSets = stage.project.Studio.Locations, stage.project.Studio.Routes, stage.project.Studio.ChangeSets
 	project.Conversations, project.ArchiveJobs, project.Experiments = nil, nil, nil
 	stage.project = project
 	return validateProject(&stage.project)
@@ -483,7 +511,7 @@ func (stage *stagedArchive) parseArchive(input *archiveDecoder) error {
 	if err := input.delimiter('}'); err != nil {
 		return err
 	}
-	if format != "quillweave-1" || !seen["project"] {
+	if !contains([]string{"quillweave-1", "quillweave-2"}, format) || !seen["project"] {
 		return errors.New("Unsupported or incomplete backup format")
 	}
 	var extra any
@@ -508,6 +536,12 @@ func (stage *stagedArchive) insertSessions(connection *sql.Conn, oldProjectID st
 		session.ID, session.ProjectID = stage.sessionIDs[oldID], stage.project.ID
 		session.ParentID, session.ForkTurnID = stage.sessionIDs[session.ParentID], stage.turnIDs[session.ForkTurnID]
 		session.Revision, session.UpdatedAt = 1, now()
+		if session.ChapterID != "" {
+			session.OriginChapterID, session.ChapterID = session.ChapterID, ""
+		}
+		session.Checkpoint = nil
+		session.BibleBaseline, session.LastBibleHash, session.Summary, session.CompactedSummary = "", "", "", ""
+		session.CompactedUpToOrdinal = 0
 		session.Turns = []ConversationTurn{}
 		if _, err := connection.ExecContext(context.Background(), "INSERT INTO conversations(id,project_id,chapter_id,document) VALUES(?,?,?,?)", session.ID, session.ProjectID, session.ChapterID, jsonText(session)); err != nil {
 			return err
@@ -564,6 +598,9 @@ func (stage *stagedArchive) insertRuntime(connection *sql.Conn, oldProjectID str
 				return errors.New("Archived task belongs to another project")
 			}
 			job.ID, job.ProjectID, job.SessionID = stage.jobIDs[job.ID], stage.project.ID, stage.sessionIDs[job.SessionID]
+			for i := range job.ChangeSets {
+				rekeyChangeSet(&job.ChangeSets[i], stage.project.ID, stage.sessionIDs, stage.turnIDs, stage.jobIDs)
+			}
 			if job.Status == "running" {
 				job.Status = "interrupted"
 			}
@@ -607,6 +644,9 @@ func (engine *Engine) importArchiveFrom(reader io.Reader) (Project, error) {
 	}
 	oldID := stage.project.ID
 	stage.project.ID, stage.project.Revision, stage.project.UpdatedAt = newID(), 0, now()
+	for i := range stage.project.Studio.ChangeSets {
+		rekeyChangeSet(&stage.project.Studio.ChangeSets[i], stage.project.ID, stage.sessionIDs, stage.turnIDs, stage.jobIDs)
+	}
 	for i := range stage.project.Studio.Memories {
 		stage.project.Studio.Memories[i].SessionID = stage.sessionIDs[stage.project.Studio.Memories[i].SessionID]
 	}

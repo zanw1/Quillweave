@@ -162,6 +162,7 @@ func TestDatabaseQueryPlans(t *testing.T) {
 		{"run_id", "search_run_store.go", "SELECT document,revision,project_id,status,execution_owner,payload_hash FROM search_runs WHERE id=?", "SELECT COUNT(*) FROM search_runs WHERE id=?", "sqlite_autoindex_search_runs_1", []any{"search00000"}, 1, 1},
 		{"request_id", "search_run_store.go", "SELECT id FROM search_runs WHERE request_scope=? AND request_id=?", "SELECT COUNT(*) FROM search_runs WHERE request_scope=? AND request_id=?", "sqlite_autoindex_search_runs_2", []any{"global", "req00001"}, 1, 1},
 		{"active", "search_runs.go", "SELECT COUNT(*) FROM search_runs WHERE status IN ('queued','running')", "SELECT COUNT(*) FROM search_runs WHERE status IN ('queued','running')", "search_runs_active", nil, 1, 4},
+		{"changeset_status", "changeset_commands.go", "SELECT document FROM project_parts WHERE project_id=? AND kind='changeset' AND json_extract(document,'$.status')=? ORDER BY position,id", "SELECT COUNT(*) FROM project_parts WHERE project_id=? AND kind='changeset' AND json_extract(document,'$.status')=?", "project_parts_changeset_status", []any{"p1", "staged"}, 0, 0},
 		{"all_projects", "store.go", "SELECT document FROM projects", "SELECT COUNT(*) FROM projects", "", nil, 2, 2},
 	}
 	// Reproduce the existing v3 schema, where the three new lookup indexes are absent.
@@ -197,7 +198,7 @@ func TestDatabaseQueryPlans(t *testing.T) {
 	if err := store.db.QueryRow("SELECT sqlite_version()").Scan(&sqliteVersion); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
+	if version != 4 {
 		t.Fatal("An index-only update changed the document version")
 	}
 	t.Logf("SQLite %s; fixture tables: projects=2 project_parts=2000 runs=10000 search_runs=10000", sqliteVersion)

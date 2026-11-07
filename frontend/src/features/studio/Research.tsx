@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, date, message } from "../../lib/api";
+import { date, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import {
   Badge,
@@ -9,7 +9,6 @@ import {
   Modal,
 } from "../../components/ui";
 import { Select } from "../../components/Select";
-import { Integrations } from "./Integrations";
 import { SearchSettings } from "../settings/search/SearchSettings";
 import { SearchRunView, readingNames } from "../settings/search/SearchRunView";
 import { useSearchSettings } from "../settings/search/state";
@@ -17,7 +16,6 @@ import { useSearchRun } from "../search/useSearchRun";
 import { searchSelection, type SearchSource } from "../../domain/search";
 import { searchApi } from "../../lib/search";
 import type { Project } from "../../domain/types";
-import type { Conversation } from "../../domain/studio";
 
 /** Search attributable excerpts, deliberately adopt sources, and discuss only material actually retrieved. */
 export function Research({
@@ -286,154 +284,8 @@ export function Research({
         >
           <div className="modal-content">
             <SearchSettings embedded />
-            <Integrations embedded memoryOnly />
           </div>
         </Modal>
-      )}
-    </section>
-  );
-}
-
-/** Normalize optional memory-service prose while retaining the full response for source inspection. */
-function externalText(value: unknown): string {
-  if (!value || typeof value !== "object") return String(value ?? "");
-  const response = value as Record<string, unknown>;
-  for (const key of ["text", "answer", "summary"])
-    if (typeof response[key] === "string") return response[key];
-  if (Array.isArray(response.results)) {
-    const parts = response.results.flatMap((item) =>
-      item && typeof item === "object"
-        ? [item.text || item.content || item.summary].filter(
-            (text): text is string => typeof text === "string",
-          )
-        : [],
-    );
-    if (parts.length) return parts.join("\n\n");
-  }
-  return t(
-    "The service returned a response. Inspect its details before adopting any interpretation.",
-  );
-}
-
-/** Use optional Hindsight operations only for selected, author-confirmed memories and an explicit branch scope. */
-export function ExternalMemory({ project }: { project: Project }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [sessions, setSessions] = useState<Conversation[]>([]);
-  const [session, setSession] = useState("");
-  const [result, setResult] = useState<unknown>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    void api<Conversation[]>("list_conversations", {
-      project_id: project.id,
-      chapter_id: "",
-    })
-      .then(setSessions)
-      .catch(() => {});
-  }, [project.id]);
-
-  /** Report external responses as reference material without automatically committing their interpretations. */
-  async function run(command: string) {
-    setBusy(true);
-    setError("");
-    try {
-      setResult(
-        await api(command, {
-          project_id: project.id,
-          session_id: session,
-          query,
-          memory_ids: selected,
-        }),
-      );
-    } catch (error) {
-      setError(message(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="studio-section external-memory">
-      <h2>{t("External memory")}</h2>
-      <p className="muted">
-        {t("Local memory works without an external service.")}{" "}
-        {t("External results are not automatically accepted as canon.")}
-      </p>
-      <label>
-        {t("Branch")}
-        <Select
-          value={session}
-          onChange={(event) => setSession(event.target.value)}
-        >
-          <option value="">{t("Book")}</option>
-          {sessions.map((item) => (
-            <option value={item.id} key={item.id}>
-              {item.title}
-            </option>
-          ))}
-        </Select>
-      </label>
-      <details>
-        <summary>
-          {t("Select memories to send")}: {selected.length}
-        </summary>
-        {project.studio.memories
-          .filter((memory) => memory.status === "confirmed")
-          .map((memory) => (
-            <label className="checkbox-label" key={memory.id}>
-              <input
-                type="checkbox"
-                checked={selected.includes(memory.id)}
-                onChange={(event) =>
-                  setSelected(
-                    event.target.checked
-                      ? [...selected, memory.id]
-                      : selected.filter((id) => id !== memory.id),
-                  )
-                }
-              />
-              {memory.title} · {memory.content.slice(0, 80)}
-            </label>
-          ))}
-      </details>
-      <label>
-        {t("Search query")}
-        <input
-          value={query}
-          maxLength={500}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </label>
-      <div className="studio-actions">
-        <Button
-          disabled={busy || !selected.length}
-          onClick={() => void run("retain_external")}
-        >
-          {t("Retain selected")}
-        </Button>
-        <Button
-          disabled={busy || !query.trim()}
-          onClick={() => void run("recall_external")}
-        >
-          {t("Recall")}
-        </Button>
-        <Button
-          disabled={busy || !query.trim()}
-          onClick={() => void run("reflect_external")}
-        >
-          {t("Reflect")}
-        </Button>
-      </div>
-      {error && <ErrorBox>{error}</ErrorBox>}
-      {result !== null && (
-        <div className="external-result">
-          <MarkdownResponse text={externalText(result)} />
-          <details>
-            <summary>{t("Raw response")}</summary>
-            <pre>{JSON.stringify(result, null, 2)}</pre>
-          </details>
-        </div>
       )}
     </section>
   );

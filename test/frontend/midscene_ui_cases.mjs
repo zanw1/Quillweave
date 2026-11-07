@@ -115,9 +115,10 @@ async function studioCases() {
     first = await send("我想写一个靠记忆交易生存的长篇故事。");
     await visual("aiAssert", "助手已经用中文讨论记忆交易，页面底部写作输入框为空，页面没有要求立刻写大纲的弹窗");
     check(await page.getByRole("textbox", { name: "写作请求", exact: true }).inputValue() === "", "Sent input was retained");
-    check(await page.getByRole("dialog").count() === 0, "An unsolicited modal interrupted discussion");
+    check(await page.locator("dialog:modal").count() === 0, "An unsolicited modal interrupted discussion");
     check(first.proposals.length === 1 && first.proposals[0].kind === "decision", "The model fixture did not stage the expected decision");
-    await visual("aiAct", "在聊天消息区域内向下滚动，找到记忆交易的代价待审阅建议卡，点击这张卡片里的采纳按钮");
+    await visual("aiAct", "只在右侧创作搭档的聊天消息区向下滚动，让记忆交易的代价预览卡底部的确认写入按钮完整可见，暂时不要点击");
+    await visual("aiTap", "右侧创作搭档聊天区域内，记忆交易的代价预览卡底部的确认写入按钮");
     const p = await until("decision adopted", () => command("get_project", { project_id: projectId }), (p) => p.studio.decisions.length === 1);
     check(p.studio.decisions[0].status === "accepted", "A proposal bypassed author acceptance");
   });
@@ -132,8 +133,10 @@ async function studioCases() {
     check(original.turns.length === 2, "Rewind mutated original conversation history");
   });
   await test("M04", "作品形态与百万字章节目标", "连载、总字数、章节数和单章字数可统一保存", async () => {
-    await visual("aiTap", "作品上方的创作目标按钮");
-    await visual("aiAct", "在创作目标对话框里将作品形态选择为网文连载");
+    await visual("aiTap", "作品页面上方的创作目标按钮");
+    await page.getByRole("dialog", { name: "创作目标", exact: true }).waitFor();
+    await visual("aiTap", "创作目标对话框里面的作品形态下拉框");
+    await visual("aiTap", "作品形态下拉选项中的网文连载选项，只选择该选项");
     await visual("aiInput", "创作目标对话框里的全书目标字数输入框", { value: "1000000" });
     await visual("aiInput", "创作目标对话框里的目标章节数输入框", { value: "500" });
     await visual("aiAct", "在创作目标对话框内滚动，使默认章节目标字数输入框可见");
@@ -141,18 +144,18 @@ async function studioCases() {
     await visual("aiAct", "在创作目标对话框内滚动到保存创作目标按钮，然后点击保存创作目标");
     const p = await until("goals saved", () => command("get_project", { project_id: projectId }), (p) => p.studio.target_chapters === 500);
     check(p.studio.mode === "serial" && p.studio.target_characters === 1000000 && p.default_chapter_words === 2000, "Goal values did not persist coherently");
-    await visual("aiAssert", "作品头部显示网文连载、500章和1000000字的创作目标");
+    await visual("aiAssert", "创作目标对话框已经关闭，作品页面显示网文连载");
   });
   await test("M05", "已有分层规划与创建章节草稿", "已确认分卷与章计划层级可读，作者主动建立章节", async () => {
     await seedPlans();
-    await visual("aiAct", "进入故事规划中的分层规划标签页");
+    await visual("aiAct", "点击左侧主导航栏的大纲按钮");
     await visual("aiAssert", "分层规划中能看到第一卷：北塔和下级的第一章：铜钥匙，两条计划已经确认");
     await visual("aiTap", "分层规划工具栏里的建立章节草稿按钮");
     const p = await until("chapter created", () => command("get_project", { project_id: projectId }), (p) => p.chapters.length === 1);
     check(p.chapters[0].number === 1 && p.chapters[0].target_words === 2000, "The confirmed chapter plan did not produce its draft");
   });
   await test("M06", "章节正文保存", "视觉定位编辑器并保存准确的中文正文", async () => {
-    await visual("aiTap", "左侧导航栏的章节写作按钮");
+    await visual("aiTap", "左侧主导航栏的正文按钮");
     const prose = "林舟把铜钥匙交给岑月。北塔的钟声随即响起，他再也想不起母亲的声音。";
     await visual("aiInput", "章节编辑区的大型章节正文输入框", { value: prose, mode: "replace" });
     await visual("aiTap", "章节编辑区上方的保存按钮");
@@ -161,21 +164,23 @@ async function studioCases() {
     await visual("aiAssert", "章节编辑器显示林舟把铜钥匙交给岑月以及北塔钟声的中文正文");
   });
   await test("M07", "章后记忆的原文依据与采纳", "AI 只产生候选，作者采纳的记忆保存正确引文和来源", async () => {
-    await visual("aiAct", "在写作助手区域打开AI任务下拉框，选择整理章节记忆");
     const job = await send("整理本章有原文依据的事实与人物变化，先作为建议让我审阅。");
     check(job.proposals.length === 1 && job.proposals[0].status === "proposed", "Memory update did not remain a proposal");
-    await visual("aiAct", "在写作助手聊天消息区域内向下滚动，找到铜钥匙转移待审阅建议卡，点击这张卡片里的采纳按钮");
+    await visual("aiAct", "在右侧创作搭档聊天区域内向下滚动，找到铜钥匙转移的修改预览卡，点击该卡片的确认写入按钮");
     const p = await until("memory adopted", () => command("get_project", { project_id: projectId }), (p) => p.studio.memories.length > 0);
     check(p.studio.memories.some((m) => m.source_id === p.chapters[0].id && m.quote === "林舟把铜钥匙交给岑月。"), "Memory quote or source did not survive adoption");
   });
   await test("M08", "人物知情范围的历史版本", "第6章只知林舟，第12章包含岑月，视图不混入未来状态", async () => {
     await seedKnowledge();
-    await visual("aiAct", "进入左侧故事规划，再切换到故事记忆标签页");
+    await visual("aiAct", "点击左侧主导航栏的设定，再切换到状态与伏笔标签页");
     await visual("aiInput", "查看指定章节的记忆数字输入框", { value: "6" });
+    await visual("aiScroll", "左侧主体的状态与伏笔记忆卡片列表区域", { direction: "down", distance: 350 });
     await visual("aiAssert", "标题为“钥匙位置知情者”的记忆卡片中，知情人物只有林舟，没有岑月；请仅检查这张卡片");
     let card = page.locator(".memory-card").filter({ has: page.getByRole("heading", { name: "钥匙位置知情者", exact: true }) });
     check(await card.count() === 1 && !(await card.innerText()).includes("岑月"), "Early history leaked future knowledge");
+    await visual("aiScroll", "左侧主体的状态与伏笔记忆卡片列表区域", { direction: "up", distance: 350 });
     await visual("aiInput", "查看指定章节的记忆数字输入框", { value: "12" });
+    await visual("aiScroll", "左侧主体的状态与伏笔记忆卡片列表区域", { direction: "down", distance: 350 });
     await visual("aiAssert", "标题为“钥匙位置知情者”的记忆卡片中，知情人物包含林舟和岑月");
     check(await card.count() === 1 && (await card.innerText()).includes("岑月"), "Later history did not show its replacement version");
   });
@@ -184,7 +189,8 @@ async function studioCases() {
     view.settings.search_enabled = true;
     view.settings.providers = [{ id: "fixture", name: "SearXNG", kind: "searxng", endpoint: process.env.QUILLWEAVE_TEST_MOCK, enabled: true }];
     await command("save_integrations", { settings: view.settings });
-    await visual("aiTap", "工作台的资料研究标签页");
+    await visual("aiTap", "作品顶栏的资料与搜索按钮");
+    await visual("aiTap", "资料与搜索窗口里的联网研究标签页");
     await visual("aiInput", "联网资料研究区域的检索词输入框", { value: "明朝锦衣卫官制" });
     await visual("aiTap", "检索词右侧的搜索资料按钮");
     await page.getByRole("link", { name: "明代官制资料（验收夹具）", exact: true }).waitFor();
@@ -197,8 +203,9 @@ async function studioCases() {
   await test("M10", "最小窗口与完整备份恢复", "发送按钮可见；视觉发起导出并恢复为一个独立副本", async () => {
     const originalBefore = await command("get_project", { project_id: projectId });
     const jobsBefore = await command("get_runs", { project_id: projectId });
-    await visual("aiTap", "共创讨论标签页");
+    await visual("aiTap", "资料与搜索窗口右上角的关闭对话框按钮");
     await page.setViewportSize({ width: 860, height: 640 });
+    await visual("aiTap", "作品顶部的创作搭档按钮，展开聊天抽屉");
     await visual("aiAssert", "当前小窗口里仍然可以看见底部写作输入框和发送按钮，横向没有截掉主要输入区");
     const button = await page.locator(".assistant-composer").getByRole("button", { name: "发送", exact: true }).boundingBox();
     check(button && button.y + button.height <= 640 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Minimum viewport clips its composer");

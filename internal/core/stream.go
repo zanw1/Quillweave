@@ -17,24 +17,33 @@ const maxStreamBytes = 32_000_000
 const maxStreamFrameBytes = 8_000_000
 
 type modelOutput struct {
-	Text      string
-	Reasoning string
-	Encrypted string
+	Text           string
+	Reasoning      string
+	Encrypted      string
+	Usage          ModelUsage
+	ToolCalls      []NativeToolCall
+	ProviderFormat string
+	ProviderBlocks []json.RawMessage
 }
 
 type modelStream struct {
-	config           ProviderConfig
-	event            string
-	data             []string
-	frameBytes       int
-	done             bool
-	sseStarted       bool
-	anthropicStopped bool
-	steps            map[string]string
-	text             strings.Builder
-	reasoning        strings.Builder
-	encrypted        strings.Builder
-	onText           func(string)
+	config                 ProviderConfig
+	event                  string
+	data                   []string
+	frameBytes             int
+	done                   bool
+	textStopped            bool
+	sseStarted             bool
+	anthropicStopped       bool
+	steps                  map[string]string
+	text                   strings.Builder
+	reasoning              strings.Builder
+	encrypted              strings.Builder
+	onText                 func(string)
+	usage                  ModelUsage
+	uncachedInput          *int64
+	outputWithoutReasoning *int64
+	native                 nativeStreamState
 }
 
 // streamStopError accepts successful text endings and reports truncation, refusal, or tool requirements.
@@ -162,17 +171,26 @@ func (stream *modelStream) payload(event, data string) error {
 		return err
 	}
 	if value["error"] != nil {
+		if stream.config.nativeTools && nativeToolsRejected(data) {
+			return errNativeToolsUnsupported
+		}
 		return errors.New("The model stream returned an error. Check the model, quota, and service status")
 	}
 	if code, ok := objectField(value, "base_resp")["status_code"].(json.Number); ok && code.String() != "0" {
 		return errors.New("The model service returned an error status")
 	}
+	stream.readUsage(value)
 	kind := textField(value, "type")
 	if kind == "" {
 		kind = textField(value, "event_type")
 	}
 	if kind == "" {
 		kind = event
+	}
+	if stream.config.nativeTools {
+		if err := stream.native.collect(stream.config.Protocol, kind, data, value); err != nil {
+			return err
+		}
 	}
 	switch stream.config.Protocol {
 	case "openai":
@@ -186,9 +204,13 @@ func (stream *modelStream) payload(event, data string) error {
 			return err
 		}
 		if parseErr != nil {
+			if stream.config.nativeTools && textField(choice, "finish_reason") == "tool_calls" {
+				stream.textStopped = true
+				return nil
+			}
 			return parseErr
 		}
-		stream.done = stream.done || done
+		stream.textStopped = stream.textStopped || done
 	case "ollama":
 		text, done, parseErr := parseLine(data, "ollama")
 		if err := stream.appendText(text); err != nil {
@@ -234,6 +256,10 @@ func (stream *modelStream) payload(event, data string) error {
 			}
 			reason := textField(delta, "stop_reason")
 			if err := streamStopError(reason); err != nil {
+				if stream.config.nativeTools && reason == "tool_use" {
+					stream.anthropicStopped = true
+					return nil
+				}
 				return err
 			}
 			stream.anthropicStopped = reason == "end_turn" || reason == "stop_sequence"
@@ -280,6 +306,9 @@ func (stream *modelStream) geminiEvent(kind string, value map[string]any) error 
 		step := objectField(value, "step")
 		stream.steps[index] = textField(step, "type")
 		if textField(step, "type") == "function_call" {
+			if stream.config.nativeTools {
+				return nil
+			}
 			return streamStopError("requires_action")
 		}
 	case "step.delta":
@@ -293,11 +322,14 @@ func (stream *modelStream) geminiEvent(kind string, value map[string]any) error 
 	case "interaction.status_update":
 		status := textField(value, "status")
 		if status != "" && status != "in_progress" && status != "completed" {
+			if stream.config.nativeTools && status == "requires_action" {
+				return nil
+			}
 			return streamStopError(status)
 		}
 	case "interaction.completed":
 		interaction := objectField(value, "interaction")
-		if textField(interaction, "status") != "completed" {
+		if textField(interaction, "status") != "completed" && !(stream.config.nativeTools && textField(interaction, "status") == "requires_action") {
 			return errors.New("The Gemini interaction did not complete successfully")
 		}
 		stream.done = true
@@ -363,7 +395,7 @@ func streamModel(ctx context.Context, config ProviderConfig, messages []Message,
 }
 
 // streamModelOutput sends cancellable requests with redirect rejection and validates complete output.
-func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Message, onText func(string)) (modelOutput, error) {
+func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Message, onText func(string)) (output modelOutput, resultError error) {
 	endpoint, err := validateConfig(config)
 	if err != nil {
 		return modelOutput{}, err
@@ -396,9 +428,16 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if config.nativeTools && (response.StatusCode == 400 || response.StatusCode == 422) {
+			data, _ := io.ReadAll(io.LimitReader(response.Body, 64000))
+			if nativeToolsRejected(string(data)) {
+				return modelOutput{}, errNativeToolsUnsupported
+			}
+		}
 		return modelOutput{}, modelHTTPError(response.StatusCode)
 	}
 	stream := modelStream{config: config, onText: onText, steps: map[string]string{}}
+	defer func() { output.Usage = stream.usage }()
 	pending := []byte{}
 	buffer := make([]byte, 32768)
 	sse := config.Protocol != "ollama"
@@ -465,13 +504,28 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 			return modelOutput{}, err
 		}
 	}
+	if stream.config.Protocol == "openai" && stream.textStopped {
+		stream.done = true
+	}
 	if !stream.done {
 		return modelOutput{}, errors.New("The model connection ended before a completion marker arrived")
 	}
-	if strings.TrimSpace(stream.text.String()) == "" {
+	var calls []NativeToolCall
+	var blocks []json.RawMessage
+	if config.nativeTools {
+		calls, blocks, err = stream.native.complete(config.Protocol, stream.text.String(), stream.reasoning.String(), stream.encrypted.String())
+		if err != nil {
+			return modelOutput{}, err
+		}
+	}
+	if strings.TrimSpace(stream.text.String()) == "" && len(calls) == 0 {
 		return modelOutput{}, errors.New("The model returned empty text")
 	}
-	return modelOutput{Text: stream.text.String(), Reasoning: stream.reasoning.String(), Encrypted: stream.encrypted.String()}, nil
+	format := ""
+	if len(blocks) > 0 {
+		format = config.Protocol
+	}
+	return modelOutput{Text: stream.text.String(), Reasoning: stream.reasoning.String(), Encrypted: stream.encrypted.String(), Usage: stream.usage, ToolCalls: calls, ProviderBlocks: blocks, ProviderFormat: format}, nil
 }
 
 // modelHTTPError returns actionable HTTP errors while excluding raw provider response bodies.

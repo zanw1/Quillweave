@@ -723,11 +723,13 @@ func TestPrivateProviderHistorySurvivesRestart(t *testing.T) {
 	otherProject := testProject()
 	insertProject(t, engine, otherProject)
 	args["project_id"] = otherProject.ID
+	args["chapter_id"] = otherProject.Chapters[0].ID
 	forwarded.Store(false)
 	otherJob := invoke[Job](t, engine, "start_ai", args)
 	finishJob(t, engine, otherJob)
 	assert(t, !forwarded.Load(), "Private history crossed project boundaries")
 	args["project_id"] = project.ID
+	args["chapter_id"] = project.Chapters[0].ID
 	settings := invoke[settingsResponse](t, engine, "get_model_settings", nil).Settings
 	copy := settings.Profiles[0]
 	copy.ID, copy.Name = "other-profile", "Other profile"

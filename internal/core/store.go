@@ -28,7 +28,7 @@ type documentDB interface {
 // sqliteDSN applies durability settings on every physical connection, before its first statement.
 // An Exec after Open would miss connections created when a bad connection is discarded.
 func sqliteDSN(path string) string {
-	return path + "?_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL"
+	return path + "?_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL&_foreign_keys=ON"
 }
 
 // OpenStore opens the existing SQLite tables and JSON documents with atomic commit settings.
@@ -47,7 +47,7 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 3 {
+	if version > 4 {
 		db.Close()
 		return nil, errors.New("This database requires a newer application version")
 	}
@@ -105,6 +105,10 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := store.migrateWorkspaceStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -114,6 +118,7 @@ func (store *Store) ensureLookupIndexes() error {
 CREATE INDEX IF NOT EXISTS project_parts_load_order ON project_parts(project_id,position,id);
 CREATE INDEX IF NOT EXISTS runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS search_runs_latest_global_test ON search_runs(profile_id,created_at DESC) WHERE purpose='test' AND project_id IS NULL;
+CREATE INDEX IF NOT EXISTS project_parts_changeset_status ON project_parts(project_id,kind,json_extract(document,'$.status'),position,id) WHERE kind='changeset';
 `)
 	return err
 }
@@ -446,19 +451,24 @@ func (store *Store) SaveRun(id, projectID, document string) error {
 
 // RunProviderContext reads private context by task ID and project, preserving history ownership boundaries.
 func (store *Store) RunProviderContext(projectID, jobID string) (providerContext, string, error) {
-	var fingerprint, reasoning, encrypted, visible, text sql.NullString
-	err := store.db.QueryRow(`SELECT json_extract(document,'$.provider_context.fingerprint'),
-        json_extract(document,'$.provider_context.reasoning'),json_extract(document,'$.provider_context.encrypted'),
-        json_extract(document,'$.provider_context.visible_text'),json_extract(document,'$.text') FROM runs WHERE id=? AND project_id=?
+	var private, text, user sql.NullString
+	err := store.db.QueryRow(`SELECT json_extract(document,'$.provider_context'),json_extract(document,'$.text'),
+		json_extract(document,'$.prompt.messages[#-1].content') FROM runs WHERE id=? AND project_id=?
         AND json_extract(document,'$.status')='done'
-        AND json_extract(document,'$.action') IN ('ask','architecture','outline','agent','naming','research')`, jobID, projectID).Scan(&fingerprint, &reasoning, &encrypted, &visible, &text)
+		AND json_extract(document,'$.action') IN ('ask','architecture','outline','agent','naming','research','continue','rewrite','review','memory_update')`, jobID, projectID).Scan(&private, &text, &user)
 	if errors.Is(err, sql.ErrNoRows) {
 		return providerContext{}, "", nil
 	}
 	if err != nil {
 		return providerContext{}, "", err
 	}
-	return providerContext{Fingerprint: fingerprint.String, Reasoning: reasoning.String, Encrypted: encrypted.String, VisibleText: visible.String}, text.String, nil
+	result := providerContext{UserContent: user.String}
+	if private.Valid {
+		if err := decodeJSON([]byte(private.String), &result); err != nil {
+			return providerContext{}, "", err
+		}
+	}
+	return result, text.String, nil
 }
 
 // Runs returns the latest hundred public task records with private provider state removed in SQL.
@@ -474,11 +484,11 @@ func (store *Store) Runs(projectID string) ([]json.RawMessage, error) {
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		var check any
-		if err := decodeJSON([]byte(raw), &check); err != nil {
+		job, err := decodeStoredJob(raw)
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, json.RawMessage(raw))
+		result = append(result, rawMessage(job))
 	}
 	return result, rows.Err()
 }

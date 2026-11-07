@@ -9,18 +9,24 @@ import (
 )
 
 type Conversation struct {
-	ID         string             `json:"id"`
-	ProjectID  string             `json:"project_id"`
-	ChapterID  string             `json:"chapter_id"`
-	Title      string             `json:"title"`
-	ParentID   string             `json:"parent_id"`
-	ForkTurnID string             `json:"fork_turn_id"`
-	Draft      string             `json:"draft"`
-	Summary    string             `json:"summary"`
-	Revision   uint64             `json:"revision"`
-	CreatedAt  string             `json:"created_at"`
-	UpdatedAt  string             `json:"updated_at"`
-	Turns      []ConversationTurn `json:"turns"`
+	ID                   string                  `json:"id"`
+	ProjectID            string                  `json:"project_id"`
+	ChapterID            string                  `json:"chapter_id"`
+	OriginChapterID      string                  `json:"origin_chapter_id,omitempty"`
+	Title                string                  `json:"title"`
+	ParentID             string                  `json:"parent_id"`
+	ForkTurnID           string                  `json:"fork_turn_id"`
+	Draft                string                  `json:"draft"`
+	Summary              string                  `json:"summary"`
+	CompactedSummary     string                  `json:"compacted_summary,omitempty"`
+	CompactedUpToOrdinal int                     `json:"compacted_up_to_ordinal,omitempty"`
+	Checkpoint           *ConversationCheckpoint `json:"checkpoint,omitempty"`
+	BibleBaseline        string                  `json:"bible_baseline,omitempty"`
+	LastBibleHash        string                  `json:"last_bible_hash,omitempty"`
+	Revision             uint64                  `json:"revision"`
+	CreatedAt            string                  `json:"created_at"`
+	UpdatedAt            string                  `json:"updated_at"`
+	Turns                []ConversationTurn      `json:"turns"`
 }
 
 type ConversationTurn struct {
@@ -69,13 +75,9 @@ func readConversation(db documentDB, projectID, id string) (Conversation, error)
 
 // saveConversation persists metadata and only changed turns in an existing write transaction.
 func saveConversation(db documentDB, session *Conversation) error {
-	history := []Message{}
-	for _, turn := range session.Turns {
-		if turn.Status == "done" {
-			history = append(history, Message{Role: turn.Role, Content: turn.Content})
-		}
+	if session.Checkpoint != nil {
+		session.Summary = session.Checkpoint.Summary
 	}
-	_, session.Summary = compactHistory(history, 4000)
 	session.Revision++
 	session.UpdatedAt = now()
 	metadata := *session
@@ -119,8 +121,12 @@ func indexConversationTurn(db documentDB, session *Conversation, turn Conversati
 }
 
 // Conversations returns recent sessions without sharing any model-private continuation state.
-func (store *Store) Conversations(projectID, chapterID string) ([]Conversation, error) {
-	rows, err := store.db.Query("SELECT id FROM conversations WHERE project_id=? AND chapter_id=? ORDER BY rowid DESC LIMIT 100", projectID, chapterID)
+func (store *Store) Conversations(projectID, chapterID string, offsets ...int) ([]Conversation, error) {
+	offset := 0
+	if len(offsets) > 0 {
+		offset = offsets[0]
+	}
+	rows, err := store.db.Query("SELECT id FROM conversations WHERE project_id=? AND chapter_id=? ORDER BY rowid DESC LIMIT 100 OFFSET ?", projectID, chapterID, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +226,7 @@ func (store *Store) forkConversation(projectID, id, turnID string) (Conversation
 		if position < 0 {
 			return errors.New("Select a user message to rewind or edit")
 		}
-		result = Conversation{ID: newID(), ProjectID: projectID, ChapterID: session.ChapterID, Title: session.Title + " · branch", ParentID: session.ID, ForkTurnID: turnID, Draft: session.Turns[position].Content, CreatedAt: now(), Turns: []ConversationTurn{}}
+		result = Conversation{ID: newID(), ProjectID: projectID, ChapterID: session.ChapterID, OriginChapterID: session.OriginChapterID, Title: session.Title + " · branch", ParentID: session.ID, ForkTurnID: turnID, Draft: session.Turns[position].Content, CreatedAt: now(), Turns: []ConversationTurn{}}
 		for _, turn := range session.Turns[:position] {
 			turn.ID = newID()
 			turn.RequestID = ""
@@ -244,10 +250,11 @@ func (store *Store) prepareConversation(request AIRequest) (AIRequest, string, e
 	if scope == "" {
 		scope = request.SourceID
 	}
-	if session.ChapterID != scope {
+	if session.ChapterID != "" && session.ChapterID != scope {
 		return request, "", errors.New("Conversation belongs to another chapter")
 	}
 	request.History = []Message{}
+	request.conversation = &session
 	for _, turn := range session.Turns {
 		if request.RequestID != "" && turn.Role == "user" && turn.RequestID == request.RequestID {
 			return request, turn.JobID, nil
@@ -263,9 +270,24 @@ func (store *Store) prepareConversation(request AIRequest) (AIRequest, string, e
 	return request, "", nil
 }
 
-// beginDurableJob commits a user turn and its resumable job in one write transaction.
-func (store *Store) beginDurableJob(request AIRequest, job *Job) error {
-	return store.withWriteTransaction(func(conn *sql.Conn) error {
+// beginDurableJob resolves retries or commits one user turn and job under the same write lock.
+func (store *Store) beginDurableJob(request AIRequest, job *Job) (string, error) {
+	prior := ""
+	err := store.withWriteTransaction(func(conn *sql.Conn) error {
+		var session Conversation
+		if request.SessionID != "" {
+			var err error
+			session, err = readConversation(conn, request.ProjectID, request.SessionID)
+			if err != nil {
+				return err
+			}
+			for _, turn := range session.Turns {
+				if request.RequestID != "" && turn.Role == "user" && turn.RequestID == request.RequestID {
+					prior = turn.JobID
+					return nil
+				}
+			}
+		}
 		var revision uint64
 		if err := conn.QueryRowContext(context.Background(), "SELECT revision FROM projects WHERE id=?", job.ProjectID).Scan(&revision); err != nil {
 			return err
@@ -281,10 +303,6 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) error {
 			return errors.New("This project already has a running task. Wait or cancel it")
 		}
 		if request.SessionID != "" {
-			session, err := readConversation(conn, request.ProjectID, request.SessionID)
-			if err != nil {
-				return err
-			}
 			for _, turn := range session.Turns {
 				if turn.Status == "running" {
 					return errors.New("This conversation has an unfinished request")
@@ -292,6 +310,10 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) error {
 			}
 			session.Turns = append(session.Turns, ConversationTurn{ID: newID(), Role: "user", Content: request.Instruction, JobID: job.ID, Action: request.Action, Status: "running", RequestID: request.RequestID, CreatedAt: now()})
 			session.Draft = ""
+			if session.BibleBaseline == "" && job.Prompt.BibleCurrent != "" {
+				session.BibleBaseline = job.Prompt.BibleCurrent
+				session.LastBibleHash = hashText(job.Prompt.BibleCurrent)
+			}
 			if len(session.Turns) == 1 && session.Title == "New conversation" && strings.TrimSpace(request.Instruction) != "" {
 				session.Title = string([]rune(request.Instruction)[:min(35, charCount(request.Instruction))])
 			}
@@ -304,6 +326,7 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) error {
 		_, err := conn.ExecContext(context.Background(), "INSERT INTO runs(id,project_id,document) VALUES(?,?,?)", job.ID, job.ProjectID, storedJob(&initial))
 		return err
 	})
+	return prior, err
 }
 
 // finishConversation publishes the result and marks interruptions without treating partial prose as facts.
@@ -325,35 +348,6 @@ const maxHistoryMessages = 24
 
 // compactHistory retains bounded older context and complete recent turns without unbounded prompt growth.
 func compactHistory(history []Message, budget int) ([]Message, string) {
-	if len(history) <= maxHistoryMessages && messageChars(history) <= budget {
-		return history, ""
-	}
-	tail := []Message{}
-	used := 0
-	cut := len(history)
-	for cut > 0 && len(tail) < maxHistoryMessages-1 {
-		item := history[cut-1]
-		if used+charCount(item.Content) > budget*2/3 {
-			break
-		}
-		tail = append([]Message{item}, tail...)
-		used += charCount(item.Content)
-		cut--
-	}
-	snippets := []string{}
-	remaining := max(0, budget-used-100)
-	for i := 0; i < cut && remaining > 0; i++ {
-		text := []rune(history[i].Content)
-		size := min(len(text), min(180, remaining))
-		snippets = append(snippets, fmt.Sprintf("%s: %s", history[i].Role, string(text[:size])))
-		remaining -= size + 12
-	}
-	summary := "Earlier discussion excerpts (incomplete; accepted decisions are recorded separately):\n" + strings.Join(snippets, "\n")
-	if charCount(summary) > budget-used {
-		summary = string([]rune(summary)[:max(0, budget-used)])
-	}
-	if summary != "" {
-		tail = append([]Message{{Role: "user", Content: summary}}, tail...)
-	}
-	return tail, summary
+	compacted, summary, _ := compactHistoryBlockwise(history, budget, "", 0)
+	return compacted, summary
 }

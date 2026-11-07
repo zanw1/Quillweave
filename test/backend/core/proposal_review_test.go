@@ -3,12 +3,202 @@
 package core
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+// structuredProposalJob uses the normal model and Agent entry points to stage typed operations.
+func structuredProposalJob(t *testing.T, engine *Engine, project Project, operations []ChangeOperation) Job {
+	t.Helper()
+	server, _ := sequenceModel(t, []string{jsonText(map[string]any{"tool": "propose_changes", "operations": operations}), `{"tool":"finish","text":"Review these changes."}`})
+	config := nativeConfig("openai")
+	config.BaseURL = server.URL
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", AIRequest{ProjectID: project.ID, Action: "agent", Instruction: "Prepare structured changes", History: []Message{}}))
+	assert(t, job.Status == "done" && len(job.ChangeSets) == 1, "The Agent did not stage the structured candidate: "+job.Error)
+	return job
+}
+
+// restoreUnboundProposalFixture recreates the valid persisted projection produced by the previous implementation.
+func restoreUnboundProposalFixture(t *testing.T, engine *Engine, original Job) {
+	t.Helper()
+	saved, err := engine.loadStoredJob(original.ID)
+	assert(t, err == nil, fmt.Sprint(err))
+	saved.Proposals = original.Proposals
+	for i := range saved.ChangeSets {
+		cs := &saved.ChangeSets[i]
+		cs.ProposalLinksVersion = 0
+		for _, operations := range [][]ChangeOperation{cs.Operations, cs.Skipped} {
+			for j := range operations {
+				operations[j].ProposalID = ""
+			}
+		}
+		if cs.ReviewToken != "" {
+			cs.ReviewToken = changeSetReviewToken(*cs)
+		}
+	}
+	err = engine.store.withWriteTransaction(func(conn *sql.Conn) error {
+		for _, cs := range saved.ChangeSets {
+			if err := writeChangeSetRecord(conn, saved.ProjectID, cs); err != nil {
+				return err
+			}
+		}
+		_, err := conn.ExecContext(context.Background(), "UPDATE runs SET document=? WHERE id=?", storedJob(&saved), saved.ID)
+		return err
+	})
+	assert(t, err == nil, fmt.Sprint(err))
+}
+
+// TestStructuredProposalReviewStates keeps native and compatibility views consistent for acceptance and rejection.
+func TestStructuredProposalReviewStates(t *testing.T) {
+	for _, kind := range []ChangeTargetKind{TargetPlan, TargetDecision} {
+		for _, decision := range []string{"accepted", "rejected"} {
+			t.Run(string(kind)+"/"+decision, func(t *testing.T) {
+				engine := testEngine(t)
+				project := testProject()
+				insertProject(t, engine, project)
+				value := map[string]any{"id": "pending-record", "title": "A reviewed record", "content": "Accepted author choice", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Find the letter"}
+				job := structuredProposalJob(t, engine, project, []ChangeOperation{{TargetKind: kind, OpType: OpUpsert, Title: "A reviewed record", AfterValue: rawMessage(value)}})
+				assert(t, len(job.Proposals) == 1 && job.ChangeSets[0].Operations[0].ProposalID == job.Proposals[0].ID, "Structured operation has no compatibility proposal binding")
+				cs := invoke[struct {
+					ChangeSet ChangeSet `json:"changeset"`
+				}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID}).ChangeSet
+				command := "apply_changeset"
+				if decision == "rejected" {
+					command = "reject_changeset"
+				}
+				result := invoke[struct {
+					Project Project `json:"project"`
+				}](t, engine, command, map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": cs.PreviewRevision, "review_token": cs.ReviewToken})
+				current := invoke[Job](t, engine, "get_job", map[string]any{"job_id": job.ID})
+				assert(t, current.Proposals[0].Status == decision, "Task proposal status diverged from the reviewed changeset")
+				runs := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": project.ID})
+				assert(t, len(runs) == 1 && runs[0].Proposals[0].Status == decision, "Task listing exposed a stale proposal state")
+				reject(t, engine, "review_proposal", map[string]any{"project_id": project.ID, "revision": result.Project.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
+				count := len(result.Project.Studio.Plans) + len(result.Project.Studio.Decisions)
+				assert(t, count == 1 && decision == "accepted" || count == 0 && decision == "rejected", "Review wrote an unexpected number of records")
+			})
+		}
+	}
+}
+
+// TestLegacyStructuredProposalCompatibility upgrades uniquely attributable old views and reuses their pending candidate.
+func TestLegacyStructuredProposalCompatibility(t *testing.T) {
+	for _, kind := range []ChangeTargetKind{TargetPlan, TargetDecision} {
+		for _, phase := range []string{"pending", "applied", "rejected"} {
+			t.Run(string(kind)+"/"+phase, func(t *testing.T) {
+				engine := testEngine(t)
+				project := testProject()
+				insertProject(t, engine, project)
+				value := map[string]any{"id": "pending-legacy", "title": "Legacy record", "content": "Original choice", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Original goal"}
+				job := structuredProposalJob(t, engine, project, []ChangeOperation{{TargetKind: kind, OpType: OpUpsert, Title: "Legacy record", AfterValue: rawMessage(value)}})
+				cs := invoke[struct {
+					ChangeSet ChangeSet `json:"changeset"`
+				}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID}).ChangeSet
+				if phase != "pending" {
+					command := "apply_changeset"
+					if phase == "rejected" {
+						command = "reject_changeset"
+					}
+					invoke[any](t, engine, command, map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": cs.PreviewRevision, "review_token": cs.ReviewToken})
+				}
+				restoreUnboundProposalFixture(t, engine, job)
+				loaded := invoke[Job](t, engine, "get_job", map[string]any{"job_id": job.ID})
+				current := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+				args := map[string]any{"project_id": project.ID, "revision": current.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"}
+				if phase == "pending" {
+					preview := invoke[struct {
+						ChangeSet ChangeSet `json:"changeset"`
+					}](t, engine, "review_proposal", args)
+					assert(t, preview.ChangeSet.ID == cs.ID && preview.ChangeSet.Operations[0].ProposalID == job.Proposals[0].ID, "Legacy preview created a second candidate instead of binding the existing one")
+					invoke[any](t, engine, "apply_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": preview.ChangeSet.PreviewRevision, "review_token": preview.ChangeSet.ReviewToken})
+				} else {
+					status := "accepted"
+					if phase == "rejected" {
+						status = "rejected"
+					}
+					assert(t, loaded.Proposals[0].Status == status, "Legacy result was exposed as still pending")
+					runs := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": project.ID})
+					assert(t, runs[0].Proposals[0].Status == status, "Legacy run list and task read disagree")
+					reject(t, engine, "review_proposal", args)
+				}
+				current = invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+				assert(t, len(current.Studio.ChangeSets) == 1, "Legacy adaptation left duplicate candidates")
+				count := len(current.Studio.Plans) + len(current.Studio.Decisions)
+				assert(t, count == 0 && phase == "rejected" || count == 1 && phase != "rejected", "Legacy review duplicated or lost the saved content")
+			})
+		}
+	}
+}
+
+// TestAmbiguousLegacyProposalLinksRemainReviewable rejects unsafe ownership guesses while allowing explicit rejection.
+func TestAmbiguousLegacyProposalLinksRemainReviewable(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	operations := []ChangeOperation{}
+	for _, id := range []string{"pending-left", "pending-right"} {
+		operations = append(operations, ChangeOperation{TargetKind: TargetPlan, OpType: OpUpsert, Title: "Same title", AfterValue: rawMessage(StoryPlan{ID: id, Title: "Same title", Level: "volume", StartChapter: 1, EndChapter: 3})})
+	}
+	job := structuredProposalJob(t, engine, project, operations)
+	invoke[any](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID})
+	restoreUnboundProposalFixture(t, engine, job)
+	current := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	cs := current.Studio.ChangeSets[0]
+	_, err := engine.Dispatch("review_proposal", rawMessage(map[string]any{"project_id": project.ID, "revision": current.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"}))
+	assert(t, err != nil && strings.Contains(err.Error(), "ambiguous"), "Ambiguous legacy ownership was guessed")
+	reject(t, engine, "apply_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": cs.PreviewRevision, "review_token": cs.ReviewToken})
+	invoke[any](t, engine, "reject_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID})
+	current = invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, len(current.Studio.Plans) == 0 && current.Studio.ChangeSets[0].Status == ChangeSetRejected, "Ambiguity handling wrote content or hid the rejected candidate")
+}
+
+// TestStructuredPartialPlanBindings retains pending child ownership after accepting a parent in a typed changeset.
+func TestStructuredPartialPlanBindings(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	job := structuredProposalJob(t, engine, project, []ChangeOperation{
+		{TargetKind: TargetPlan, OpType: OpUpsert, Title: "Child", AfterValue: rawMessage(StoryPlan{ID: "pending-child", ParentID: "pending-parent", Level: "chapter", Title: "Child", StartChapter: 1, EndChapter: 1})},
+		{TargetKind: TargetPlan, OpType: OpUpsert, Title: "Parent", AfterValue: rawMessage(StoryPlan{ID: "pending-parent", Level: "volume", Title: "Parent", StartChapter: 1, EndChapter: 3})},
+	})
+	cs := invoke[struct {
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID}).ChangeSet
+	parent := cs.Operations[1]
+	cs = invoke[struct {
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "operations": []ChangeOperation{parent}}).ChangeSet
+	invoke[any](t, engine, "apply_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": cs.PreviewRevision, "review_token": cs.ReviewToken})
+	current := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	loaded := invoke[Job](t, engine, "get_job", map[string]any{"job_id": job.ID})
+	assert(t, loaded.Proposals[0].Status == "proposed" && loaded.Proposals[1].Status == "accepted" && loaded.Proposals[0].Plan.ParentID == current.Studio.Plans[0].ID, "Partial acceptance lost child ownership or parent identity")
+	accepted := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": project.ID, "revision": current.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
+	assert(t, len(accepted.Project.Studio.Plans) == 2 && accepted.Project.Studio.Plans[1].ParentID == current.Studio.Plans[0].ID, "The pending child could not be accepted under its saved parent")
+}
+
+// TestEditedNativeOperationWithoutLegacyProjection permits author repair of a typed candidate with no old proposal counterpart.
+func TestEditedNativeOperationWithoutLegacyProjection(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	job := structuredProposalJob(t, engine, project, []ChangeOperation{{TargetKind: TargetPlan, OpType: OpUpsert, AfterValue: rawMessage(StoryPlan{Level: "volume", StartChapter: 1, EndChapter: 2})}})
+	assert(t, len(job.Proposals) == 0 && job.ChangeSets[0].ProposalLinksVersion == 1, "The fixture unexpectedly generated a compatibility proposal")
+	operation := job.ChangeSets[0].Operations[0]
+	operation.AfterValue = rawMessage(StoryPlan{Title: "Author repaired title", Level: "volume", StartChapter: 1, EndChapter: 2})
+	cs := invoke[struct {
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID, "operations": []ChangeOperation{operation}}).ChangeSet
+	result := invoke[struct {
+		Project Project `json:"project"`
+	}](t, engine, "apply_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": cs.PreviewRevision, "review_token": cs.ReviewToken})
+	assert(t, len(result.Project.Studio.Plans) == 1 && result.Project.Studio.Plans[0].Title == "Author repaired title", "A new unpaired candidate was mistaken for ambiguous legacy data")
+}
 
 // TestRelatedPlanProposalsKeepTheirHierarchy proves parent acceptance rewrites pending child references.
 func TestRelatedPlanProposalsKeepTheirHierarchy(t *testing.T) {
@@ -29,18 +219,12 @@ func TestRelatedPlanProposalsKeepTheirHierarchy(t *testing.T) {
 	args := map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[1].ID, "decision": "accepted"}
 	reject(t, engine, "review_proposal", args)
 	args["proposal_id"] = job.Proposals[0].ID
-	parent := invoke[struct {
-		Project Project `json:"project"`
-		Job     Job     `json:"job"`
-	}](t, engine, "review_proposal", args)
+	parent := acceptProposalAfterPreview(t, engine, args)
 	assert(t, parent.Job.Proposals[1].Plan.ParentID == parent.Project.Studio.Plans[0].ID, "Pending child still points to a model-local ID")
 	args["revision"] = parent.Project.Revision
 	args["proposal_id"] = job.Proposals[1].ID
 	args["content"] = "The author's edited chapter goal"
-	child := invoke[struct {
-		Project Project `json:"project"`
-		Job     Job     `json:"job"`
-	}](t, engine, "review_proposal", args)
+	child := acceptProposalAfterPreview(t, engine, args)
 	assert(t, len(child.Project.Studio.Plans) == 2 && child.Project.Studio.Plans[1].ParentID == child.Project.Studio.Plans[0].ID && child.Project.Studio.Plans[1].Goal == "The author's edited chapter goal", "Accepted hierarchy or edited goal was lost")
 }
 
@@ -58,9 +242,7 @@ func TestAgentWriterStagesVersionProtectedProse(t *testing.T) {
 	assert(t, job.Status == "done" && calls.Load() == 3 && job.Calls == 3 && len(job.Proposals) == 1, job.Error)
 	before := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	assert(t, before.Chapters[0].Body == p.Chapters[0].Body, "The writer applied prose automatically")
-	accepted := invoke[struct {
-		Project Project `json:"project"`
-	}](t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": before.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted", "mode": "append"})
+	accepted := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": p.ID, "revision": before.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted", "mode": "append"})
 	assert(t, strings.HasSuffix(accepted.Project.Chapters[0].Body, "The keeper crossed the bridge.") && len(accepted.Project.Chapters[0].Versions) > 0, "Reviewed prose was not applied with version protection")
 }
 

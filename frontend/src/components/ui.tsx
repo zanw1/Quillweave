@@ -148,14 +148,18 @@ export function RequiredLabel({ children }: { children: ReactNode }) {
 }
 
 /** Share native focus containment and dismiss only a complete click on the actual backdrop. */
-function useDialog(onClose: () => void) {
+function useDialog(onClose: () => void, open = true, modal = true) {
   const ref = useRef<HTMLDialogElement>(null);
   const backdropPress = useRef(false);
   useEffect(() => {
     const dialog = ref.current;
-    dialog?.showModal();
+    if (dialog?.open) dialog.close();
+    if (open && dialog) {
+      if (modal) dialog.showModal();
+      else dialog.show();
+    }
     return () => dialog?.close();
-  }, []);
+  }, [open, modal]);
   /** Separate a backdrop from the dialog's own blank content and scrollbar. */
   function outside(
     event: MouseEvent<HTMLDialogElement> | PointerEvent<HTMLDialogElement>,
@@ -188,6 +192,30 @@ function useDialog(onClose: () => void) {
       backdropPress.current = false;
     },
   };
+}
+
+/** Keep panel children mounted while switching between a docked panel and a focus-contained drawer. */
+export function DockablePanel({
+  title,
+  open,
+  modal,
+  onClose,
+  children,
+  className,
+}: {
+  title: string;
+  open: boolean;
+  modal: boolean;
+  onClose: () => void;
+  children: ReactNode;
+  className: string;
+}) {
+  const dialog = useDialog(onClose, open, modal);
+  return (
+    <dialog {...dialog} aria-label={title} className={className}>
+      {children}
+    </dialog>
+  );
 }
 
 /** Provide a clear next action for empty states and search results. */

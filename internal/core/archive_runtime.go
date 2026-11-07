@@ -5,6 +5,28 @@ import (
 	"errors"
 )
 
+// rekeyChangeSet preserves imported history while requiring a fresh preview in the restored project.
+func rekeyChangeSet(cs *ChangeSet, projectID string, sessions, turns, jobs map[string]string) {
+	cs.ProjectID = projectID
+	cs.SessionID, cs.TurnID, cs.JobID = sessions[cs.SessionID], turns[cs.TurnID], jobs[cs.JobID]
+	cs.ReviewToken, cs.PreviewRevision = "", 0
+	cs.CommitPolicy = "review"
+	cs.Archived = cs.Status == ChangeSetApplied || cs.Status == ChangeSetUndone
+	if !cs.Archived {
+		cs.BaseRevision = 0
+	}
+	for i := range cs.Operations {
+		op := &cs.Operations[i]
+		var value map[string]any
+		if decodeJSON(op.AfterValue, &value) == nil && value != nil {
+			if id, ok := value["session_id"].(string); ok {
+				value["session_id"] = sessions[id]
+				op.AfterValue = rawMessage(value)
+			}
+		}
+	}
+}
+
 // rekeyArchive isolates imported sessions, jobs and research records while retaining internal provenance links.
 func rekeyArchive(project *Project) {
 	sessions, turns, jobs := map[string]string{}, map[string]string{}, map[string]string{}
@@ -24,6 +46,12 @@ func rekeyArchive(project *Project) {
 		s.ParentID = sessions[s.ParentID]
 		s.ForkTurnID = turns[s.ForkTurnID]
 		s.Revision = 0
+		if s.ChapterID != "" {
+			s.OriginChapterID, s.ChapterID = s.ChapterID, ""
+		}
+		s.Checkpoint = nil
+		s.BibleBaseline, s.LastBibleHash, s.Summary, s.CompactedSummary = "", "", "", ""
+		s.CompactedUpToOrdinal = 0
 		for j := range s.Turns {
 			t := &s.Turns[j]
 			t.ID = turns[t.ID]
@@ -39,6 +67,9 @@ func rekeyArchive(project *Project) {
 		job.ID = jobs[job.ID]
 		job.ProjectID = project.ID
 		job.SessionID = sessions[job.SessionID]
+		for j := range job.ChangeSets {
+			rekeyChangeSet(&job.ChangeSets[j], project.ID, sessions, turns, jobs)
+		}
 		if job.Status == "running" {
 			job.Status = "interrupted"
 		}
@@ -51,6 +82,9 @@ func rekeyArchive(project *Project) {
 	}
 	for i := range project.Studio.Decisions {
 		project.Studio.Decisions[i].SessionID = sessions[project.Studio.Decisions[i].SessionID]
+	}
+	for i := range project.Studio.ChangeSets {
+		rekeyChangeSet(&project.Studio.ChangeSets[i], project.ID, sessions, turns, jobs)
 	}
 	for i := range project.Experiments {
 		project.Experiments[i].ID = newID()
