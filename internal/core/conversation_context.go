@@ -312,7 +312,7 @@ func (engine *Engine) persistConversationCheckpoint(job Job) error {
 			session.LastBibleHash = hashText(job.Prompt.BibleCurrent)
 		}
 		session.CompactedSummary, session.CompactedUpToOrdinal = "", 0
-		if err := saveConversation(conn, &session); err != nil {
+		if err := saveConversationMetadata(conn, &session); err != nil {
 			return err
 		}
 		updated := current.snapshot()

@@ -21,6 +21,58 @@ type queryPlanCase struct {
 	wantRows, wantScope                      int
 }
 
+type ftsDeleteCounter struct {
+	documentDB
+	deletes int
+}
+
+// ExecContext observes real index-maintenance statements while delegating all database behavior.
+func (counter *ftsDeleteCounter) ExecContext(ctx context.Context, statement string, args ...any) (sql.Result, error) {
+	if strings.HasPrefix(statement, "DELETE FROM story_fts WHERE project_id=? AND part_id=?") {
+		counter.deletes++
+	}
+	return counter.documentDB.ExecContext(ctx, statement, args...)
+}
+
+// TestFTSMaintenanceSkipsNewParts checks insert, update and delete behavior without a timing-dependent assertion.
+func TestFTSMaintenanceSkipsNewParts(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	project.Chapters[0].Body = "旧港口的铜钥匙。"
+	project.Entities = []Entity{{ID: newID(), Name: "林舟", Kind: "character", Aliases: []string{}}}
+	// persist checks the maintenance cost within the same real write transaction as the content change.
+	persist := func(insert bool, expectedDeletes int) {
+		t.Helper()
+		err := engine.store.withWriteTransaction(func(conn *sql.Conn) error {
+			counter := &ftsDeleteCounter{documentDB: conn}
+			var err error
+			if insert {
+				err = insertProjectIn(counter, &project)
+			} else {
+				err = saveProject(counter, &project, project.Revision)
+			}
+			if err == nil && counter.deletes != expectedDeletes {
+				return fmt.Errorf("expected %d FTS deletes, got %d", expectedDeletes, counter.deletes)
+			}
+			return err
+		})
+		assert(t, err == nil, fmt.Sprint(err))
+	}
+	persist(true, 0)
+	project.Entities[0].Description = "Updated character description"
+	persist(false, 0)
+	project.Chapters[0].Body = "新山谷的银铃铛。"
+	persist(false, 1)
+	old, err := engine.store.SearchPassages(project.ID, "铜钥匙", 3)
+	assert(t, err == nil && len(old) == 0, "Replacing a chapter retained stale index content")
+	current, err := engine.store.SearchPassages(project.ID, "银铃铛", 3)
+	assert(t, err == nil && len(current) == 1, "Replacing a chapter lost or duplicated its new index entry")
+	project.Chapters = []Chapter{}
+	persist(false, 1)
+	deleted, err := engine.store.SearchPassages(project.ID, "银铃铛", 3)
+	assert(t, err == nil && len(deleted) == 0, "Deleting a chapter retained its index entry")
+}
+
 // queryFixtureRows compares ordered SQL output without duplicating business sorting or hydration logic.
 func queryFixtureRows(t *testing.T, db *sql.DB, statement string, args ...any) (int, string) {
 	t.Helper()

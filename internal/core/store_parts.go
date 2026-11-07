@@ -178,6 +178,7 @@ func saveParts(db documentDB, projectID string, parts []projectPart) error {
 	}
 	rows.Close()
 	for _, part := range parts {
+		_, existed := old[part.kind+":"+part.id]
 		delete(old, part.kind+":"+part.id)
 		if part.kind == "changeset" {
 			if _, err := db.ExecContext(ctx, "INSERT INTO project_parts(project_id,kind,id,position,document) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,id) DO NOTHING", projectID, part.kind, part.id, part.position, part.document); err != nil {
@@ -194,7 +195,7 @@ func saveParts(db documentDB, projectID string, parts []projectPart) error {
 			return err
 		}
 		if changed > 0 {
-			if err := indexPart(db, projectID, part); err != nil {
+			if err := indexPart(db, projectID, part, existed); err != nil {
 				return err
 			}
 		}
@@ -213,12 +214,17 @@ func saveParts(db documentDB, projectID string, parts []projectPart) error {
 	return nil
 }
 
-// indexPart indexes source passages with their chapter boundaries and stable provenance identifiers.
-func indexPart(db documentDB, projectID string, part projectPart) error {
+// indexPart replaces existing source passages and inserts new parts without scanning unrelated index entries.
+func indexPart(db documentDB, projectID string, part projectPart, existed bool) error {
+	if part.kind != "chapter" && part.kind != "source" {
+		return nil
+	}
 	ctx := context.Background()
 	key := part.kind + ":" + part.id
-	if _, err := db.ExecContext(ctx, "DELETE FROM story_fts WHERE project_id=? AND part_id=?", projectID, key); err != nil {
-		return err
+	if existed {
+		if _, err := db.ExecContext(ctx, "DELETE FROM story_fts WHERE project_id=? AND part_id=?", projectID, key); err != nil {
+			return err
+		}
 	}
 	var text, title, prefix, kind string
 	var chapter uint32

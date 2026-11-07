@@ -146,7 +146,10 @@ func runModule(t *testing.T, root, name, target string) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"test", "-json", "-count=1", "-timeout=10m", "-overlay=" + path, "-tags=quillweave_whitebox"}
+	// Large archives, story indexes and recovery cases share this module budget.
+	// Leave headroom for instrumented SQLite on slower CI runners while keeping
+	// the module deadline below the 20m parent process budget.
+	args := []string{"test", "-json", "-count=1", "-timeout=15m", "-overlay=" + path, "-tags=quillweave_whitebox"}
 	if raceEnabled {
 		args = append(args, "-race")
 	}

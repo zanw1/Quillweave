@@ -346,7 +346,8 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 	if job.Status == "done" && job.Prompt.BibleCurrent != "" {
 		session.LastBibleHash = hashText(job.Prompt.BibleCurrent)
 	}
-	answered, changed := false, false
+	answered := false
+	changedTurns := []int{}
 	for i := range session.Turns {
 		if session.Turns[i].JobID != job.ID {
 			continue
@@ -356,17 +357,25 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 		}
 		if session.Turns[i].Status != job.Status {
 			session.Turns[i].Status = job.Status
-			changed = true
+			changedTurns = append(changedTurns, i)
 		}
 	}
 	if !answered {
 		session.Turns = append(session.Turns, ConversationTurn{ID: newID(), Role: "assistant", Content: job.Text, JobID: job.ID, Action: job.Action, Status: job.Status, CreatedAt: now()})
-		changed = true
+		changedTurns = append(changedTurns, len(session.Turns)-1)
 	}
-	if !changed {
+	if len(changedTurns) == 0 {
 		return nil
 	}
-	return saveConversation(connection, &session)
+	if err := saveConversationMetadata(connection, &session); err != nil {
+		return err
+	}
+	for _, ordinal := range changedTurns {
+		if err := saveConversationTurn(connection, &session, ordinal); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // closeRuntime releases the process claim but preserves recovery intents that could not reach SQLite.

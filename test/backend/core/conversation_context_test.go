@@ -17,6 +17,54 @@ import (
 	"time"
 )
 
+// TestConversationWritesStayIncremental bounds real message writes while exercising metadata edits, retries and forks.
+func TestConversationWritesStayIncremental(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	server := staticModel(t, streamPayload("A saved reply."), 0)
+	config := nativeConfig("openai")
+	config.BaseURL = server.URL
+	configureModel(t, engine, config)
+	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": project.ID})
+	_, err := engine.store.db.Exec(`CREATE TABLE turn_write_audit(session_id TEXT);
+CREATE TRIGGER count_turn_insert BEFORE INSERT ON conversation_turns BEGIN INSERT INTO turn_write_audit VALUES(new.session_id); END;
+CREATE TRIGGER count_turn_update BEFORE UPDATE ON conversation_turns BEGIN INSERT INTO turn_write_audit VALUES(new.session_id); END`)
+	assert(t, err == nil, fmt.Sprint(err))
+	// attempts observes both insert attempts and actual updates without assuming a particular SQL upsert spelling.
+	attempts := func() int {
+		t.Helper()
+		var count int
+		assert(t, engine.store.db.QueryRow("SELECT COUNT(*) FROM turn_write_audit").Scan(&count) == nil, "Could not count turn writes")
+		return count
+	}
+	var last Job
+	request := AIRequest{ProjectID: project.ID, SessionID: session.ID, Action: "ask", History: []Message{}}
+	for i := 0; i < 6; i++ {
+		request.RequestID = fmt.Sprintf("incremental-%d", i)
+		request.Instruction = fmt.Sprintf("Discuss choice %d", i)
+		last = finishJob(t, engine, invoke[Job](t, engine, "start_ai", request))
+		assert(t, last.Status == "done", last.Error)
+		assert(t, attempts() <= 4*(i+1), "A new exchange rewrote older message rows")
+	}
+	session = invoke[Conversation](t, engine, "get_conversation", map[string]any{"project_id": project.ID, "session_id": session.ID})
+	assert(t, len(session.Turns) == 12, "An incremental write lost conversation history")
+	for _, turn := range session.Turns {
+		assert(t, turn.Status == "done", "A completed turn retained a running status")
+	}
+	beforeMetadata := attempts()
+	updated := invoke[Conversation](t, engine, "update_conversation", map[string]any{"project_id": project.ID, "session_id": session.ID, "revision": session.Revision, "title": "Renamed conversation", "draft": "Keep this draft"})
+	assert(t, updated.Revision == session.Revision+1 && len(updated.Turns) == 12 && attempts() == beforeMetadata, "A metadata edit wrote message rows or lost history")
+	retried := invoke[Job](t, engine, "start_ai", request)
+	assert(t, retried.ID == last.ID && attempts() == beforeMetadata, "A request retry wrote new message rows")
+	branch, err := engine.store.forkConversation(project.ID, session.ID, session.Turns[4].ID)
+	assert(t, err == nil && len(branch.Turns) == 4 && attempts() == beforeMetadata+4, "Branching did not persist exactly the selected prefix")
+	for i, turn := range branch.Turns {
+		assert(t, turn.ID != session.Turns[i].ID && turn.Content == session.Turns[i].Content, "Branching changed content or reused original message identities")
+	}
+	t.Logf("Six complete exchanges used %d audited insert/update events; metadata edits and retry added zero", beforeMetadata)
+}
+
 // TestDurableAdmissionReusesPreparedRequests checks retries after another Engine accepts, finishes or edits the work.
 func TestDurableAdmissionReusesPreparedRequests(t *testing.T) {
 	for _, phase := range []string{"running", "done", "changed_project"} {

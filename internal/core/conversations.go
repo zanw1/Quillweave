@@ -73,8 +73,21 @@ func readConversation(db documentDB, projectID, id string) (Conversation, error)
 	return session, rows.Err()
 }
 
-// saveConversation persists metadata and only changed turns in an existing write transaction.
+// saveConversation persists complete histories for creation, branching and migration within a write transaction.
 func saveConversation(db documentDB, session *Conversation) error {
+	if err := saveConversationMetadata(db, session); err != nil {
+		return err
+	}
+	for i := range session.Turns {
+		if err := saveConversationTurn(db, session, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// saveConversationMetadata updates the revision, draft and checkpoint without touching message rows.
+func saveConversationMetadata(db documentDB, session *Conversation) error {
 	if session.Checkpoint != nil {
 		session.Summary = session.Checkpoint.Summary
 	}
@@ -82,23 +95,23 @@ func saveConversation(db documentDB, session *Conversation) error {
 	session.UpdatedAt = now()
 	metadata := *session
 	metadata.Turns = []ConversationTurn{}
-	if _, err := db.ExecContext(context.Background(), "INSERT INTO conversations(id,project_id,chapter_id,document) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document", session.ID, session.ProjectID, session.ChapterID, jsonText(metadata)); err != nil {
+	_, err := db.ExecContext(context.Background(), "INSERT INTO conversations(id,project_id,chapter_id,document) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document", session.ID, session.ProjectID, session.ChapterID, jsonText(metadata))
+	return err
+}
+
+// saveConversationTurn writes one known ordinal and refreshes its index only when its document changes.
+func saveConversationTurn(db documentDB, session *Conversation, ordinal int) error {
+	turn := session.Turns[ordinal]
+	result, err := db.ExecContext(context.Background(), "INSERT INTO conversation_turns(id,session_id,ordinal,document) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document WHERE document!=excluded.document", turn.ID, session.ID, ordinal, jsonText(turn))
+	if err != nil {
 		return err
 	}
-	for i, turn := range session.Turns {
-		result, err := db.ExecContext(context.Background(), "INSERT INTO conversation_turns(id,session_id,ordinal,document) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document WHERE document!=excluded.document", turn.ID, session.ID, i, jsonText(turn))
-		if err != nil {
-			return err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed > 0 {
-			if err := indexConversationTurn(db, session, turn); err != nil {
-				return err
-			}
-		}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed > 0 {
+		return indexConversationTurn(db, session, turn)
 	}
 	return nil
 }
@@ -203,7 +216,7 @@ func (store *Store) updateConversation(projectID, id string, revision uint64, ti
 			}
 			session.Draft = *draft
 		}
-		return saveConversation(conn, &session)
+		return saveConversationMetadata(conn, &session)
 	})
 	return session, err
 }
@@ -317,7 +330,10 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) (string, error)
 			if len(session.Turns) == 1 && session.Title == "New conversation" && strings.TrimSpace(request.Instruction) != "" {
 				session.Title = string([]rune(request.Instruction)[:min(35, charCount(request.Instruction))])
 			}
-			if err := saveConversation(conn, &session); err != nil {
+			if err := saveConversationMetadata(conn, &session); err != nil {
+				return err
+			}
+			if err := saveConversationTurn(conn, &session, len(session.Turns)-1); err != nil {
 				return err
 			}
 		}

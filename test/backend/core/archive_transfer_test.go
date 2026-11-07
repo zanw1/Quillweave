@@ -5,6 +5,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // importTestArchiveFile exercises the actual bounded upload protocol and its acknowledgement retries.
@@ -155,8 +157,42 @@ func TestArchiveShutdownRemovesTransfers(t *testing.T) {
 	}
 }
 
-// TestLargeArchiveTransferRoundtrip restores the exact workload that previously exported an unusable backup.
+// seedArchiveTasks expands real completed responses into a large durable fixture in one transaction.
+func seedArchiveTasks(t *testing.T, engine *Engine, project Project, seed Job, total int) {
+	t.Helper()
+	session := invoke[Conversation](t, engine, "get_conversation", map[string]any{"project_id": project.ID, "session_id": seed.SessionID})
+	assert(t, seed.Status == "done" && len(seed.Proposals) > 0 && len(session.Turns)%2 == 0, "Archive seed must contain a completed task and paired turns")
+	err := engine.store.withWriteTransaction(func(conn *sql.Conn) error {
+		for i := len(session.Turns) / 2; i < total; i++ {
+			job := seed.snapshot()
+			job.ID = newID()
+			for j := range job.Proposals {
+				job.Proposals[j].ID = newID()
+			}
+			candidate := proposalsToChangeSet(&project, &job, job.Proposals)
+			if candidate == nil {
+				return fmt.Errorf("archive seed task %d produced no reviewable candidate", i)
+			}
+			job.ChangeSets = []ChangeSet{*candidate}
+			if _, err := conn.ExecContext(context.Background(), "INSERT INTO runs(id,project_id,document) VALUES(?,?,?)", job.ID, project.ID, storedJob(&job)); err != nil {
+				return err
+			}
+			if err := persistStagedChangeSetsInDB(conn, project.ID, job.ChangeSets); err != nil {
+				return err
+			}
+			session.Turns = append(session.Turns,
+				ConversationTurn{ID: newID(), Role: "user", Content: job.Instruction, JobID: job.ID, Action: job.Action, Status: "done", RequestID: fmt.Sprintf("archive-%d", i), CreatedAt: job.CreatedAt},
+				ConversationTurn{ID: newID(), Role: "assistant", Content: job.Text, JobID: job.ID, Action: job.Action, Status: "done", CreatedAt: job.CreatedAt},
+			)
+		}
+		return saveConversation(conn, &session)
+	})
+	assert(t, err == nil, fmt.Sprint(err))
+}
+
+// TestLargeArchiveTransferRoundtrip retains the oversized workload and real task entry points with bounded fixture setup.
 func TestLargeArchiveTransferRoundtrip(t *testing.T) {
+	started := time.Now()
 	engine := testEngine(t)
 	p := testProject()
 	p.Chapters[0].Body = strings.Repeat("山", 50000)
@@ -169,15 +205,19 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	config.ContextChars = 100000
 	configureModel(t, engine, config)
 	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID})
-	for i := 0; i < 280; i++ {
-		job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID, "session_id": session.ID, "action": "continue", "instruction": fmt.Sprintf("Review choice %d", i), "request_id": fmt.Sprintf("archive-%d", i)}))
-		if job.Status != "done" {
-			t.Fatal(job.Error)
+	var seed Job
+	for i := 0; i < 2; i++ {
+		seed = finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID, "session_id": session.ID, "action": "continue", "instruction": fmt.Sprintf("Review choice %d", i), "request_id": fmt.Sprintf("archive-%d", i)}))
+		if seed.Status != "done" {
+			t.Fatal(seed.Error)
 		}
 	}
+	seedArchiveTasks(t, engine, p, seed, 280)
+	t.Logf("Prepared 280 tasks and 560 turns from two model responses in %s", time.Since(started))
 	experiment := PolicyExperiment{Policies: []ExplorationPolicy{{ID: "base", Order: "breadth", MaxCalls: 1, MaxDepth: 1}, {ID: "candidate", Order: "depth", MaxCalls: 1, MaxDepth: 1}}, Cases: []DiscoveryCase{}}
 	invoke[map[string]any](t, engine, "record_experiment", map[string]any{"project_id": p.ID, "experiment": experiment})
 	p = invoke[Project](t, engine, "save_memory", map[string]any{"project_id": p.ID, "revision": p.Revision, "memory": StoryMemory{Kind: "rule", Title: "代价", Content: "魔法需要代价", Status: "confirmed", SessionID: session.ID}})
+	exportStarted := time.Now()
 	transfer := invoke[archiveTransferInfo](t, engine, "begin_archive_export", map[string]any{"project_id": p.ID})
 	defer engine.finishArchiveTransfer(transfer.ID)
 	if transfer.Size <= 40000000 {
@@ -192,6 +232,7 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	file.Close()
+	t.Logf("Exported %d bytes in %s", transfer.Size, time.Since(exportStarted))
 	first := invoke[struct {
 		Data   string `json:"data"`
 		Offset int64  `json:"offset"`
@@ -202,7 +243,9 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	if _, err := engine.Dispatch("export", rawMessage(map[string]any{"project_id": p.ID, "format": "archive"})); err == nil {
 		t.Fatal("Legacy export acknowledged a file beyond its transport limit")
 	}
+	importStarted := time.Now()
 	restored := importTestArchiveFile(t, engine, file.Name())
+	t.Logf("Uploaded and atomically imported the backup in %s", time.Since(importStarted))
 	if restored.ID == p.ID || restored.Chapters[0].Body != p.Chapters[0].Body {
 		t.Fatal("Large backup changed the manuscript")
 	}
@@ -222,10 +265,10 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	if len(original.Studio.Decisions) != 0 {
 		t.Fatal("Reviewing the restored book changed the original")
 	}
-	if calls.Load() != 280 {
+	if calls.Load() != 2 {
 		t.Fatal("Backup or restoration unexpectedly called a model")
 	}
-	t.Logf("Restored %d-byte v1 JSON with 280 tasks, 560 turns, memory provenance, pending proposals and an experiment through bounded frames", transfer.Size)
+	t.Logf("Restored %d-byte v2 JSON with 280 tasks, 560 turns, memory provenance, pending proposals and an experiment through bounded frames", transfer.Size)
 }
 
 // TestArchiveTransferGuardsAndCleanup checks negative frames and removes every owned temporary file.
