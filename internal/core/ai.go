@@ -47,9 +47,6 @@ func prepareAI(project *Project, request AIRequest, budget int) (Prompt, error) 
 		return Prompt{}, errors.New("Unsupported AI task")
 	}
 	task = taskInLanguage(project, request.Language, request.Action, task)
-	if charCount(request.Instruction) > 8000 {
-		return Prompt{}, errors.New("Keep each writing request within 8,000 characters")
-	}
 	var chapter *Chapter
 	for i := range project.Chapters {
 		if project.Chapters[i].ID == request.ChapterID {
@@ -68,7 +65,9 @@ func prepareAI(project *Project, request AIRequest, budget int) (Prompt, error) 
 			through--
 		}
 		title = chapter.Title
-		current = fmt.Sprintf("\nCurrent chapter [C:%s], Chapter %d — %s\nScene plan: %s\n%s", chapter.ID, chapter.Number, chapter.Title, chapter.Synopsis, chapter.Body)
+		if request.WorkspaceContext == nil || !request.WorkspaceContext.OmitChapter {
+			current = fmt.Sprintf("\nCurrent chapter [C:%s], Chapter %d — %s\nScene plan: %s\n%s", chapter.ID, chapter.Number, chapter.Title, chapter.Synopsis, chapter.Body)
+		}
 		sourceID = chapter.ID
 		sourceHash = hashText(chapter.Body)
 	}
@@ -96,7 +95,7 @@ func prepareAI(project *Project, request AIRequest, budget int) (Prompt, error) 
 	system += "\n[N:…] refers to reviewed story memory; [T:…] refers to conversation excerpts, which may contain rejected or unaccepted ideas. A source identifier proves provenance, not correctness."
 	if request.Action == "agent" {
 		system += "\n" + studioGuidance(project, request.Action, nil)
-		bible := buildStoryBibleLayer1(project, budget)
+		bible := buildStoryBibleLayer1(project, budget, request.WorkspaceContext)
 		baseline := bible
 		if request.conversation != nil && request.conversation.BibleBaseline != "" {
 			baseline = request.conversation.BibleBaseline
@@ -121,7 +120,11 @@ func prepareAI(project *Project, request AIRequest, budget int) (Prompt, error) 
 		if directive := buildIntentHintDirective(project, request.IntentHint); directive != "" {
 			userParts = append(userParts, directive)
 		}
-		if wsBlock := buildWorkspaceContextBlock(project, request.WorkspaceContext, chapter); wsBlock != "" {
+		visibleChapter := chapter
+		if request.WorkspaceContext != nil && request.WorkspaceContext.OmitChapter {
+			visibleChapter = nil
+		}
+		if wsBlock := buildWorkspaceContextBlock(project, request.WorkspaceContext, visibleChapter); wsBlock != "" {
 			userParts = append(userParts, wsBlock)
 		}
 		userParts = append(userParts, "Author request: "+request.Instruction+"\nWriting parameters: "+promptGuidance(project, chapter, request.Action))

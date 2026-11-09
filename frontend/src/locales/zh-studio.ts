@@ -13,6 +13,16 @@ export const zhStudio: Record<string, string> = {
     "这条旧建议的来源关联不明确，请基于当前已保存内容生成新的修改预览。",
   "Request usage": "请求用量",
   "Resume task": "继续任务",
+  "What this turn carries": "本轮带着的依据",
+  "Remove {0} from this turn": "本轮不带上{0}",
+  "This turn exceeds the model context window. The text you typed is kept.":
+    "这一轮超出了当前模型的上下文窗口。已写的内容仍留在输入框。",
+  "The draft exceeds the application context limit":
+    "草稿超过了应用允许的上下文上限。",
+  "Review the whole setup": "解析整份设定",
+  "Unsaved drafts": "尚未保存的草稿",
+  "Compare the entire saved story setup, including wiki entries, clues, plans, story goals and the map, with any unsaved drafts below. Stage every addition and change with propose_changes for my confirmation. Do not treat this as only the page I have open, and do not claim anything is saved before I confirm.":
+    "请对照整份已保存设定，包括百科、伏笔、大纲、故事目标和地图，以及下面尚未保存的草稿。把新增和修改全部交给我确认后再写入。不要只看我当前打开的那一页，也不要在我确认前说已经保存。",
   "Load older conversations": "加载更早的会话",
   "This task ended before returning text.": "任务在返回正文前已结束。",
   "Conversation summary": "会话压缩",
@@ -378,6 +388,7 @@ export const zhStudio: Record<string, string> = {
   "Story language": "作品语言",
   "Follow interface": "跟随界面",
   "Story form": "作品形态",
+  "Narrative emphasis": "叙事重点",
   Undecided: "还没想好",
   "Web serial": "网文连载",
   "Traditional novel": "传统长篇",

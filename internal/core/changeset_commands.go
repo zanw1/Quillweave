@@ -84,6 +84,9 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 	if err := validateChangeSet(cs); err != nil {
 		return err
 	}
+	if err := normalizeChangeSet(cs); err != nil {
+		return err
+	}
 	if cs.Status == ChangeSetApplied {
 		return errors.New("This changeset was already applied")
 	}

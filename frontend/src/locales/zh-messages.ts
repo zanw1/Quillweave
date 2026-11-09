@@ -468,6 +468,7 @@ export const zhMessages: Record<string, string> = {
   "Unknown command: {0}": "未知命令：{0}",
   "Character or entry information is incomplete": "人物或条目信息不完整",
   "Invalid entry type": "条目类型无效",
+  "Invalid entry type: {0}": "条目类型无效：{0}",
   "Names and aliases must be unique": "名称与别名必须唯一",
   "Another entry already uses this name or alias": "其他条目已使用此名称或别名",
   "The backup contains duplicate chapters or invalid statuses":
@@ -561,6 +562,10 @@ export const zhMessages: Record<string, string> = {
   "Unsupported AI task": "不支持此 AI 任务",
   "Keep each writing request within 8,000 characters":
     "每次写作请求请控制在 8,000 个字符以内",
+  "The draft exceeds the application context limit":
+    "草稿超过了应用允许的上下文上限。",
+  "This turn exceeds the model context window. The text you typed is kept.":
+    "这一轮超出了当前模型的上下文窗口。已写的内容仍留在输入框。",
   "Select a chapter first": "请先选择章节",
   "Conversation history accepts only user and assistant messages":
     "对话历史仅接受用户和助手消息",

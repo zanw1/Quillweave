@@ -12,6 +12,8 @@ import {
 import { Select } from "../../components/Select";
 import type { Project } from "../../domain/types";
 import type { StoryPlan } from "../../domain/studio";
+import { publishSetupDraft } from "./setupDrafts";
+import { ReviewSetupButton } from "./ReviewSetupButton";
 
 export const planLevels: Record<string, string> = {
   book: "Book",
@@ -73,12 +75,21 @@ export function Plans({
 }: {
   project: Project;
   onProject: (project: Project) => void;
-  onAsk: (text: string, action?: string) => void;
+  onAsk: (text: string, action?: string, intent?: string) => void;
   onFocus?: (id: string) => void;
   onChapter?: (id: string) => void;
   focusId?: string;
 }) {
   const [editing, setEditing] = useState<StoryPlan | null>(null);
+  useEffect(() => {
+    publishSetupDraft(
+      "plan",
+      editing
+        ? { label: editing.title || t("Add plan"), text: JSON.stringify(editing) }
+        : null,
+    );
+    return () => publishSetupDraft("plan", null);
+  }, [editing]);
   const [base, setBase] = useState(project.revision);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -142,6 +153,7 @@ export function Plans({
         <Button onClick={() => onAsk(t("Refine upcoming chapters"), "outline")}>
           {t("Refine upcoming chapters")}
         </Button>
+        <ReviewSetupButton onAsk={onAsk} />
         <Button
           disabled={
             busy ||

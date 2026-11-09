@@ -41,8 +41,19 @@ func agentCraftGuidance() string {
 	return strings.Join(lines, "\n")
 }
 
+// omittedIDs marks records the author removed from this turn.
+func omittedIDs(ids []string) map[string]bool {
+	skipped := map[string]bool{}
+	for _, id := range ids {
+		if id != "" {
+			skipped[id] = true
+		}
+	}
+	return skipped
+}
+
 // buildStoryBibleLayer1 constructs a deterministic ID-sorted Story Bible snapshot for Layer 1 prefix caching.
-func buildStoryBibleLayer1(project *Project, budget int) string {
+func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) string {
 	s := project.Studio
 	mode := s.Mode
 	if mode == "" {
@@ -85,7 +96,20 @@ func buildStoryBibleLayer1(project *Project, budget int) string {
 		lines = append(lines, fmt.Sprintf("Decision [%s] (%s) %s: %s", decision.ID, decision.Status, decision.Title, string(content[:min(len(content), 240)])))
 	}
 
-	entities := append([]Entity{}, project.Entities...)
+	entities := []Entity{}
+	skipEntities := omittedIDs(nil)
+	skipPlans := omittedIDs(nil)
+	skipMemories := omittedIDs(nil)
+	if ctx != nil {
+		skipEntities = omittedIDs(ctx.OmitEntityIDs)
+		skipPlans = omittedIDs(ctx.OmitPlanIDs)
+		skipMemories = omittedIDs(ctx.OmitMemoryIDs)
+	}
+	for _, entity := range project.Entities {
+		if !skipEntities[entity.ID] {
+			entities = append(entities, entity)
+		}
+	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
 	if len(entities) > 0 {
 		limit := min(24, len(entities))
@@ -101,7 +125,7 @@ func buildStoryBibleLayer1(project *Project, budget int) string {
 
 	memories := []StoryMemory{}
 	for _, m := range s.Memories {
-		if m.Status == "confirmed" && memoryCurrent(project, m) {
+		if m.Status == "confirmed" && memoryCurrent(project, m) && !skipMemories[m.ID] {
 			memories = append(memories, m)
 		}
 	}
@@ -125,7 +149,7 @@ func buildStoryBibleLayer1(project *Project, budget int) string {
 
 	plans := []StoryPlan{}
 	for _, p := range s.Plans {
-		if p.Status == "confirmed" {
+		if p.Status == "confirmed" && !skipPlans[p.ID] {
 			plans = append(plans, p)
 		}
 	}
@@ -192,7 +216,8 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 		if ctx.ActiveStep != "" {
 			parts = append(parts, "Active workspace step: "+ctx.ActiveStep)
 		}
-		if ctx.ActiveSourceID != "" {
+		skipped := omittedIDs(append(append([]string{}, ctx.OmitEntityIDs...), ctx.OmitPlanIDs...))
+		if ctx.ActiveSourceID != "" && !ctx.OmitSource {
 			for _, source := range project.Sources {
 				if source.ID == ctx.ActiveSourceID {
 					parts = append(parts, fmt.Sprintf("Selected source [S:%s]: %s. Read its original text with get_source_detail before making source-based claims.", source.ID, source.Title))
@@ -200,7 +225,7 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 				}
 			}
 		}
-		if ctx.ActiveEntityID != "" {
+		if ctx.ActiveEntityID != "" && !skipped[ctx.ActiveEntityID] {
 			for _, place := range project.Studio.Locations {
 				if place.ID == ctx.ActiveEntityID {
 					parts = append(parts, "Focused location: "+jsonText(place))
@@ -214,7 +239,7 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 				}
 			}
 		}
-		if ctx.ActivePlanID != "" {
+		if ctx.ActivePlanID != "" && !omittedIDs(ctx.OmitPlanIDs)[ctx.ActivePlanID] {
 			for _, p := range project.Studio.Plans {
 				if p.ID == ctx.ActivePlanID {
 					parts = append(parts, fmt.Sprintf("Focused plan [%s]: %s (%s, chapters %d–%d) — Goal: %s", p.ID, p.Title, p.Level, p.StartChapter, p.EndChapter, p.Goal))
@@ -222,7 +247,7 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 				}
 			}
 		}
-		if strings.TrimSpace(ctx.SelectedText) != "" {
+		if strings.TrimSpace(ctx.SelectedText) != "" && !ctx.OmitSelectedText {
 			sel := []rune(strings.TrimSpace(ctx.SelectedText))
 			if len(sel) > 2000 {
 				sel = sel[:2000]
@@ -230,7 +255,7 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 			parts = append(parts, "Selected text excerpt:\n"+string(sel))
 		}
 	}
-	if chapter != nil {
+	if chapter != nil && (ctx == nil || !ctx.OmitChapter) {
 		runes := []rune(chapter.Body)
 		tail := string(runes[max(0, len(runes)-1500):])
 		parts = append(parts, fmt.Sprintf("Active chapter [C:%s]: Chapter %d — %s\nSynopsis: %s\nRecent prose excerpt:\n%s", chapter.ID, chapter.Number, chapter.Title, chapter.Synopsis, tail))

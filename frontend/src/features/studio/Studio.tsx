@@ -6,6 +6,7 @@ import { Badge, Button, Modal } from "../../components/ui";
 import { ChangeReviewCard } from "../assistant/ChangeReviewCard";
 import { ProjectModels } from "../settings/models";
 import { StoryGoals, formNames, stageNames } from "./StoryGoals";
+import { ReviewSetupButton } from "./ReviewSetupButton";
 import type { ChangeSet, Project } from "../../domain/types";
 import "./studio.css";
 
@@ -13,7 +14,7 @@ interface Props {
   project: Project;
   onProject: (project: Project) => void;
   onSettings: () => void;
-  onAsk: (text: string, action?: string) => void;
+  onAsk: (text: string, action?: string, intent?: string) => void;
   onSelectFlowStep: (step: string) => void;
   onOpenTarget: (kind: string, id: string) => void;
 }
@@ -114,6 +115,7 @@ export function Studio({
           >
             {t("Prepare setting changes")}
           </Button>
+          <ReviewSetupButton onAsk={onAsk} />
         </div>
       </section>
       <div className="workspace-progress">

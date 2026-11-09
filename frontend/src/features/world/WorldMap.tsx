@@ -18,6 +18,7 @@ import type {
   WorldRoute,
 } from "../../domain/studio";
 import type { Project } from "../../domain/types";
+import { publishSetupDraft } from "../studio/setupDrafts";
 import "./world-map.css";
 
 interface Props {
@@ -84,6 +85,27 @@ export function WorldMap({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [receipt, setReceipt] = useState<ChangeSet | null>(null);
+  useEffect(() => {
+    publishSetupDraft(
+      "location",
+      location
+        ? {
+            label: location.name || t("Location"),
+            text: JSON.stringify(location),
+          }
+        : null,
+    );
+    return () => publishSetupDraft("location", null);
+  }, [location]);
+  useEffect(() => {
+    publishSetupDraft(
+      "route",
+      route
+        ? { label: route.transport || t("Travel route"), text: JSON.stringify(route) }
+        : null,
+    );
+    return () => publishSetupDraft("route", null);
+  }, [route]);
   const marker = useId().replaceAll(":", "");
   const focused = locations.find((item) => item.id === selected);
   const indexed = new Map(locations.map((item) => [item.id, item]));

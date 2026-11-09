@@ -533,10 +533,48 @@
 .composer-toolbar .text-button {
   font-size: 10px;
 }
+.composer-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid #d5e0f2;
+  border-radius: 999px;
+  background: #f4f7fd;
+  color: #3d5270;
+  font-size: 11px;
+  line-height: 18px;
+}
+.composer-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.composer-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  color: #6d82a0;
+}
+.composer-footer .is-over {
+  color: #b42318;
+}
 .assistant-composer textarea {
   width: 100%;
   min-height: 98px;
   max-height: 220px;
+  overflow-y: auto;
   font-size: 12px;
   padding: 13px;
   background: #fbfcff;

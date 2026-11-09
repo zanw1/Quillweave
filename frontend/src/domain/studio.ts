@@ -154,6 +154,12 @@ export interface WorkspaceContext {
   active_plan_id?: string;
   active_source_id?: string;
   selected_text?: string;
+  omit_selected_text?: boolean;
+  omit_chapter?: boolean;
+  omit_source?: boolean;
+  omit_entity_ids?: string[];
+  omit_plan_ids?: string[];
+  omit_memory_ids?: string[];
 }
 
 export interface StudioState {

@@ -1,0 +1,80 @@
+.panel-resize {
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+  flex: 0 0 auto;
+}
+.panel-resize:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+.panel-resize::after {
+  content: "";
+  border-radius: 999px;
+  background: #8fa3bd;
+}
+.panel-resize:hover::after,
+.panel-resize:focus-visible::after,
+.panel-resize[data-dragging="true"]::after {
+  background: var(--blue);
+}
+.panel-resize-x {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  cursor: col-resize;
+}
+.panel-resize-x::after {
+  position: absolute;
+  top: min(32%, 220px);
+  left: 3px;
+  width: 4px;
+  height: 48px;
+}
+.workspace-assistant.is-docked:has(.panel-resize-x:hover) .assistant-panel,
+.workspace-assistant.is-docked:has(.panel-resize-x[data-dragging="true"]) .assistant-panel {
+  border-left-color: var(--blue);
+}
+.assistant-panel > .panel-resize-y {
+  position: relative;
+  z-index: 3;
+  height: 12px;
+  margin: -6px 0;
+  cursor: row-resize;
+}
+.panel-resize-y::after {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 44px;
+  height: 4px;
+  margin-left: -22px;
+}
+.assistant-panel > .panel-resize-y:hover + .assistant-composer,
+.assistant-panel > .panel-resize-y[data-dragging="true"] + .assistant-composer {
+  border-top-color: var(--blue);
+}
+.assistant-panel .assistant-composer.is-resized {
+  flex: 0 0 auto;
+  height: min(var(--composer-height), calc(100% - 160px));
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.assistant-panel .assistant-composer.is-resized > * {
+  flex-shrink: 0;
+}
+.assistant-panel .assistant-composer.is-resized > textarea {
+  flex: 1 1 auto;
+  height: 0;
+  min-height: 64px;
+  max-height: none;
+  resize: none;
+}

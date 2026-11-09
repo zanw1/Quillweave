@@ -6,6 +6,7 @@ import { Wiki } from "../wiki/Wiki";
 import { Memories } from "../studio/Memories";
 import { WorldMap } from "./WorldMap";
 import type { Project, WikiHealth } from "../../domain/types";
+import { ReviewSetupButton } from "../studio/ReviewSetupButton";
 
 interface Props {
   project: Project;
@@ -16,6 +17,7 @@ interface Props {
   focusId?: string;
   onFocus?: (id: string) => void;
   onOpenTarget?: (kind: string, id: string) => void;
+  onAsk?: (text: string, action?: string, intent?: string) => void;
 }
 
 /** Merge Character/World Wiki and Story Memory into a unified Step 2 hub. */
@@ -28,6 +30,7 @@ export function CharacterWorldHub({
   focusId,
   onFocus,
   onOpenTarget,
+  onAsk,
 }: Props) {
   const [section, setSection] = useState<"wiki" | "memory" | "map">(
     initialSection,
@@ -82,6 +85,11 @@ export function CharacterWorldHub({
           {t("Narrative state & clues")}
           <Badge>{project.studio.memories.length}</Badge>
         </button>
+        {onAsk && (
+          <span className="hub-review">
+            <ReviewSetupButton onAsk={onAsk} />
+          </span>
+        )}
       </div>
       {section === "map" ? (
         <WorldMap

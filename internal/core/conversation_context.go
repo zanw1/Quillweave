@@ -135,7 +135,7 @@ func (engine *Engine) restoreConversationHistory(request AIRequest, config Provi
 		if err != nil {
 			return request, err
 		}
-		messages := []Message{{Role: "user", Content: author.Content}, {Role: "assistant", Content: turn.Content, SourceJobID: turn.JobID}}
+		messages := []Message{{Role: "user", Content: author.Content}, {Role: "assistant", Content: stripModelToolJSON(turn.Content), SourceJobID: turn.JobID}}
 		matching := visible == turn.Content
 		if matching && private.UserContent != "" {
 			messages[0].Content = private.UserContent

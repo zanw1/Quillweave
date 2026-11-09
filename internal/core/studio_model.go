@@ -158,7 +158,7 @@ func validateStudio(state *StudioState) error {
 				}
 			}
 		}
-		if plan.ID == "" || ids[plan.ID] || !contains([]string{"book", "volume", "unit", "chapter", "scene"}, plan.Level) || strings.TrimSpace(plan.Title) == "" || charCount(plan.Title) > 120 || charCount(jsonText(plan)) > 16000 || plan.EndChapter < plan.StartChapter {
+		if plan.ID == "" || ids[plan.ID] || !contains([]string{"book", "volume", "unit", "chapter", "scene"}, plan.Level) || strings.TrimSpace(plan.Title) == "" || charCount(plan.Title) > 120 || charCount(jsonText(plan)) > 16000 || (plan.EndChapter != 0 && plan.EndChapter < plan.StartChapter) {
 			return errors.New("Invalid or duplicate plan")
 		}
 		ids[plan.ID] = true
@@ -172,7 +172,7 @@ func validateStudio(state *StudioState) error {
 			if !ok || ranks[parent.Level] >= ranks[plan.Level] {
 				return errors.New("Child plan must have a more detailed level than its parent")
 			}
-			if parent.EndChapter > 0 && (plan.StartChapter < parent.StartChapter || plan.EndChapter > parent.EndChapter) {
+			if parent.EndChapter > 0 && (plan.StartChapter < parent.StartChapter || plan.EndChapter == 0 || plan.EndChapter > parent.EndChapter) {
 				return errors.New("Child chapter range exceeds its parent")
 			}
 		}

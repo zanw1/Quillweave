@@ -228,11 +228,11 @@ gh repo create zanw1/Quillweave --public --source=. --remote=origin --push
 
 The release workflow builds macOS arm64 and Windows amd64 packages after a version tag is pushed. It runs the configured checks, creates the DMG and standalone EXE, calculates SHA-256 checksums, and creates a **draft prerelease** with these files, optional ZIP packages, and license notices attached.
 
-The tag must match `package.json`. The current version uses `v3.2.1`.
+The tag must match `package.json`. The current version uses `v3.2.2`.
 
 ```sh
-git tag -a v3.2.1 -m "Quillweave v3.2.1"
-git push origin v3.2.1
+git tag -a v3.2.2 -m "Quillweave v3.2.2"
+git push origin v3.2.2
 ```
 
 Open the repository's **Actions** tab and wait for **Build release** to finish. Open **Releases**, review the draft's notes and assets, test the downloaded applications, and select **Publish release**. A workflow rerun can replace assets on the draft. Published releases require a new version.

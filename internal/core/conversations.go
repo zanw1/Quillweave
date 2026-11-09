@@ -211,8 +211,8 @@ func (store *Store) updateConversation(projectID, id string, revision uint64, ti
 			session.Title = strings.TrimSpace(*title)
 		}
 		if draft != nil {
-			if charCount(*draft) > 8000 {
-				return errors.New("Keep each writing request within 8,000 characters")
+			if charCount(*draft) > maxContextCharacters {
+				return errors.New("The draft exceeds the application context limit")
 			}
 			session.Draft = *draft
 		}

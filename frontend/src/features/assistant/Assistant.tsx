@@ -10,9 +10,30 @@ import { ProposalCards } from "./ProposalCards";
 import { QuickIntentBar } from "./QuickIntentBar";
 import { ChangeReviewCard } from "./ChangeReviewCard";
 import { AssistantModals, ExtractChangeSetButton } from "./AssistantSidebar";
+import { visibleAssistantText } from "./visibleText";
+import { ContextChips } from "./ContextChips";
+import {
+  emptyOmissions,
+  omissionFields,
+  omitChip,
+  turnChips,
+  type TurnOmissions,
+} from "./turnContext";
+import { useTurnMeasure } from "./useTurnMeasure";
+import {
+  conversationActions,
+  explorationSuggestions,
+  humanizeInstruction,
+  outlineInstruction,
+} from "./assistantPrompts";
+import {
+  ResizeHandle,
+  composerSizeBounds,
+  useStoredSize,
+} from "./resize";
 import { SearchRequestChoice } from "../search/SearchRequestChoice";
 import { searchSelection } from "../../domain/search";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   IconSparkles,
   IconArrowUp,
@@ -56,6 +77,7 @@ interface Props {
   canHumanize?: boolean;
   seed?: string;
   seedAction?: string;
+  seedIntent?: string;
   seedVersion?: number;
   onSeedConsumed?: () => void;
   onSettings: () => void;
@@ -69,37 +91,6 @@ interface Props {
   onClearSource?: () => void;
 }
 
-const conversationActions = [
-  "ask",
-  "architecture",
-  "outline",
-  "agent",
-  "naming",
-  "research",
-];
-const outlineInstruction =
-  "Create a complete chapter-by-chapter outline from our discussion and the current story bible. Include the premise, character arcs, act progression, and each chapter's viewpoint, goal, obstacle, choice, consequence, and clues. Identify assumptions and open questions.";
-const humanizeInstruction =
-  "Polish the current chapter to reduce formulaic AI phrasing. Preserve its original language, plot, names, relationships, viewpoint, chronology, clues, and approximate length; keep the author's style and each character's voice. Trim redundant explanations and stock phrasing, and vary mechanical sentence patterns. Keep intentional imagery, repetition, and punctuation. Make no new plot developments. Return only the complete polished chapter. For this editing task, preserve the source length instead of expanding to the project's chapter-length target.";
-
-const explorationSuggestions = [
-  {
-    label: "Help me find an idea",
-    instruction:
-      "I don't have a story idea yet. Help me discover what I would enjoy writing. Start with one or two easy questions about stories, emotions, or situations I like. Don't ask me to decide a genre, title, length, viewpoint, or complete plot yet.",
-  },
-  {
-    label: "I have a small spark",
-    instruction:
-      "I have a vague image, character, mood, or situation in mind. Ask me about that small spark and help me explore it, one question at a time, without requiring a finished story setup.",
-  },
-  {
-    label: "Explore a few possibilities",
-    instruction:
-      "Offer three brief, different story seeds to react to. Keep them open-ended, explain what might be interesting about each, and let me choose or combine them before developing a plot or outline.",
-  },
-];
-
 /** Stream proposals into the conversation for explicit author review. */
 export function Assistant({
   project,
@@ -110,6 +101,7 @@ export function Assistant({
   canHumanize = !!chapter?.body.trim(),
   seed = "",
   seedAction = "agent",
+  seedIntent = "",
   seedVersion = 0,
   onSeedConsumed,
   onSettings,
@@ -131,6 +123,7 @@ export function Assistant({
   );
   const [action, setAction] = useState(initialAction);
   const [intentHint, setIntentHint] = useState("");
+  const [omissions, setOmissions] = useState<TurnOmissions>(emptyOmissions);
   const [extraChangeSets, setExtraChangeSets] = useState<ChangeSet[]>([]);
   const [searchChoice, setSearchChoice] = useState("inherit");
   const [job, setJob] = useState<Job | null>(null);
@@ -142,6 +135,10 @@ export function Assistant({
   const [force, setForce] = useState(false);
   const [context, setContext] = useState<Prompt | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const [composerHeight, setComposerHeight] = useStoredSize(
+    "quillweave-composer-height",
+  );
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const manager = useConversations(
     project.id,
@@ -174,6 +171,8 @@ export function Assistant({
     settings && action === "wiki"
       ? selectedProfile(settings, project, "wiki_compile")
       : undefined;
+  const windowChars = primary?.config.context_chars || 24000;
+  const chips = turnChips(project, workspaceContext, chapter, source, omissions);
   const model = primary
     ? `${primary.name} · ${primary.config.model}${action === "wiki" ? ` → ${secondary?.name || t("Memory model unassigned")}` : ""}`
     : "No model assigned to this task";
@@ -202,9 +201,10 @@ export function Assistant({
     if (seed && !manager.loading) {
       setInstruction(seed);
       setAction(seedAction);
+      setIntentHint(seedIntent);
       onSeedConsumed?.();
     }
-  }, [seed, seedAction, seedVersion, manager.loading]);
+  }, [seed, seedAction, seedIntent, seedVersion, manager.loading]);
   useEffect(() => {
     let active = true;
     api<ModelSettingsResponse>("get_model_settings")
@@ -255,6 +255,18 @@ export function Assistant({
       clearTimeout(timer);
     };
   }, [job?.id, job?.status, project.id]);
+  const turnChars = useTurnMeasure({
+    enabled: action !== "wiki",
+    projectId: project.id,
+    chapterId: chapter?.id || "",
+    sourceId: source?.id || "",
+    action,
+    instruction,
+    intent: intentHint,
+    sessionId: manager.session?.id || "",
+    context: workspaceContext,
+    omissions,
+  });
   useEffect(() => {
     if (job?.status === "running")
       end.current?.scrollIntoView({ block: "nearest" });
@@ -275,6 +287,19 @@ export function Assistant({
         (requestedAction !== "wiki" && !requestedInstruction.trim()))
     )
       return;
+    if (
+      !preview &&
+      requestedAction !== "wiki" &&
+      (requestedInstruction.trim().length > windowChars ||
+        (turnChars != null && turnChars > windowChars))
+    ) {
+      setError(
+        t(
+          "This turn exceeds the model context window. The text you typed is kept.",
+        ),
+      );
+      return;
+    }
     setError("");
     setBusy(true);
     try {
@@ -288,6 +313,7 @@ export function Assistant({
         chapter: chapter?.id,
         source: source?.id,
         workspace: workspaceContext,
+        omissions,
         intent: intentHint,
         resume: resumeJobId,
         instruction: requestedInstruction.trim(),
@@ -321,6 +347,7 @@ export function Assistant({
         workspace_context: {
           ...workspaceContext,
           active_chapter_id: chapter?.id || undefined,
+          ...omissionFields(omissions),
         },
         history,
         session_id: session?.id || "",
@@ -337,6 +364,7 @@ export function Assistant({
       requestId.current = "";
       requestSnapshot.current = "";
       setIntentHint("");
+      setOmissions(emptyOmissions());
       if (globalScope) setAction("agent");
       setExtraChangeSets([]);
       setJob(next);
@@ -439,9 +467,17 @@ export function Assistant({
   }
 
   const running = job?.status === "running";
+  const answer = visibleAssistantText(job?.text || "");
   const compatible = job?.chapter_id === (chapter?.id || "");
   return (
-    <aside className="assistant-panel">
+    <aside
+      className="assistant-panel"
+      style={
+        composerHeight == null
+          ? undefined
+          : ({ "--composer-height": `${composerHeight}px` } as CSSProperties)
+      }
+    >
       <header className="panel-heading">
         <h3>
           <IconSparkles size={20} />
@@ -489,11 +525,6 @@ export function Assistant({
             )}
           </span>
           {chapter && <span>· {chapter.title}</span>}
-          {workspaceContext.selected_text && (
-            <span>
-              · {t("Selected text")} {workspaceContext.selected_text.length}
-            </span>
-          )}
         </div>
       )}
       <ConversationTools manager={manager} disabled={!!running || busy} />
@@ -535,7 +566,7 @@ export function Assistant({
                 <IconSparkles size={17} />
                 <span>Quillweave</span>
               </div>
-              <MarkdownResponse text={run.text} />
+              <MarkdownResponse text={visibleAssistantText(run.text)} />
             </div>
           ))}
         {!job ? (
@@ -611,12 +642,12 @@ export function Assistant({
                 </p>
                 <details>
                   <summary>{t("View raw analysis")}</summary>
-                  <pre>{job.text || t("Waiting for the model…")}</pre>
+                  <pre>{answer || t("Waiting for the model…")}</pre>
                 </details>
               </div>
-            ) : job.text ? (
+            ) : answer ? (
               <MarkdownResponse
-                text={job.text}
+                text={answer}
                 streaming={running}
                 incomplete={
                   job.status === "cancelled" || job.status === "error"
@@ -651,18 +682,18 @@ export function Assistant({
                 <Button
                   onClick={() =>
                     navigator.clipboard
-                      .writeText(job.text)
+                      .writeText(answer)
                       .catch((e) => setError(message(e)))
                   }
                 >
                   <IconCopy size={15} />
                   {t("Copy")}
                 </Button>
-                {job.text && !job.changesets?.length && (
+                {answer && !job.changesets?.length && (
                   <ExtractChangeSetButton
                     projectId={project.id}
                     sessionId={manager.session?.id || ""}
-                    text={job.text}
+                    text={answer}
                     disabled={busy || applying}
                     onExtracted={(cs) =>
                       setExtraChangeSets((prev) => [
@@ -745,7 +776,7 @@ export function Assistant({
               onRefresh={onRefresh}
               beforeReview={beforeStart}
             />
-            {job.text &&
+            {answer &&
               ["cancelled", "error", "interrupted"].includes(job.status) &&
               !["agent", "wiki", "memory_update"].includes(job.action) && (
                 <Button
@@ -766,22 +797,36 @@ export function Assistant({
                 >
                   {t(job.status === "done" ? "Regenerate" : "Retry")}
                 </Button>
+                {job.action === "agent" &&
+                  ["cancelled", "error", "interrupted"].includes(
+                    job.status,
+                  ) && (
+                    <Button
+                      disabled={busy || !!running || manager.loading}
+                      onClick={() => void branchAt(job.id, true, true)}
+                    >
+                      {t("Resume task")}
+                    </Button>
+                  )}
               </div>
             )}
-            {job.action === "agent" &&
-              ["cancelled", "error", "interrupted"].includes(job.status) && (
-                <Button
-                  disabled={busy || !!running || manager.loading}
-                  onClick={() => void branchAt(job.id, true, true)}
-                >
-                  {t("Resume task")}
-                </Button>
-              )}
             <div ref={end} />
           </div>
         )}
       </div>
-      <div className="assistant-composer">
+      <ResizeHandle
+        axis="y"
+        label={t("Drag to resize the composer")}
+        resetLabel={t("Double-click to reset the size")}
+        value={composerHeight}
+        onChange={setComposerHeight}
+        bounds={composerSizeBounds}
+        target={composerRef}
+      />
+      <div
+        className={`assistant-composer${composerHeight == null ? "" : " is-resized"}`}
+        ref={composerRef}
+      >
         <QuickIntentBar
           intentHint={intentHint}
           disabled={busy || !!running}
@@ -858,6 +903,10 @@ export function Assistant({
             )}
           </p>
         )}
+        <ContextChips
+          chips={chips}
+          onRemove={(id) => setOmissions((current) => omitChip(current, id))}
+        />
         <textarea
           aria-label={t("Writing request")}
           placeholder={
@@ -875,7 +924,6 @@ export function Assistant({
           }
           value={action === "wiki" ? "" : instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          maxLength={8000}
           disabled={action === "wiki" || manager.loading}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -895,7 +943,10 @@ export function Assistant({
           }}
         />
         <div className="composer-footer">
-          <span>{action === "wiki" ? 0 : instruction.length} / 8,000</span>
+          <span className={turnChars != null && turnChars > windowChars ? "is-over" : undefined}>
+            {(turnChars ?? instruction.length).toLocaleString()} /{" "}
+            {windowChars.toLocaleString()}
+          </span>
           {running ? (
             <Button onClick={stop}>
               <IconPlayerStop size={17} />

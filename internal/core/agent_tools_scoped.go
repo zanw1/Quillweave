@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -75,59 +76,240 @@ func stripModelToolJSON(text string) string {
 	if trimmed == "" {
 		return ""
 	}
-	cleaned := cleanModelJSON(trimmed)
+	step, ok := recoverAgentStep(trimmed)
+	if !ok {
+		return text
+	}
+	visible := visibleAgentProse(step)
+	start := strings.IndexByte(trimmed, '{')
+	if start > 0 {
+		before := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(trimmed[:start]), "```"), "json"))
+		if before != "" && visible != "" {
+			return before + "\n\n" + visible
+		}
+		if before != "" {
+			return before
+		}
+	}
+	return visible
+}
+
+// recoverAgentStep reads a tool step even when the model breaks JSON with raw newlines or unescaped quotes.
+func recoverAgentStep(text string) (agentStepEnvelope, bool) {
+	cleaned := cleanModelJSON(strings.TrimSpace(text))
+	if env, ok := decodeAgentStep(cleaned); ok {
+		return env, true
+	}
+	if obj, _, _, found := extractBalancedJSON(cleaned); found {
+		if env, ok := decodeAgentStep(obj); ok {
+			return env, true
+		}
+		if env, ok := decodeAgentStep(repairJSONStringControls(obj)); ok {
+			return env, true
+		}
+	}
+	if env, ok := decodeAgentStep(repairJSONStringControls(cleaned)); ok {
+		return env, true
+	}
+	return scrapeAgentStep(cleaned)
+}
+
+// decodeAgentStep accepts one complete tool or proposal envelope.
+func decodeAgentStep(text string) (agentStepEnvelope, bool) {
 	var env agentStepEnvelope
-	if decodeJSON([]byte(cleaned), &env) == nil && (env.Tool != "" || env.Proposal != nil || len(env.Proposals) > 0 || env.ChangeSet != nil || len(env.Operations) > 0) {
-		if strings.TrimSpace(env.Text) != "" {
-			return strings.TrimSpace(env.Text)
-		}
-		if env.Proposal != nil && strings.TrimSpace(env.Proposal.Content) != "" {
-			if strings.TrimSpace(env.Proposal.Title) != "" {
-				return "### " + strings.TrimSpace(env.Proposal.Title) + "\n\n" + strings.TrimSpace(env.Proposal.Content)
+	if strings.TrimSpace(text) == "" || decodeJSON([]byte(text), &env) != nil {
+		return env, false
+	}
+	if env.Tool == "" && env.Proposal == nil && len(env.Proposals) == 0 && env.ChangeSet == nil && len(env.Operations) == 0 {
+		return env, false
+	}
+	return env, true
+}
+
+// repairJSONStringControls escapes raw line breaks inside JSON strings without rewriting unescaped quotes.
+func repairJSONStringControls(text string) string {
+	var b strings.Builder
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		if !inString {
+			if ch == '"' {
+				inString = true
 			}
-			return strings.TrimSpace(env.Proposal.Content)
+			b.WriteByte(ch)
+			continue
 		}
-		if len(env.Proposals) > 0 && strings.TrimSpace(env.Proposals[0].Content) != "" {
-			parts := []string{}
-			for _, p := range env.Proposals {
-				if strings.TrimSpace(p.Title) != "" && strings.TrimSpace(p.Content) != "" {
-					parts = append(parts, "### "+strings.TrimSpace(p.Title)+"\n\n"+strings.TrimSpace(p.Content))
-				} else if strings.TrimSpace(p.Content) != "" {
-					parts = append(parts, strings.TrimSpace(p.Content))
+		if escaped {
+			b.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			b.WriteByte(ch)
+			escaped = true
+		case '"':
+			inString = false
+			b.WriteByte(ch)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	return b.String()
+}
+
+// scrapeAgentStep recovers the author-facing fields when quotes inside the prose make the envelope invalid JSON.
+func scrapeAgentStep(text string) (agentStepEnvelope, bool) {
+	tool, ok := scrapeJSONString(text, "tool")
+	if !ok || !knownAgentTool(tool) {
+		return agentStepEnvelope{}, false
+	}
+	env := agentStepEnvelope{Tool: tool, Text: scrapeField(text, "text"), Query: scrapeField(text, "query")}
+	if tool == "propose" || tool == "propose_changes" {
+		kind := scrapeField(text, "kind")
+		title := scrapeField(text, "title")
+		content := scrapeField(text, "content")
+		if kind == "" {
+			kind = "decision"
+		}
+		if title != "" || content != "" {
+			if title == "" {
+				title = proposalFallbackTitle(content)
+			}
+			env.Proposal = &StudioProposal{Kind: kind, Title: title, Content: content}
+		}
+	}
+	return env, true
+}
+
+func scrapeField(text, key string) string {
+	value, _ := scrapeJSONString(text, key)
+	return value
+}
+
+func knownAgentTool(tool string) bool {
+	return contains([]string{"recall", "get_entity_detail", "get_chapter_window", "search_story_facts", "get_plan_node", "get_world_map", "get_source_detail", "get_decision_detail", "get_conversation_excerpt", "get_task_step", "search", "plan", "propose", "propose_changes", "researcher", "reviewer", "writer", "ask_author", "finish"}, tool)
+}
+
+func proposalFallbackTitle(content string) string {
+	line := strings.TrimSpace(strings.Split(content, "\n")[0])
+	line = strings.TrimLeft(line, "#*> -")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "待确认的修改"
+	}
+	if charCount(line) > 40 {
+		return string([]rune(line)[:40])
+	}
+	return line
+}
+
+// scrapeJSONString reads one JSON string field, keeping internal quotation marks that are part of the prose.
+func scrapeJSONString(text, key string) (string, bool) {
+	needle := `"` + key + `"`
+	idx := strings.Index(text, needle)
+	if idx < 0 {
+		return "", false
+	}
+	rest := strings.TrimSpace(text[idx+len(needle):])
+	if !strings.HasPrefix(rest, ":") {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest[1:])
+	if !strings.HasPrefix(rest, `"`) {
+		return "", false
+	}
+	body := rest[1:]
+	end := len(body)
+	for i := 0; i < len(body); i++ {
+		if body[i] != '"' || trailingEscape(body, i) {
+			continue
+		}
+		tail := strings.TrimLeft(body[i+1:], " \t\r\n")
+		if tail == "" || strings.HasPrefix(tail, "}") || strings.HasPrefix(tail, ",") || strings.HasPrefix(tail, "`") || strings.HasPrefix(tail, "json") {
+			end = i
+			break
+		}
+	}
+	return strings.TrimSpace(unescapeJSONString(body[:end])), true
+}
+
+func trailingEscape(text string, quote int) bool {
+	slashes := 0
+	for i := quote - 1; i >= 0 && text[i] == '\\'; i-- {
+		slashes++
+	}
+	return slashes%2 == 1
+}
+
+// unescapeJSONString turns JSON string escapes into the characters the author should read.
+func unescapeJSONString(value string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' || i+1 >= len(value) {
+			b.WriteByte(value[i])
+			continue
+		}
+		switch value[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case '"', '\\', '/':
+			b.WriteByte(value[i+1])
+		case 'u':
+			if i+5 < len(value) {
+				if parsed, err := strconv.ParseUint(value[i+2:i+6], 16, 16); err == nil {
+					b.WriteRune(rune(parsed))
+					i += 5
+					continue
 				}
 			}
-			if len(parts) > 0 {
-				return strings.Join(parts, "\n\n")
-			}
+			b.WriteByte(value[i])
+			continue
+		default:
+			b.WriteByte(value[i+1])
 		}
-		if env.ChangeSet != nil && strings.TrimSpace(env.ChangeSet.Summary) != "" {
-			return strings.TrimSpace(env.ChangeSet.Summary)
-		}
+		i++
+	}
+	return b.String()
+}
+
+// visibleAgentProse is the only part of a tool envelope that belongs in the chat transcript.
+func visibleAgentProse(step agentStepEnvelope) string {
+	if step.Tool != "" && step.Tool != "ask_author" && step.Tool != "finish" && step.Tool != "propose" && step.Tool != "propose_changes" {
 		return ""
 	}
-	if obj, start, end, ok := extractBalancedJSON(trimmed); ok {
-		if decodeJSON([]byte(obj), &env) == nil && (env.Tool != "" || env.Proposal != nil || len(env.Proposals) > 0 || env.ChangeSet != nil || len(env.Operations) > 0) {
-			before := strings.TrimSpace(trimmed[:start])
-			after := strings.TrimSpace(trimmed[end:])
-			after = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(after, "```"), "json"))
-			before = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(before, "json"), "```"))
-			combined := strings.TrimSpace(before + "\n\n" + after)
-			if combined != "" {
-				return combined
-			}
-			if strings.TrimSpace(env.Text) != "" {
-				return strings.TrimSpace(env.Text)
-			}
-			if env.Proposal != nil && strings.TrimSpace(env.Proposal.Content) != "" {
-				if strings.TrimSpace(env.Proposal.Title) != "" {
-					return "### " + strings.TrimSpace(env.Proposal.Title) + "\n\n" + strings.TrimSpace(env.Proposal.Content)
-				}
-				return strings.TrimSpace(env.Proposal.Content)
-			}
-			return ""
-		}
+	if text := strings.TrimSpace(step.Text); text != "" && step.Tool != "propose" && step.Tool != "propose_changes" {
+		return text
 	}
-	return text
+	proposal := step.Proposal
+	if proposal == nil && len(step.Proposals) > 0 {
+		proposal = &step.Proposals[0]
+	}
+	if proposal == nil {
+		return strings.TrimSpace(step.Text)
+	}
+	title, content := strings.TrimSpace(proposal.Title), strings.TrimSpace(proposal.Content)
+	if title != "" && content != "" {
+		return "### " + title + "\n\n" + content
+	}
+	if content != "" {
+		return content
+	}
+	if title != "" {
+		return title
+	}
+	return strings.TrimSpace(step.Text)
 }
 
 // executeScopedAgentTool reads bounded story records and attributable sources within the current work.

@@ -30,8 +30,9 @@
   position: relative;
   inset: auto;
   margin: 0;
-  width: clamp(360px, 32vw, 480px);
-  flex: 0 0 clamp(360px, 32vw, 480px);
+  width: min(var(--assistant-width, clamp(360px, 32vw, 480px)), calc(100% - 320px));
+  flex: 0 0 min(var(--assistant-width, clamp(360px, 32vw, 480px)), calc(100% - 320px));
+  min-width: 300px;
   height: 100%;
 }
 .workspace-assistant.is-drawer {

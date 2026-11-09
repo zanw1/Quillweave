@@ -743,7 +743,11 @@ func saveEntity(project *Project, raw json.RawMessage) error {
 	}
 	entity.Name = name
 	if !contains(EntityKinds, entity.Kind) {
-		return errors.New("Invalid entry type")
+		label := entity.Name
+		if label == "" {
+			label = entity.Kind
+		}
+		return fmt.Errorf("Invalid entry type: %s", label)
 	}
 	identifiers := map[string]bool{entity.Name: true}
 	for i, alias := range entity.Aliases {

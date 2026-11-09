@@ -94,12 +94,18 @@ type ChangeImpact struct {
 }
 
 type WorkspaceContext struct {
-	ActiveStep      string `json:"active_step,omitempty"`
-	ActiveChapterID string `json:"active_chapter_id,omitempty"`
-	ActiveEntityID  string `json:"active_entity_id,omitempty"`
-	ActivePlanID    string `json:"active_plan_id,omitempty"`
-	ActiveSourceID  string `json:"active_source_id,omitempty"`
-	SelectedText    string `json:"selected_text,omitempty"`
+	ActiveStep       string   `json:"active_step,omitempty"`
+	ActiveChapterID  string   `json:"active_chapter_id,omitempty"`
+	ActiveEntityID   string   `json:"active_entity_id,omitempty"`
+	ActivePlanID     string   `json:"active_plan_id,omitempty"`
+	ActiveSourceID   string   `json:"active_source_id,omitempty"`
+	SelectedText     string   `json:"selected_text,omitempty"`
+	OmitSelectedText bool     `json:"omit_selected_text,omitempty"`
+	OmitChapter      bool     `json:"omit_chapter,omitempty"`
+	OmitSource       bool     `json:"omit_source,omitempty"`
+	OmitEntityIDs    []string `json:"omit_entity_ids,omitempty"`
+	OmitPlanIDs      []string `json:"omit_plan_ids,omitempty"`
+	OmitMemoryIDs    []string `json:"omit_memory_ids,omitempty"`
 }
 
 type projectMetaPatch struct {

@@ -13,6 +13,7 @@ import { Select } from "../../components/Select";
 import type { Project } from "../../domain/types";
 import type { StoryMemory } from "../../domain/studio";
 import { memorySuccessors, memoryVisibleAt } from "../../domain/memory";
+import { publishSetupDraft } from "./setupDrafts";
 
 export const memoryKinds: Record<string, string> = {
   rule: "Rule",
@@ -79,6 +80,18 @@ export function Memories({
   const [kind, setKind] = useState("all");
   const [snapshotChapter, setSnapshotChapter] = useState("");
   const [editing, setEditing] = useState<StoryMemory | null>(null);
+  useEffect(() => {
+    publishSetupDraft(
+      "memory",
+      editing
+        ? {
+            label: editing.title || t("Add memory"),
+            text: JSON.stringify(editing),
+          }
+        : null,
+    );
+    return () => publishSetupDraft("memory", null);
+  }, [editing]);
   const [base, setBase] = useState(project.revision);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

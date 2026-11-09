@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { api, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { Button, DockablePanel, ErrorBox, Modal } from "../../components/ui";
 import { Assistant } from "../assistant/Assistant";
+import {
+  ResizeHandle,
+  assistantWidthBounds,
+  useStoredSize,
+} from "../assistant/resize";
 import { Studio } from "../studio/Studio";
 import { Plans } from "../studio/Plans";
 import { Research } from "../studio/Research";
@@ -48,7 +59,12 @@ export function Workspace({
   onStep,
   onSettings,
 }: Props) {
-  const [seed, setSeed] = useState({ text: "", action: "agent", version: 0 });
+  const [seed, setSeed] = useState({
+    text: "",
+    action: "agent",
+    intent: "",
+    version: 0,
+  });
   const [focus, setFocus] = useState<WorkspaceContext>({});
   const [selection, setSelection] = useState<{
     chapterId: string;
@@ -57,6 +73,9 @@ export function Workspace({
   const [source, setSource] = useState<Source | undefined>();
   const [researchTab, setResearchTab] = useState(false);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1280);
+  const [assistantWidth, setAssistantWidth] = useStoredSize(
+    "quillweave-assistant-width",
+  );
   const [error, setError] = useState("");
   const editorSave = useRef<(() => Promise<Project | null>) | null>(null);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
@@ -121,8 +140,13 @@ export function Workspace({
   }
 
   /** Focus the shared composer with a task hint while retaining its current conversation. */
-  function ask(text: string, action = "agent") {
-    setSeed((previous) => ({ text, action, version: previous.version + 1 }));
+  function ask(text: string, action = "agent", intent = "") {
+    setSeed((previous) => ({
+      text,
+      action,
+      intent,
+      version: previous.version + 1,
+    }));
     onAssistantOpen(true);
   }
 
@@ -165,7 +189,14 @@ export function Workspace({
   };
 
   return (
-    <div className="unified-workspace">
+    <div
+      className="unified-workspace"
+      style={
+        assistantWidth == null
+          ? undefined
+          : ({ "--assistant-width": `${assistantWidth}px` } as CSSProperties)
+      }
+    >
       <section className="workspace-content">
         {error && <ErrorBox>{error}</ErrorBox>}
         {step === "setup" && (
@@ -198,6 +229,7 @@ export function Workspace({
           <CharacterWorldHub
             project={project}
             onProject={onProject}
+            onAsk={ask}
             onOpenTarget={openTarget}
             focusId={focus.active_entity_id}
             onFocus={(id) => setFocus({ active_entity_id: id })}
@@ -231,6 +263,16 @@ export function Workspace({
         onClose={() => onAssistantOpen(false)}
         className={`workspace-assistant ${narrow ? "is-drawer" : "is-docked"}`}
       >
+        {!narrow && (
+          <ResizeHandle
+            axis="x"
+            label={t("Drag to resize the assistant")}
+            resetLabel={t("Double-click to reset the size")}
+            value={assistantWidth}
+            onChange={setAssistantWidth}
+            bounds={assistantWidthBounds}
+          />
+        )}
         <Assistant
           project={project}
           chapter={activeChapter}
@@ -246,6 +288,7 @@ export function Workspace({
           }
           seed={seed.text}
           seedAction={seed.action}
+          seedIntent={seed.intent}
           seedVersion={seed.version}
           onSeedConsumed={() =>
             setSeed((previous) => ({ ...previous, text: "" }))

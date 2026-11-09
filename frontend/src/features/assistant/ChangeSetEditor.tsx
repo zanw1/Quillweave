@@ -8,7 +8,8 @@ import { api, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { Badge, Button, ErrorBox } from "../../components/ui";
 import type { ChangeOperation, ChangeSet } from "../../domain/studio";
-import type { Project } from "../../domain/types";
+import { entityKinds, type Project } from "../../domain/types";
+import { planLevels } from "../studio/Plans";
 
 interface Props {
   project: Project;
@@ -41,6 +42,10 @@ const fieldLabels: Record<string, string> = {
   default_chapter_words: "Chapter word target",
   narrative_pov: "Narrative viewpoint",
   mode: "Story form",
+  form: "Story form",
+  pace: "Pacing",
+  narrative_emphasis: "Narrative emphasis",
+  naming_preference: "Naming preference",
   stage: "Stage",
   content: "Content",
   description: "Description",
@@ -149,6 +154,10 @@ function OperationFields({
       typeof value === "string"
     )
       return references.get(value) || value;
+    if (key === "level" && typeof value === "string")
+      return t(planLevels[value] || value);
+    if (key === "kind" && typeof value === "string")
+      return t(entityKinds[value] || value);
     return valueText(value);
   }
   const keys = Object.keys(

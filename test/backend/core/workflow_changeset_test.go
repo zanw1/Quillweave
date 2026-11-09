@@ -484,8 +484,8 @@ func TestPrefixCacheStabilityAndBlockCompaction(t *testing.T) {
 	})
 	insertProject(t, engine, p)
 
-	layer1A := buildStoryBibleLayer1(&p, 24000)
-	layer1B := buildStoryBibleLayer1(&p, 24000)
+	layer1A := buildStoryBibleLayer1(&p, 24000, nil)
+	layer1B := buildStoryBibleLayer1(&p, 24000, nil)
 	assert(t, layer1A == layer1B && strings.Contains(layer1A, "<story_bible>"), "Layer 1 snapshot must be deterministic and byte-identical")
 
 	prompt, err := prepareAI(&p, AIRequest{

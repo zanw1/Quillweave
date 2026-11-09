@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { Button, ErrorBox, RequiredLabel } from "../../components/ui";
 import { Select } from "../../components/Select";
 import { WritingParameters } from "../writing/WritingParameters";
 import type { Project } from "../../domain/types";
+import { publishSetupDraft } from "./setupDrafts";
 
 export const formNames: Record<string, string> = {
   undecided: "Undecided",
@@ -45,6 +46,13 @@ export function StoryGoals({
     narrative_pov: project.narrative_pov,
   });
   const [error, setError] = useState("");
+  useEffect(() => {
+    publishSetupDraft("goals", {
+      label: story.title || t("Story goals"),
+      text: JSON.stringify({ story, studio: draft }),
+    });
+    return () => publishSetupDraft("goals", null);
+  }, [draft, story]);
   const [busy, setBusy] = useState(false);
 
   /** Save story metadata and studio goals as a single revision-protected command. */

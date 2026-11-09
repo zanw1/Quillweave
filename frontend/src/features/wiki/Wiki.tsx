@@ -1,5 +1,6 @@
 import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
+import { publishSetupDraft } from "../studio/setupDrafts";
 import { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import {
   IconPlus,
@@ -59,6 +60,20 @@ export function Wiki({
   const [kind, setKind] = useState("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<Entity | null>(null);
+  useEffect(() => {
+    publishSetupDraft(
+      "wiki",
+      editing
+        ? {
+            label: editing.name || t("New Wiki entry"),
+            text: [editing.name, editing.kind, ...(editing.aliases || []), editing.description]
+              .filter(Boolean)
+              .join("\n"),
+          }
+        : null,
+    );
+    return () => publishSetupDraft("wiki", null);
+  }, [editing]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [hashes, setHashes] = useState<Record<string, string>>({});
