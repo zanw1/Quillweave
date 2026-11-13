@@ -79,6 +79,11 @@ export function Wiki({
   const [hashes, setHashes] = useState<Record<string, string>>({});
   const [source, setSource] = useState<Fact | null>(null);
   const [trajectory, setTrajectory] = useState("");
+  const [reviewIds, setReviewIds] = useState<string[] | null>(null);
+  const [reviewScope, setReviewScope] = useState("");
+  const [reviewStart, setReviewStart] = useState("");
+  const [reviewEnd, setReviewEnd] = useState("");
+  useEffect(() => clearReviewFilters(), [project.id]);
   useEffect(() => {
     if (focusId && project.entities.some((item) => item.id === focusId))
       setSelected(focusId);
@@ -109,6 +114,31 @@ export function Wiki({
       `${e.name} ${e.aliases.join(" ")} ${e.description}`.includes(query),
   );
   const pending = project.facts.filter((f) => f.status === "pending");
+  const reviewScopes = project.studio.plans.filter(
+    (plan) => ["volume", "unit"].includes(plan.level) && plan.status !== "rejected" &&
+      plan.start_chapter > 0 && plan.end_chapter >= plan.start_chapter,
+  );
+  const reviewPlan = reviewScopes.find((plan) => plan.id === reviewScope);
+  const firstReviewChapter = reviewStart.trim() ? Number(reviewStart) : null;
+  const lastReviewChapter = reviewEnd.trim() ? Number(reviewEnd) : null;
+  const invalidReviewRange =
+    [firstReviewChapter, lastReviewChapter].some(
+      (value) => value !== null && (!Number.isInteger(value) || value < 1),
+    ) || (firstReviewChapter !== null && lastReviewChapter !== null &&
+      lastReviewChapter < firstReviewChapter);
+  const citedReviewIds = reviewIds === null ? null : new Set(reviewIds);
+  const reviewQueue = pending.filter((fact) =>
+    !invalidReviewRange && (!citedReviewIds || citedReviewIds.has(fact.id)) &&
+    (!reviewPlan || (fact.chapter >= reviewPlan.start_chapter && fact.chapter <= reviewPlan.end_chapter)) &&
+    ((firstReviewChapter === null && lastReviewChapter === null) || fact.chapter > 0) &&
+    (firstReviewChapter === null || fact.chapter >= firstReviewChapter) &&
+    (lastReviewChapter === null || fact.chapter <= lastReviewChapter),
+  );
+  const reviewFiltered = reviewIds !== null || !!reviewScope || !!reviewStart || !!reviewEnd;
+  useEffect(() => {
+    if (reviewScope && !reviewScopes.some((plan) => plan.id === reviewScope))
+      setReviewScope("");
+  }, [reviewScope, project.studio.plans]);
   const characters = project.entities.filter((e) => e.kind === "character");
   const character =
     characters.find((e) => e.name === trajectory) || characters[0];
@@ -119,6 +149,14 @@ export function Wiki({
         .sort((a, b) => a.chapter - b.chapter),
     [project, character],
   );
+
+  /** Restore the complete pending queue without losing independently saved review decisions. */
+  function clearReviewFilters() {
+    setReviewIds(null);
+    setReviewScope("");
+    setReviewStart("");
+    setReviewEnd("");
+  }
 
   /** Show evidence freshness against the current source revision. */
   function state(fact: Fact) {
@@ -338,7 +376,7 @@ export function Wiki({
         </button>
         <button
           className={tab === "review" ? "active" : ""}
-          onClick={() => setTab("review")}
+          onClick={() => { clearReviewFilters(); setTab("review"); }}
         >
           <IconCheck size={17} />
           {t("Pending review")} <span>{pending.length}</span>
@@ -376,7 +414,7 @@ export function Wiki({
           view={tab}
           onProject={onProject}
           onChapter={onChapter}
-          onReview={() => setTab("review")}
+          onReview={(ids) => { setReviewIds(ids); setTab("review"); }}
         />
       )}
       {tab === "entries" && (
@@ -506,13 +544,68 @@ export function Wiki({
               "Review the quote and its interpretation before confirming. Current, confirmed evidence enters the AI Wiki context.",
             )}
           </div>
-          {pending.length ? (
-            pending.map((f) => factCard(f, true))
+          <div className="studio-actions">
+            <label>
+              {t("Planning scope")}
+              <Select
+                aria-label={t("Planning scope")}
+                value={reviewScope}
+                onChange={(event) => setReviewScope(event.target.value)}
+              >
+                <option value="">{t("Whole book")}</option>
+                {reviewScopes.map((plan) => (
+                  <option key={plan.id} value={plan.id}>
+                    {plan.title} ({plan.start_chapter}–{plan.end_chapter})
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label>
+              {t("Start chapter")}
+              <input
+                aria-label={t("Review start chapter")}
+                type="number"
+                min={1}
+                step={1}
+                value={reviewStart}
+                onChange={(event) => setReviewStart(event.target.value)}
+              />
+            </label>
+            <label>
+              {t("End chapter")}
+              <input
+                aria-label={t("Review end chapter")}
+                type="number"
+                min={1}
+                step={1}
+                value={reviewEnd}
+                onChange={(event) => setReviewEnd(event.target.value)}
+              />
+            </label>
+            <span className="muted">
+              {t("Showing {0} of {1} pending evidence records", reviewQueue.length, pending.length)}
+            </span>
+            {reviewFiltered && (
+              <Button onClick={clearReviewFilters}>{t("Show all pending evidence")}</Button>
+            )}
+          </div>
+          {reviewIds !== null && (
+            <div className="studio-actions">
+              <span>{t("Cited evidence review")} · {reviewIds.length}</span>
+              <Button onClick={() => setReviewIds(null)}>{t("Clear cited evidence filter")}</Button>
+            </div>
+          )}
+          {invalidReviewRange ? (
+            <ErrorBox>{t("Choose a valid chapter range.")}</ErrorBox>
+          ) : reviewQueue.length ? (
+            reviewQueue.map((f) => factCard(f, true))
           ) : (
             <Empty
-              title={t("The review queue is clear")}
+              title={t(pending.length ? "No pending evidence matches these filters" : "The review queue is clear")}
               detail={t(
-                "New evidence will appear here after a chapter analysis completes.",
+                pending.length
+                  ? "Adjust the chapter range or clear the review filters."
+                  : "New evidence will appear here after a chapter analysis completes.",
               )}
             />
           )}

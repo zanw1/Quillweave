@@ -169,16 +169,18 @@ type archiveRuntimeRecord struct {
 	Value   json.RawMessage `json:"value"`
 }
 type stagedArchive struct {
-	project       Project
-	spool         *os.File
-	encoder       *json.Encoder
-	sessions      map[string]Conversation
-	sessionOrder  []string
-	sessionIDs    map[string]string
-	sessionTokens map[string]string
-	turnIDs       map[string]string
-	jobIDs        map[string]string
-	experiments   int
+	project        Project
+	spool          *os.File
+	encoder        *json.Encoder
+	sessions       map[string]Conversation
+	sessionOrder   []string
+	sessionIDs     map[string]string
+	sessionTokens  map[string]string
+	turnIDs        map[string]string
+	jobIDs         map[string]string
+	writingIDs     map[string]string
+	wikiIDs        map[string]string
+	retiredRecords int
 }
 
 // stageRecord stores runtime data on disk so imported prompt history is never collected into a Project slice.
@@ -260,7 +262,7 @@ func (stage *stagedArchive) readConversation(input *archiveDecoder) error {
 	return nil
 }
 
-// readRuntime streams tasks, conversations and experiments into the import spool with count limits.
+// readRuntime streams tasks and conversations into the import spool with count limits.
 func (stage *stagedArchive) readRuntime(input *archiveDecoder, key string) error {
 	switch key {
 	case "jobs":
@@ -275,15 +277,9 @@ func (stage *stagedArchive) readRuntime(input *archiveDecoder, key string) error
 			return stage.stageRecord("job", "", job)
 		})
 	case "experiments":
-		return readArchiveArray[PolicyExperiment](input, func(experiment PolicyExperiment) error {
-			stage.experiments++
-			if stage.experiments > 200 {
-				return errors.New("Too many experiments in the backup")
-			}
-			if err := validateExperiment(experiment); err != nil {
-				return err
-			}
-			return stage.stageRecord("experiment", "", experiment)
+		return readArchiveArray[json.RawMessage](input, func(_ json.RawMessage) error {
+			stage.retiredRecords++
+			return nil
 		})
 	case "conversations":
 		token, err := input.token()
@@ -447,6 +443,10 @@ func (stage *stagedArchive) readProject(input *archiveDecoder) error {
 			metadata[key], err = stage.readStudio(input)
 		case "jobs", "conversations", "experiments":
 			err = stage.readRuntime(input, key)
+		case "wiki_sessions":
+			err = stage.stageArchivedWiki(input)
+		case "writing_sessions":
+			err = stage.stageArchivedWriting(input)
 		default:
 			var raw json.RawMessage
 			err = input.decode(&raw)
@@ -466,7 +466,7 @@ func (stage *stagedArchive) readProject(input *archiveDecoder) error {
 	project.Chapters, project.Entities, project.Facts, project.Sources, project.Compilations = stage.project.Chapters, stage.project.Entities, stage.project.Facts, stage.project.Sources, stage.project.Compilations
 	project.Studio.Plans, project.Studio.Memories, project.Studio.Decisions = stage.project.Studio.Plans, stage.project.Studio.Memories, stage.project.Studio.Decisions
 	project.Studio.Locations, project.Studio.Routes, project.Studio.ChangeSets = stage.project.Studio.Locations, stage.project.Studio.Routes, stage.project.Studio.ChangeSets
-	project.Conversations, project.ArchiveJobs, project.Experiments = nil, nil, nil
+	project.Conversations, project.ArchiveJobs = nil, nil
 	stage.project = project
 	return validateProject(&stage.project)
 }
@@ -511,7 +511,7 @@ func (stage *stagedArchive) parseArchive(input *archiveDecoder) error {
 	if err := input.delimiter('}'); err != nil {
 		return err
 	}
-	if !contains([]string{"quillweave-1", "quillweave-2"}, format) || !seen["project"] {
+	if !contains([]string{"quillweave-1", "quillweave-2", "quillweave-3", "quillweave-4"}, format) || !seen["project"] {
 		return errors.New("Unsupported or incomplete backup format")
 	}
 	var extra any
@@ -568,6 +568,10 @@ func (stage *stagedArchive) insertRuntime(connection *sql.Conn, oldProjectID str
 			return err
 		}
 		switch record.Kind {
+		case "writing":
+			if err := stage.insertArchivedWriting(connection, record.Value, oldProjectID); err != nil {
+				return err
+			}
 		case "turn":
 			var turn ConversationTurn
 			if err := decodeJSON(record.Value, &turn); err != nil {
@@ -589,6 +593,11 @@ func (stage *stagedArchive) insertRuntime(connection *sql.Conn, oldProjectID str
 			if err := indexConversationTurn(connection, &session, turn); err != nil {
 				return err
 			}
+		case "wiki":
+			if err := stage.insertArchivedWiki(connection, record.Value, oldProjectID); err != nil {
+				return err
+			}
+
 		case "job":
 			var job Job
 			if err := decodeJSON(record.Value, &job); err != nil {
@@ -600,6 +609,8 @@ func (stage *stagedArchive) insertRuntime(connection *sql.Conn, oldProjectID str
 			job.ID, job.ProjectID, job.SessionID = stage.jobIDs[job.ID], stage.project.ID, stage.sessionIDs[job.SessionID]
 			for i := range job.ChangeSets {
 				rekeyChangeSet(&job.ChangeSets[i], stage.project.ID, stage.sessionIDs, stage.turnIDs, stage.jobIDs)
+				rekeyWritingProvenance(&job.ChangeSets[i], stage.writingIDs)
+				rekeyWikiProvenance(&job.ChangeSets[i], stage.wikiIDs)
 			}
 			if job.Status == "running" {
 				job.Status = "interrupted"
@@ -611,15 +622,6 @@ func (stage *stagedArchive) insertRuntime(connection *sql.Conn, oldProjectID str
 				job.Prompt.Messages[i].SourceJobID = stage.jobIDs[job.Prompt.Messages[i].SourceJobID]
 			}
 			if _, err := connection.ExecContext(context.Background(), "INSERT INTO runs(id,project_id,document) VALUES(?,?,?)", job.ID, job.ProjectID, jsonText(job)); err != nil {
-				return err
-			}
-		case "experiment":
-			var experiment PolicyExperiment
-			if err := decodeJSON(record.Value, &experiment); err != nil {
-				return err
-			}
-			experiment.ID = newID()
-			if _, err := connection.ExecContext(context.Background(), "INSERT INTO experiments(id,project_id,document) VALUES(?,?,?)", experiment.ID, stage.project.ID, jsonText(experiment)); err != nil {
 				return err
 			}
 		default:
@@ -642,10 +644,13 @@ func (engine *Engine) importArchiveFrom(reader io.Reader) (Project, error) {
 	if err := stage.parseArchive(newArchiveDecoder(engine.ctx, reader)); err != nil {
 		return Project{}, err
 	}
+	rekeyWikiRecords(&stage.project, stage.wikiIDs)
 	oldID := stage.project.ID
 	stage.project.ID, stage.project.Revision, stage.project.UpdatedAt = newID(), 0, now()
 	for i := range stage.project.Studio.ChangeSets {
 		rekeyChangeSet(&stage.project.Studio.ChangeSets[i], stage.project.ID, stage.sessionIDs, stage.turnIDs, stage.jobIDs)
+		rekeyWritingProvenance(&stage.project.Studio.ChangeSets[i], stage.writingIDs)
+		rekeyWikiProvenance(&stage.project.Studio.ChangeSets[i], stage.wikiIDs)
 	}
 	for i := range stage.project.Studio.Memories {
 		stage.project.Studio.Memories[i].SessionID = stage.sessionIDs[stage.project.Studio.Memories[i].SessionID]
@@ -667,5 +672,8 @@ func (engine *Engine) importArchiveFrom(reader io.Reader) (Project, error) {
 		}
 		return stage.insertRuntime(connection, oldID)
 	})
+	if err == nil && stage.retiredRecords > 0 {
+		stage.project.ImportWarnings = []string{"Ignored retired experimental records from this legacy backup"}
+	}
 	return stage.project, err
 }

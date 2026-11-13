@@ -35,7 +35,7 @@ type searchMutation struct {
 	UILanguage     string                  `json:"ui_language"`
 }
 
-// searchModels exposes only public connection metadata, retaining keys exclusively in the Engine cache.
+// searchModels exposes public connection metadata without credential values.
 func searchModels(models ModelSettings) []websearch.Model {
 	result := []websearch.Model{}
 	for _, profile := range models.Profiles {
@@ -77,7 +77,7 @@ func sameSearchBase(first, second string) bool {
 	return errA == nil && errB == nil && strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }
 
-// currentSearchView reads model and search metadata from one snapshot before reporting process-local presence.
+// currentSearchView reads model metadata and persisted credentials from one consistent snapshot.
 func (engine *Engine) currentSearchView() (searchSettingsView, error) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -99,13 +99,16 @@ func (engine *Engine) searchViewLocked() (searchSettingsView, error) {
 			return err
 		}
 		models, err = readModelSettings(db)
-		return err
+		if err != nil {
+			return err
+		}
+		if err := engine.store.restoreModelCredentials(db, &models); err != nil {
+			return err
+		}
+		return engine.refreshSearchCredentialsLocked(db)
 	})
 	if err != nil {
 		return searchSettingsView{}, err
-	}
-	for index := range models.Profiles {
-		models.Profiles[index].Config.APIKey = engine.models.keyFor(models.Profiles[index])
 	}
 	engine.models = models
 	keys := map[string]bool{}
@@ -150,10 +153,7 @@ func (engine *Engine) mutateSearchSettings(mutation searchMutation) (searchSetti
 	if engine.closed {
 		return searchSettingsView{}, errors.New("The application is closing")
 	}
-	nextKeys := map[string]searchSecret{}
-	for id, key := range engine.searchKeys {
-		nextKeys[id] = key
-	}
+	var nextKeys map[string]searchSecret
 	changed := map[string]bool{}
 	err := engine.store.withWriteTransaction(func(db *sql.Conn) error {
 		settings, revision, err := readSearchSettings(db)
@@ -169,6 +169,10 @@ func (engine *Engine) mutateSearchSettings(mutation searchMutation) (searchSetti
 		}
 		if models.Revision != mutation.ModelRevision {
 			return websearch.Fail("SEARCH_REVISION_CONFLICT", "Model connections changed. Reload before saving; your edits are retained", 409)
+		}
+		nextKeys, err = engine.store.readCredentials(db, "search")
+		if err != nil {
+			return err
 		}
 		switch mutation.Operation {
 		case "upsert_profile":
@@ -293,13 +297,14 @@ func (engine *Engine) mutateSearchSettings(mutation searchMutation) (searchSetti
 				return websearch.Fail("SEARCH_INVALID_ARGUMENT", "Invalid key update operation", 400)
 			}
 		}
-		_, err = writeSearchSettings(db, settings, revision)
-		return err
+		if _, err = writeSearchSettings(db, settings, revision); err != nil {
+			return err
+		}
+		return engine.store.saveSearchCredentials(db, settings, nextKeys)
 	})
 	if err != nil {
 		return searchSettingsView{}, err
 	}
-	engine.searchKeys = nextKeys
 	engine.cancelSearchProfiles(changed)
 	return engine.searchViewLocked()
 }

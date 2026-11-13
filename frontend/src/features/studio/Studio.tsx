@@ -40,6 +40,9 @@ export function Studio({
     (item) => item.status === "confirmed",
   );
   const written = project.chapters.filter((item) => item.body.trim());
+  const finalized = project.chapters.filter((item) => item.status === "final");
+  const pendingEvidence = project.facts.filter((item) => item.status === "pending");
+  const proposedMemories = project.studio.memories.filter((item) => item.status === "proposed");
   const hasPlans = confirmedPlans.length > 0 || project.chapters.length > 0;
   const hasSettings =
     project.entities.length > 0 ||
@@ -129,7 +132,19 @@ export function Studio({
         </div>
         <div>
           <strong>{written.length}</strong>
-          <small>{t("Written chapters")}</small>
+          <small>{t("Chapters with saved prose")}</small>
+        </div>
+        <div>
+          <strong>{finalized.length}</strong>
+          <small>{t("Finalized chapters")}</small>
+        </div>
+        <div>
+          <strong>{pendingEvidence.length}</strong>
+          <small>{t("Pending evidence")}</small>
+        </div>
+        <div>
+          <strong>{proposedMemories.length}</strong>
+          <small>{t("Proposed story memories")}</small>
         </div>
       </div>
       {pending.length > 0 && (

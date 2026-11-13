@@ -42,7 +42,7 @@ func (store *Store) migrateSearchStore() error {
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
+	if version > 6 {
 		return errors.New("This database requires a newer application version")
 	}
 	if version >= 3 {
@@ -120,7 +120,7 @@ func (store *Store) requireIdleUpgrade() error {
 			return err
 		}
 		if !acquired {
-			return errors.New("Close other application instances before upgrading search settings")
+			return errors.New("Close other application instances before upgrading the workspace database")
 		}
 		if err := lock.Close(); err != nil {
 			return err

@@ -137,7 +137,7 @@ func (engine *Engine) searchExecution(profile websearch.Profile, run searchRun, 
 		return websearch.ExecuteRequest{}, generation, err
 	}
 	if searchRequiresKey(profile) && key == "" {
-		return websearch.ExecuteRequest{}, generation, websearch.Fail("SEARCH_CREDENTIAL_REQUIRED", "Enter the search API key for this process before running", 422)
+		return websearch.ExecuteRequest{}, generation, websearch.Fail("SEARCH_CREDENTIAL_REQUIRED", "Enter the search API key before running", 422)
 	}
 	model := run.Plan.Models[profile.ModelProfileID]
 	if profile.ModelProfileID != "" {

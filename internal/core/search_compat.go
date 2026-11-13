@@ -9,6 +9,12 @@ import (
 
 // refreshSearchCompatLocked projects the one search aggregate into the legacy six-provider view.
 func (engine *Engine) refreshSearchCompatLocked() error {
+	if err := engine.refreshModelsLocked(); err != nil {
+		return err
+	}
+	if err := engine.refreshSearchCredentialsLocked(engine.store.db); err != nil {
+		return err
+	}
 	raw, err := engine.store.IntegrationSettings()
 	if err != nil {
 		return err
@@ -65,10 +71,7 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 	if input.MaxSearches < 1 || input.MaxSearches > 5 || len(input.Providers) > 20 {
 		return nil, errors.New("Search budgets must be between 1 and 5")
 	}
-	nextKeys := map[string]searchSecret{}
-	for id, key := range engine.searchKeys {
-		nextKeys[id] = key
-	}
+	var nextKeys map[string]searchSecret
 	changed := map[string]bool{}
 	err := engine.store.withWriteTransaction(func(db *sql.Conn) error {
 		raw, err := readIntegrations(db)
@@ -81,6 +84,10 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 		}
 		if raw.Revision != input.Revision || revision != input.SearchRevision {
 			return websearch.Fail("SEARCH_REVISION_CONFLICT", "Integration settings changed. Reload before saving", 409)
+		}
+		nextKeys, err = engine.store.readCredentials(db, "search")
+		if err != nil {
+			return err
 		}
 		metadataChanged := legacySearchMetadata(input) != legacySearchMetadata(currentView)
 		if metadataChanged {
@@ -195,13 +202,15 @@ func (engine *Engine) saveSearchIntegrations(input IntegrationSettings, updates 
 		raw.SearchEnabled = false
 		raw.HindsightURL = ""
 		raw.HindsightKey = ""
+		if err := engine.store.saveSearchCredentials(db, settings, nextKeys); err != nil {
+			return err
+		}
 		_, err = db.ExecContext(background(), "UPDATE integrations SET document=? WHERE id=1", jsonText(raw))
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	engine.searchKeys = nextKeys
 	engine.cancelSearchProfiles(changed)
 	if err := engine.refreshSearchCompatLocked(); err != nil {
 		return nil, err

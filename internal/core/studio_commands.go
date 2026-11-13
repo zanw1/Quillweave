@@ -58,13 +58,31 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			}
 			offset = value
 		}
-		return engine.store.Conversations(projectID, args.optionalString("chapter_id"), int(offset))
+		archived := false
+		if data, exists := args.fields["archived"]; exists {
+			if err := decodeJSON(data, &archived); err != nil {
+				return nil, errors.New("Invalid archived conversation filter")
+			}
+		}
+		return engine.store.queryConversations(projectID, args.optionalString("chapter_id"), args.optionalString("query"), archived, int(offset))
 	case "create_conversation":
 		return engine.store.createConversation(projectID, args.optionalString("chapter_id"), args.optionalString("title"))
 	case "get_conversation":
 		return readConversation(engine.store.db, projectID, args.text("session_id"))
 	case "fork_conversation":
 		return engine.store.forkConversation(projectID, args.text("session_id"), args.text("turn_id"))
+	case "truncate_conversation":
+		return engine.store.truncateConversation(projectID, args.text("session_id"), args.text("turn_id"))
+	case "archive_conversation":
+		revision, ok := unsigned(args.fields["revision"])
+		if !ok {
+			return nil, errors.New("Missing conversation revision")
+		}
+		var archived bool
+		if data, exists := args.fields["archived"]; !exists || decodeJSON(data, &archived) != nil {
+			return nil, errors.New("Choose whether to archive or restore the conversation")
+		}
+		return engine.store.archiveConversation(projectID, args.text("session_id"), revision, archived)
 	case "update_conversation":
 		revision, ok := unsigned(args.fields["revision"])
 		if !ok {
@@ -85,6 +103,13 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			}
 			draft = &v
 		}
+		if data, exists := args.fields["model_selection"]; exists {
+			var selection *ChatModelSelection
+			if err := decodeJSON(data, &selection); err != nil {
+				return nil, errors.New("Invalid conversation model selection")
+			}
+			return engine.store.updateConversation(projectID, args.text("session_id"), revision, title, draft, selection)
+		}
 		return engine.store.updateConversation(projectID, args.text("session_id"), revision, title, draft)
 	case "studio":
 		project, err := engine.store.Get(projectID)
@@ -104,12 +129,14 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 		return engine.reviewChangeSetCommand(command, projectID, args)
 	case "stage_changeset", "apply_changeset", "undo_changeset", "extract_changeset", "list_changesets":
 		return engine.handleChangeSetCommand(command, projectID, args)
-	case "list_experiments", "record_experiment", "evaluate_policy":
-		return engine.experimentCommand(command, args)
 	case "review_proposal":
 		return engine.reviewProposal(args)
 	}
 	return engine.mutateLocked(args, func(project *Project) error {
+		previousConflicts := 0
+		if command == "save_plan" || command == "delete_plan" {
+			previousConflicts = confirmedChapterPlanConflicts(project.Studio.Plans)
+		}
 		switch command {
 		case "save_studio":
 			var state StudioState
@@ -125,6 +152,7 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			state.ChangeSets = project.Studio.ChangeSets
 			state.Locations = project.Studio.Locations
 			state.Routes = project.Studio.Routes
+			state.KnowledgeMaintenance = project.Studio.KnowledgeMaintenance
 			project.Studio = state
 			if data, exists := args.fields["story"]; exists {
 				var story struct {
@@ -144,32 +172,36 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 				if err != nil {
 					return err
 				}
-				if err := validateTarget(story.DefaultChapterWords); err != nil {
-					return err
-				}
-				valid := false
-				for _, preset := range writingPresets() {
-					valid = valid || preset.ID == story.WritingStyle
-				}
-				if !valid || !contains([]string{"First person", "Third-person limited", "Omniscient"}, narrativePovLabel(story.NarrativePov)) {
-					return errors.New("Invalid writing settings")
-				}
 				project.Title = title
 				project.Genre = story.Genre
 				project.Premise = story.Premise
 				project.Style = story.Style
 				project.Outline = story.Outline
-				project.WritingStyle = story.WritingStyle
-				project.DefaultChapterWords = story.DefaultChapterWords
-				project.NarrativePov = story.NarrativePov
+				if err := applyWritingSettings(project, &arguments{fields: map[string]json.RawMessage{
+					"writing_style":         rawMessage(story.WritingStyle),
+					"default_chapter_words": rawMessage(story.DefaultChapterWords),
+					"narrative_pov":         rawMessage(story.NarrativePov),
+				}}); err != nil {
+					return err
+				}
 			}
 		case "save_plan":
 			var plan StoryPlan
 			if err := decodeJSON(args.fields["plan"], &plan); err != nil {
 				return err
 			}
-			if err := upsertPlan(project, plan); err != nil {
+			if args.flag("resolve_conflicts") && (plan.ID == "" || plan.Level != "chapter" || plan.Status != "confirmed") {
+				return errors.New("Choose an existing confirmed chapter outline to resolve alternatives")
+			}
+			if err := upsertPlan(project, plan, true); err != nil {
 				return err
+			}
+			if args.flag("resolve_conflicts") && plan.Level == "chapter" && plan.Status == "confirmed" {
+				for i, existing := range project.Studio.Plans {
+					if existing.ID != plan.ID && existing.Level == "chapter" && existing.Status == "confirmed" && existing.StartChapter == plan.StartChapter {
+						project.Studio.Plans[i].Status = "proposed"
+					}
+				}
 			}
 		case "delete_plan":
 			id := args.text("plan_id")
@@ -187,10 +219,11 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 			project.Studio.Plans = plans
 		case "create_planned_chapters":
 			count := 0
-			for _, plan := range project.Studio.Plans {
-				if plan.Level != "chapter" || plan.Status != "confirmed" || plan.StartChapter == 0 {
-					continue
-				}
+			plans, err := confirmedWritingPlans(project, args.optionalString("plan_id"))
+			if err != nil {
+				return err
+			}
+			for _, plan := range plans {
 				exists := false
 				for _, c := range project.Chapters {
 					exists = exists || c.Number == plan.StartChapter
@@ -199,7 +232,7 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 					continue
 				}
 				chapter := NewChapter(plan.StartChapter, plan.Title)
-				chapter.Synopsis = plan.Goal + "\n" + plan.Conflict + "\n" + plan.Consequence
+				chapter.Synopsis = planSynopsis(project, plan)
 				if plan.TargetCharacters > 0 {
 					target := plan.TargetCharacters
 					chapter.TargetWords = &target
@@ -242,7 +275,11 @@ func (engine *Engine) studioCommand(command string, args *arguments, raw json.Ra
 		default:
 			return errors.New("Unsupported studio command")
 		}
-		return validateStudio(&project.Studio)
+		err := validateStudio(&project.Studio)
+		if errors.Is(err, errConflictingChapterPlans) && confirmedChapterPlanConflicts(project.Studio.Plans) < previousConflicts {
+			return nil
+		}
+		return err
 	})
 }
 

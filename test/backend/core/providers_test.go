@@ -702,9 +702,9 @@ func TestPrivateProviderHistorySurvivesRestart(t *testing.T) {
 	args := map[string]any{"project_id": project.ID, "chapter_id": project.Chapters[0].ID, "action": "ask", "instruction": "First turn"}
 	job := invoke[Job](t, engine, "start_ai", args)
 	done := finishJob(t, engine, job)
-	assert(t, done.Status == "done" && !strings.Contains(jsonText(done), private), "The public task exposed private context")
+	assert(t, done.Status == "done" && !strings.Contains(done.Text, private) && len(done.Activity) > 0 && done.Activity[0].Text == private && !strings.Contains(jsonText(done), `"provider_context"`), "Provider thought text was lost, mixed into prose or exposed with private replay fields")
 	runs := invoke[[]json.RawMessage](t, engine, "get_runs", map[string]any{"project_id": project.ID})
-	assert(t, !strings.Contains(jsonText(runs), private), "Public history exposed private context")
+	assert(t, strings.Contains(jsonText(runs), private) && !strings.Contains(jsonText(runs), `"reasoning_content"`), "Thought text was lost or private replay fields were exposed")
 	engine.Close()
 	engine, err = NewEngine(path)
 	if err != nil {
@@ -784,14 +784,15 @@ func TestArkEncryptedContextRoundTrip(t *testing.T) {
 	assert(t, preserved.Load(), "The encrypted reasoning block was not restored intact")
 }
 
-// TestProviderOptionsInvalidateWikiCache checks new option invalidation and stable legacy or key-rotation fingerprints.
+// TestProviderOptionsInvalidateWikiCache binds the extraction contract and provider options without hashing credentials.
 func TestProviderOptionsInvalidateWikiCache(t *testing.T) {
 	project := testProject()
 	config := defaultProvider()
 	config.Model = "mock"
 	before, _ := compilationFingerprint(&project, project.Chapters[0].ID, config)
-	expected := hashText(strings.Join([]string{project.Chapters[0].ID, hashText(project.Chapters[0].Body), rulesHash(&project), config.Protocol, config.BaseURL, config.Model}, "|"))
-	assert(t, before == expected, "Legacy cache identity changed")
+	expected := hashText(strings.Join([]string{project.Chapters[0].ID, hashText(project.Chapters[0].Body), rulesHash(&project), hashText(extractionSystem), config.Protocol, config.BaseURL, config.Model}, "|"))
+	legacy := hashText(strings.Join([]string{project.Chapters[0].ID, hashText(project.Chapters[0].Body), rulesHash(&project), config.Protocol, config.BaseURL, config.Model}, "|"))
+	assert(t, before == expected && before != legacy, "The entity-type extraction contract did not invalidate the earlier cache identity")
 	config.ProviderID = "deepseek"
 	config.ThinkingMode = "enabled"
 	first, _ := compilationFingerprint(&project, project.Chapters[0].ID, config)

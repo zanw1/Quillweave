@@ -19,6 +19,87 @@ type Store struct {
 	path string
 }
 
+type projectListCounts struct {
+	Chapters int `json:"chapters"`
+	Words    int `json:"words"`
+}
+
+type projectCard struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Genre        string `json:"genre"`
+	Premise      string `json:"premise"`
+	UpdatedAt    string `json:"updated_at"`
+	ChapterCount int    `json:"chapter_count"`
+	WordCount    int    `json:"word_count"`
+}
+
+// listProjectCards reads cached metadata and only scans chapter bodies for older writers.
+func (store *Store) listProjectCards() ([]projectCard, error) {
+	result := []projectCard{}
+	err := store.withReadSnapshot(func(db documentDB) error {
+		rows, err := db.QueryContext(context.Background(), "SELECT document FROM projects")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		type cardDocument struct {
+			projectCard
+			Counts *projectListCounts `json:"_list_counts"`
+		}
+		documents := []cardDocument{}
+		for rows.Next() {
+			var raw string
+			var document cardDocument
+			if err := rows.Scan(&raw); err != nil {
+				return err
+			}
+			if err := decodeJSON([]byte(raw), &document); err != nil {
+				return err
+			}
+			documents = append(documents, document)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		for _, document := range documents {
+			counts := document.Counts
+			if counts == nil {
+				legacy, err := readProjectListCounts(db, document.ID)
+				if err != nil {
+					return err
+				}
+				counts = &legacy
+			}
+			document.ChapterCount, document.WordCount = counts.Chapters, counts.Words
+			result = append(result, document.projectCard)
+		}
+		return nil
+	})
+	sort.SliceStable(result, func(i, j int) bool { return result[i].UpdatedAt > result[j].UpdatedAt })
+	return result, err
+}
+
+// readProjectListCounts preserves exact Unicode counting for pre-cache databases.
+func readProjectListCounts(db documentDB, projectID string) (projectListCounts, error) {
+	counts := projectListCounts{}
+	rows, err := db.QueryContext(context.Background(), "SELECT json_extract(document,'$.body') FROM project_parts WHERE project_id=? AND kind='chapter'", projectID)
+	if err != nil {
+		return counts, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			return counts, err
+		}
+		counts.Chapters++
+		counts.Words += wordCount(body)
+	}
+	return counts, rows.Err()
+}
+
 type documentDB interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -47,7 +128,7 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 4 {
+	if version > 6 {
 		db.Close()
 		return nil, errors.New("This database requires a newer application version")
 	}
@@ -106,6 +187,18 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := store.migrateWorkspaceStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := store.migrateExternalStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := store.migrateExternalWikiStore(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(credentialSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -231,7 +324,11 @@ func (store *Store) Insert(project *Project) error {
 // insertProjectIn writes only canonical project records so streamed runtime imports can share its transaction.
 func insertProjectIn(db documentDB, project *Project) error {
 	metadata, parts := splitProject(project)
-	if _, err := db.ExecContext(context.Background(), "INSERT INTO projects(id,revision,document) VALUES(?,?,?)", project.ID, int64(project.Revision), jsonText(metadata)); err != nil {
+	raw, err := projectMetadataJSON(metadata, project)
+	if err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO projects(id,revision,document) VALUES(?,?,?)", project.ID, int64(project.Revision), string(raw)); err != nil {
 		return err
 	}
 	return saveParts(db, project.ID, parts)
@@ -287,7 +384,7 @@ func saveProject(db documentDB, project *Project, expected uint64) error {
 		return errors.New("Revision is out of range")
 	}
 	metadata, parts := splitProject(project)
-	raw, err := jsonBytes(metadata)
+	raw, err := projectMetadataJSON(metadata, project)
 	if err != nil {
 		return err
 	}
@@ -300,12 +397,14 @@ func saveProject(db documentDB, project *Project, expected uint64) error {
 		return err
 	}
 	if changed == 0 {
-		return errors.New("Another operation changed this project. Keep your draft and refresh before saving.")
+		var current uint64
+		_ = db.QueryRowContext(context.Background(), "SELECT revision FROM projects WHERE id=?", project.ID).Scan(&current)
+		return externalFailure("REVISION_CONFLICT", "Another operation changed this project. Keep your draft and refresh before saving.", map[string]any{"expected_revision": expected, "current_revision": current})
 	}
 	return saveParts(db, project.ID, parts)
 }
 
-// ModelSettings reads legacy single-model settings and keeps credentials process-local.
+// ModelSettings reads public model settings without exposing the separate encrypted credentials.
 func (store *Store) ModelSettings() (ModelSettings, error) {
 	return readModelSettings(store.db)
 }
@@ -355,7 +454,10 @@ func (store *Store) withWriteTransaction(change func(*sql.Conn) error) (err erro
 // SaveModelSettings checks project references and settings revision inside the same write transaction.
 func (store *Store) SaveModelSettings(settings ModelSettings, expected uint64) error {
 	return store.withWriteTransaction(func(connection *sql.Conn) error {
-		return saveModelSettings(connection, settings, expected)
+		if err := saveModelSettings(connection, settings, expected); err != nil {
+			return err
+		}
+		return store.saveModelCredentials(connection, settings)
 	})
 }
 

@@ -4,51 +4,54 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 )
 
 // StudioState keeps author decisions distinct from prose-derived evidence.
 type StudioState struct {
-	Language         string          `json:"language"`
-	Mode             string          `json:"mode"`
-	Stage            string          `json:"stage"`
-	TargetCharacters uint32          `json:"target_characters"`
-	TargetChapters   uint32          `json:"target_chapters"`
-	TargetVolumes    uint32          `json:"target_volumes"`
-	Pacing           string          `json:"pacing"`
-	NarrativeFocus   string          `json:"narrative_focus"`
-	Audience         string          `json:"audience"`
-	NamingStyle      string          `json:"naming_style"`
-	ForbiddenNames   []string        `json:"forbidden_names"`
-	Skills           []string        `json:"skills"`
-	Preferences      []string        `json:"preferences"`
-	Plans            []StoryPlan     `json:"plans"`
-	Memories         []StoryMemory   `json:"memories"`
-	Decisions        []StoryDecision `json:"decisions"`
-	ChangeSets       []ChangeSet     `json:"changesets,omitempty"`
-	Locations        []WorldLocation `json:"locations,omitempty"`
-	Routes           []WorldRoute    `json:"routes,omitempty"`
+	Language             string                 `json:"language"`
+	Mode                 string                 `json:"mode"`
+	Stage                string                 `json:"stage"`
+	TargetCharacters     uint32                 `json:"target_characters"`
+	TargetChapters       uint32                 `json:"target_chapters"`
+	TargetVolumes        uint32                 `json:"target_volumes"`
+	Pacing               string                 `json:"pacing"`
+	NarrativeFocus       string                 `json:"narrative_focus"`
+	Audience             string                 `json:"audience"`
+	NamingStyle          string                 `json:"naming_style"`
+	ForbiddenNames       []string               `json:"forbidden_names"`
+	Skills               []string               `json:"skills"`
+	Preferences          []string               `json:"preferences"`
+	Plans                []StoryPlan            `json:"plans"`
+	Memories             []StoryMemory          `json:"memories"`
+	Decisions            []StoryDecision        `json:"decisions"`
+	ChangeSets           []ChangeSet            `json:"changesets,omitempty"`
+	Locations            []WorldLocation        `json:"locations,omitempty"`
+	Routes               []WorldRoute           `json:"routes,omitempty"`
+	KnowledgeMaintenance []KnowledgeMaintenance `json:"knowledge_maintenance,omitempty"`
 }
 
 type StoryPlan struct {
-	ID               string   `json:"id"`
-	ParentID         string   `json:"parent_id"`
-	Level            string   `json:"level"`
-	Title            string   `json:"title"`
-	Theme            string   `json:"theme"`
-	Goal             string   `json:"goal"`
-	Conflict         string   `json:"conflict"`
-	Choice           string   `json:"choice"`
-	Consequence      string   `json:"consequence"`
-	Pacing           string   `json:"pacing"`
-	POV              string   `json:"pov"`
-	Characters       []string `json:"characters"`
-	Clues            []string `json:"clues"`
-	StartChapter     uint32   `json:"start_chapter"`
-	EndChapter       uint32   `json:"end_chapter"`
-	TargetCharacters uint32   `json:"target_characters"`
-	Status           string   `json:"status"`
+	ID               string         `json:"id"`
+	ParentID         string         `json:"parent_id"`
+	Level            string         `json:"level"`
+	Title            string         `json:"title"`
+	Theme            string         `json:"theme"`
+	Goal             string         `json:"goal"`
+	Conflict         string         `json:"conflict"`
+	Choice           string         `json:"choice"`
+	Consequence      string         `json:"consequence"`
+	Pacing           string         `json:"pacing"`
+	POV              string         `json:"pov"`
+	Characters       []string       `json:"characters"`
+	Clues            []string       `json:"clues"`
+	StartChapter     uint32         `json:"start_chapter"`
+	EndChapter       uint32         `json:"end_chapter"`
+	TargetCharacters uint32         `json:"target_characters"`
+	Status           string         `json:"status"`
+	Flexibility      string         `json:"flexibility,omitempty"`
+	OpenQuestions    []string       `json:"open_questions,omitempty"`
+	SceneCards       []WritingScene `json:"scene_cards,omitempty"`
 }
 
 type StoryMemory struct {
@@ -70,6 +73,7 @@ type StoryMemory struct {
 	SessionID      string   `json:"session_id"`
 	Supersedes     string   `json:"supersedes"`
 	UpdatedAt      string   `json:"updated_at"`
+	Epistemic      string   `json:"epistemic,omitempty"`
 }
 
 type StoryDecision struct {
@@ -82,6 +86,9 @@ type StoryDecision struct {
 }
 
 type AgentStep struct {
+	Input      string `json:"input,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
 	ID         string `json:"id"`
 	Tool       string `json:"tool"`
 	Status     string `json:"status"`
@@ -134,6 +141,23 @@ func localText(project *Project, english, chinese string) string {
 	return english
 }
 
+var errConflictingChapterPlans = errors.New("This chapter has multiple confirmed outlines. Keep one confirmed outline before writing")
+
+// confirmedChapterPlanConflicts counts excess effective outlines without discarding author alternatives.
+func confirmedChapterPlanConflicts(plans []StoryPlan) int {
+	seen := map[uint32]bool{}
+	conflicts := 0
+	for _, plan := range plans {
+		if plan.Level == "chapter" && plan.Status == "confirmed" {
+			if seen[plan.StartChapter] {
+				conflicts++
+			}
+			seen[plan.StartChapter] = true
+		}
+	}
+	return conflicts
+}
+
 // validateStudio checks identifiers, hierarchy and hard bounds before any persistence.
 func validateStudio(state *StudioState) error {
 	if !contains([]string{"inherit", "en", "zh-CN"}, state.Language) || !contains([]string{"undecided", "serial", "traditional", "hybrid"}, state.Mode) || !contains([]string{"idea", "direction", "setting", "world", "planning", "writing", "review"}, state.Stage) {
@@ -148,6 +172,12 @@ func validateStudio(state *StudioState) error {
 	ids := map[string]bool{}
 	plans := map[string]StoryPlan{}
 	for _, plan := range state.Plans {
+		if len(plan.SceneCards) > 12 {
+			return errors.New("An outline supports at most 12 scene cards")
+		}
+		if !contains([]string{"", "fixed", "flexible"}, plan.Flexibility) || len(plan.OpenQuestions) > 32 {
+			return errors.New("Choose a valid plan flexibility and at most 32 open questions")
+		}
 		if plan.Level == "chapter" {
 			if plan.StartChapter == 0 || plan.EndChapter != plan.StartChapter {
 				return errors.New("A chapter plan must identify one chapter number")
@@ -172,7 +202,8 @@ func validateStudio(state *StudioState) error {
 			if !ok || ranks[parent.Level] >= ranks[plan.Level] {
 				return errors.New("Child plan must have a more detailed level than its parent")
 			}
-			if parent.EndChapter > 0 && (plan.StartChapter < parent.StartChapter || plan.EndChapter == 0 || plan.EndChapter > parent.EndChapter) {
+			inheritsRange := plan.Level == "scene" && plan.StartChapter == 0 && plan.EndChapter == 0
+			if !inheritsRange && parent.EndChapter > 0 && (plan.StartChapter < parent.StartChapter || plan.EndChapter == 0 || plan.EndChapter > parent.EndChapter) {
 				return errors.New("Child chapter range exceeds its parent")
 			}
 		}
@@ -188,11 +219,29 @@ func validateStudio(state *StudioState) error {
 	}
 	ids = map[string]bool{}
 	for _, memory := range state.Memories {
+		if !contains([]string{"", "explicit", "inferred", "author"}, memory.Epistemic) {
+			return errors.New("Unknown memory evidence type")
+		}
 		if memory.ThroughChapter > 0 && memory.ThroughChapter < memory.Chapter {
 			return errors.New("Memory validity ends before it begins")
 		}
-		if memory.ID == "" || ids[memory.ID] || strings.TrimSpace(memory.Content) == "" || charCount(jsonText(memory)) > 20000 || !contains([]string{"rule", "setting", "fact", "inference", "plan", "character", "relationship", "knowledge", "clue", "promise", "summary"}, memory.Kind) || !contains([]string{"proposed", "confirmed", "rejected", "superseded"}, memory.Status) {
-			return errors.New("Invalid or duplicate memory")
+		if memory.ID == "" {
+			return errors.New("Story memory ID is required")
+		}
+		if ids[memory.ID] {
+			return errors.New("Duplicate story memory ID")
+		}
+		if strings.TrimSpace(memory.Content) == "" {
+			return errors.New("Story memory content is required. Use the content field")
+		}
+		if charCount(jsonText(memory)) > 20000 {
+			return errors.New("Story memory exceeds the 20000-character limit")
+		}
+		if !contains([]string{"rule", "setting", "fact", "inference", "plan", "character", "relationship", "knowledge", "clue", "promise", "summary"}, memory.Kind) {
+			return errors.New("Unknown story memory type")
+		}
+		if !contains([]string{"proposed", "confirmed", "rejected", "superseded"}, memory.Status) {
+			return errors.New("Invalid story memory status")
 		}
 		ids[memory.ID] = true
 	}
@@ -201,7 +250,16 @@ func validateStudio(state *StudioState) error {
 			return errors.New("Invalid author decision")
 		}
 	}
-	return validateMemoryLinks(state.Memories)
+	if err := validateMemoryLinks(state.Memories); err != nil {
+		return err
+	}
+	if err := validateKnowledgeMaintenance(state.KnowledgeMaintenance); err != nil {
+		return err
+	}
+	if confirmedChapterPlanConflicts(state.Plans) > 0 {
+		return errConflictingChapterPlans
+	}
+	return nil
 }
 
 // studioWarnings reports revisable planning conflicts without inventing creative correctness.
@@ -234,67 +292,11 @@ func memoryCurrent(project *Project, memory StoryMemory) bool {
 		return memory.Kind != "fact" && memory.Kind != "inference"
 	}
 	text, _, ok := project.SourceText(memory.SourceID)
-	return ok && memory.SourceHash == hashText(text) && (memory.Quote == "" || strings.Contains(text, memory.Quote))
+	requiresQuote := contains([]string{"fact", "inference"}, memory.Kind)
+	return ok && memory.SourceHash == hashText(text) && (!requiresQuote || strings.TrimSpace(memory.Quote) != "") && (memory.Quote == "" || strings.Contains(text, memory.Quote))
 }
 
 // memoryContext prevents future observations from leaking into earlier chapter writing.
 func memoryContext(project *Project, through uint32, queries ...string) []ContextItem {
-	items := []ContextItem{}
-	query := strings.Join(queries, " ")
-	needles := terms(query)
-	normalized := lowerText(query)
-	current := through
-	successors := memorySuccessors(project.Studio.Memories)
-	if current == ^uint32(0) {
-		current = 0
-		for _, chapter := range project.Chapters {
-			current = max(current, chapter.Number)
-		}
-	}
-	for i := len(project.Studio.Memories) - 1; i >= 0; i-- {
-		m := project.Studio.Memories[i]
-		if !memoryVisibleAt(m, through, successors) || !memoryCurrent(project, m) {
-			continue
-		}
-		score := 4
-		if m.Kind == "rule" {
-			score = 10000
-		}
-		if (m.Kind == "clue" || m.Kind == "promise") && m.State != "resolved" && m.State != "fulfilled" && m.State != "abandoned" {
-			score = 100
-			if m.DueChapter > 0 && m.DueChapter <= current+10 {
-				score += 300
-			}
-		}
-		if m.Chapter <= current && m.Chapter+8 >= current {
-			score += 40
-		}
-		if m.Entity != "" && strings.Contains(normalized, lowerText(m.Entity)) {
-			score += 2000
-		}
-		textForMatch := lowerText(m.Title + " " + m.Content + " " + m.StoryTime)
-		for term := range needles {
-			if strings.Contains(textForMatch, term) {
-				score += 3
-			}
-		}
-		knowledge := strings.Join(m.KnownBy, ", ")
-		if knowledge == "" {
-			knowledge = "not specified; do not assume public knowledge"
-		}
-		text := fmt.Sprintf("%s: %s\nState: %s. Story time: %s. Knowledge scope: %s. Due chapter: %d\nQuote: %s", m.Title, m.Content, m.State, m.StoryTime, knowledge, m.DueChapter, m.Quote)
-		items = append(items, ContextItem{ID: "N:" + m.ID, Title: m.Entity + " · " + m.Title, Kind: m.Kind, Text: text, Score: score, Reason: "Author-confirmed story memory; respect time and character knowledge"})
-	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
-	result := []ContextItem{}
-	ordinary := 0
-	for _, item := range items {
-		if item.Kind == "rule" {
-			result = append(result, item)
-		} else if ordinary < 32 {
-			result = append(result, item)
-			ordinary++
-		}
-	}
-	return result
+	return storyMemoryContext(project, through, strings.Join(queries, " "))
 }

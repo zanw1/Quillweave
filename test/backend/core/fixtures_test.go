@@ -74,7 +74,7 @@ func testProject() Project {
 
 // testCandidate provides an event with a verbatim source quote.
 func testCandidate() Candidate {
-	return Candidate{Entity: "Lin Wu", Kind: "event", Claim: "Finds a letter", Quote: "Lin Wu found a letter.", Epistemic: "explicit"}
+	return Candidate{Entity: "Lin Wu", EntityKind: "character", Kind: "event", Claim: "Finds a letter", Quote: "Lin Wu found a letter.", Epistemic: "explicit"}
 }
 
 // insertProject installs fixture data in an isolated database.

@@ -218,9 +218,12 @@ export function StoryGoals({
           />
         </label>
         <label>
-          {t("Narrative focus")}
-          <input
+          {t("Recurring reading experience")}
+          <textarea
             value={draft.narrative_focus}
+            placeholder={t(
+              "Describe the activities, relationships, voice and changes readers should want to revisit.",
+            )}
             onChange={(event) =>
               setDraft({ ...draft, narrative_focus: event.target.value })
             }

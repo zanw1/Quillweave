@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -28,16 +27,19 @@ function readSize(key: string) {
 /** Keep a panel size for this browser without failing when storage is blocked. */
 export function useStoredSize(key: string) {
   const [size, setSize] = useState<number | null>(() => readSize(key));
-  const commit = useCallback((next: number | null) => {
-    const value = next == null ? null : Math.round(next);
-    setSize(value);
-    try {
-      if (value == null) localStorage.removeItem(key);
-      else localStorage.setItem(key, String(value));
-    } catch {
-      /* The layout still follows the drag when storage is unavailable. */
-    }
-  }, [key]);
+  const commit = useCallback(
+    (next: number | null) => {
+      const value = next == null ? null : Math.round(next);
+      setSize(value);
+      try {
+        if (value == null) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(value));
+      } catch {
+        /* The layout still follows the drag when storage is unavailable. */
+      }
+    },
+    [key],
+  );
   return [size, commit] as const;
 }
 
@@ -57,8 +59,26 @@ export function assistantWidthBounds(panel: HTMLElement): SizeRange {
 export function composerSizeBounds(composer: HTMLElement): SizeRange {
   const panel = composer.closest(".assistant-panel");
   const panelHeight = panel?.getBoundingClientRect().height ?? 640;
-  const min = 200;
-  return { min, max: Math.max(min, Math.round(panelHeight - 160)) };
+  const style = getComputedStyle(composer);
+  const padding =
+    parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const extras = [...composer.children].filter(
+    (child) => !child.classList.contains("chat-input-shell"),
+  );
+  const extraHeight = extras.reduce((height, child) => {
+    const childStyle = getComputedStyle(child);
+    return (
+      height +
+      child.getBoundingClientRect().height +
+      parseFloat(childStyle.marginTop) +
+      parseFloat(childStyle.marginBottom)
+    );
+  }, padding);
+  const max = Math.max(200, Math.round(panelHeight - 160));
+  return {
+    min: Math.min(max, Math.max(200, Math.ceil(extraHeight + 144))),
+    max,
+  };
 }
 
 /** Drag or keyboard-resize one edge, and restore the automatic size on double-click. */
@@ -89,14 +109,37 @@ export function ResizeHandle({
     return target?.current ?? handleRef.current?.parentElement ?? null;
   }
 
-  useLayoutEffect(() => {
-    const element = target?.current ?? handleRef.current?.parentElement;
+  // Sibling refs are attached by the passive-effect phase. Measuring the parent
+  // while the explicit composer ref is pending would expand it to the full pane.
+  useEffect(() => {
+    const element = target ? target.current : handleRef.current?.parentElement;
     if (!element) return;
-    const next = bounds(element);
-    setRange((current) =>
-      current.min === next.min && current.max === next.max ? current : next,
-    );
-  }, [bounds, target, value]);
+    /** Reconcile persisted sizes with the space required by current controls and chips. */
+    function reconcile() {
+      if (!element!.getBoundingClientRect().width || !element!.getBoundingClientRect().height) return;
+      const next = bounds(element!);
+      setRange((current) =>
+        current.min === next.min && current.max === next.max ? current : next,
+      );
+      if (value != null) {
+        const adjusted = clamp(value, next);
+        if (adjusted !== value) onChange(adjusted);
+      }
+    }
+    const observer = new ResizeObserver(reconcile);
+    observer.observe(element);
+    const frame = element.closest(axis === "y" ? ".assistant-panel" : ".unified-workspace");
+    if (frame) observer.observe(frame);
+    /** Track newly inserted skill, context and error rows without observing streamed conversation text. */
+    function observeControls() {
+      if (axis === "y") for (const child of element!.children) observer.observe(child);
+      reconcile();
+    }
+    const mutations = new MutationObserver(observeControls);
+    if (axis === "y") mutations.observe(element, { childList: true });
+    observeControls();
+    return () => { observer.disconnect(); mutations.disconnect(); };
+  }, [axis, bounds, target, value, onChange]);
 
   useEffect(() => () => release.current?.(), []);
 
@@ -109,7 +152,8 @@ export function ResizeHandle({
     event.stopPropagation();
     const handle = event.currentTarget;
     const limits = bounds(element);
-    const origin = element.getBoundingClientRect()[axis === "x" ? "width" : "height"];
+    const origin =
+      element.getBoundingClientRect()[axis === "x" ? "width" : "height"];
     const start = axis === "x" ? event.clientX : event.clientY;
     setRange(limits);
     setDragging(true);
@@ -145,16 +189,14 @@ export function ResizeHandle({
     const element = subject();
     if (!element) return;
     const limits = bounds(element);
-    const current = value ?? element.getBoundingClientRect()[axis === "x" ? "width" : "height"];
+    const current =
+      value ??
+      element.getBoundingClientRect()[axis === "x" ? "width" : "height"];
     const step = event.shiftKey ? 80 : 24;
     const wider =
-      axis === "x"
-        ? event.key === "ArrowLeft"
-        : event.key === "ArrowUp";
+      axis === "x" ? event.key === "ArrowLeft" : event.key === "ArrowUp";
     const narrower =
-      axis === "x"
-        ? event.key === "ArrowRight"
-        : event.key === "ArrowDown";
+      axis === "x" ? event.key === "ArrowRight" : event.key === "ArrowDown";
     if (!wider && !narrower) return;
     event.preventDefault();
     setRange(limits);

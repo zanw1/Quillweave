@@ -21,12 +21,12 @@ type WritingSkill struct {
 // writingSkills supplies optional craft approaches rather than mandatory story formulas.
 func writingSkills() []WritingSkill {
 	return []WritingSkill{
-		{"continuity", "Continuity", "Track choices, consequences, knowledge boundaries and source evidence.", "https://aclanthology.org/2022.emnlp-main.296/", "1", []string{"all"}},
+		{"continuity", "Continuity", "Read current plans and relevant prose. Separate saved events, author plans, viewpoint knowledge and tentative interpretations. Trace choices to evidence and consequences.", "builtin://writing-craft", writingCraftVersion, []string{"all"}},
 		{"snowflake", "Snowflake", "Expand an idea gradually; revisit character motivation and scene purpose.", "https://www.advancedfictionwriting.com/articles/snowflake-method/", "1", []string{"traditional", "hybrid"}},
-		{"serial", "Serial rhythm", "Prepare reader promises, earned payoffs and reasons to keep reading; avoid forced cliffhangers.", "https://fanqienovel.com/writer/zone/tutorial?tab=3", "1", []string{"serial", "hybrid"}},
-		{"character_arc", "Character arc", "Connect wants, fears, beliefs and consequential choices; growth may include setbacks.", "https://deepmind.google/research/publications/13609/", "1", []string{"all"}},
-		{"world_rules", "World through conflict", "Show the costs, limits and exceptions of world rules through character decisions.", "https://writingexcuses.com/14-8-worldbuilding-qa-1/", "1", []string{"all"}},
-		{"outline_control", "Detailed outlines", "Use hierarchical goals and event dependencies, retaining flexibility for revision.", "https://arxiv.org/abs/2212.10077", "1", []string{"all"}},
+		{"serial", "Serial rhythm", "Tie local wants to actions, meaningful payoffs and continuing effects. Vary payoffs across chapters. Quiet work can fulfill promises and change relationships.", "builtin://writing-craft", writingCraftVersion, []string{"serial", "hybrid"}},
+		{"character_arc", "Character arc", "Give participants their own wants, knowledge and responses. Show changes in judgment, responsibility and relationships through choices; allow refusal and negotiation.", "builtin://writing-craft", writingCraftVersion, []string{"all"}},
+		{"world_rules", "World through action", "Establish ability limits, preparation, travel and resources before decisive use. Retain costs and consequences. Let earlier actions reshape later circumstances.", "builtin://writing-craft", writingCraftVersion, []string{"all"}},
+		{"outline_control", "Detailed outlines", "Keep distant milestones flexible. Detail near-term starting conditions, character choices, observable actions, changed circumstances and scene handoffs.", "builtin://writing-craft", writingCraftVersion, []string{"all"}},
 		{"originality", "Originality", "Offer different causal premises; explain trade-offs; avoid banned names and stock title patterns.", "https://doi.org/10.1126/sciadv.adn5290", "1", []string{"all"}},
 	}
 }
@@ -60,7 +60,7 @@ func studioTask(project *Project, action string) (string, bool) {
 }
 
 // studioGuidance carries shared author decisions into every stage without promoting plans to facts.
-func studioGuidance(project *Project, action string, chapter *Chapter) string {
+func studioGuidance(project *Project, action string, chapter *Chapter, workspaces ...*WorkspaceContext) string {
 	if action == "agent" {
 		return agentCraftGuidance()
 	}
@@ -71,8 +71,7 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 	if s.Mode == "" {
 		s.Mode = "undecided"
 	}
-	lines := []string{fmt.Sprintf("Story form: %s. Stage: %s. Audience: %s. Pace: %s. Narrative emphasis: %s. Targets: %d characters, %d chapters, %d volumes.", s.Mode, s.Stage, s.Audience, s.Pacing, s.NarrativeFocus, s.TargetCharacters, s.TargetChapters, s.TargetVolumes)}
-	lines = append(lines, "Author-approved settings, planned future events, source-supported past events and inferences are separate. Respect viewpoint character knowledge and story time. Summaries are indexes, not replacements for original evidence. Keep suggestions as proposals; the author chooses when to enter outlining. Ask only focused missing questions, avoid repeating settled questions. A vague idea is enough to begin.")
+	lines := []string{fmt.Sprintf("Story form: %s. Stage: %s. Audience: %s. Pace: %s. Narrative emphasis: %s. Targets: %d characters, %d chapters, %d volumes.", s.Mode, s.Stage, s.Audience, s.Pacing, narrativeEmphasis(project), s.TargetCharacters, s.TargetChapters, s.TargetVolumes)}
 	if s.Mode == "traditional" {
 		lines = append(lines, "Prioritize character arcs, theme, scene consequences and the author's preferred structure. Do not impose web-serial jargon, power systems or frequent cliffhangers.")
 	}
@@ -95,7 +94,18 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 		}
 	}
 	planCount := 0
-	for _, p := range s.Plans {
+	var workspace *WorkspaceContext
+	if len(workspaces) > 0 {
+		workspace = workspaces[0]
+	}
+	plans := planningPath(project, chapter, workspace)
+	if chapter == nil && len(plans) == 0 {
+		plans = s.Plans
+	}
+	for _, p := range plans {
+		if workspace != nil && omittedIDs(workspace.OmitPlanIDs)[p.ID] {
+			continue
+		}
 		if p.Status == "confirmed" {
 			if chapter != nil && p.Level != "book" && !(p.StartChapter <= chapter.Number+5 && (p.EndChapter == 0 || p.EndChapter+5 >= chapter.Number)) {
 				continue
@@ -104,17 +114,20 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 				break
 			}
 			planCount++
-			goal, conflict, consequence := p.Goal, p.Conflict, p.Consequence
+			goal, conflict, choice, consequence := p.Goal, p.Conflict, p.Choice, p.Consequence
 			if charCount(goal) > 240 {
 				goal = string([]rune(goal)[:240])
 			}
 			if charCount(conflict) > 160 {
 				conflict = string([]rune(conflict)[:160])
 			}
+			if charCount(choice) > 240 {
+				choice = string([]rune(choice)[:240])
+			}
 			if charCount(consequence) > 160 {
 				consequence = string([]rune(consequence)[:160])
 			}
-			lines = append(lines, fmt.Sprintf("Plan excerpt (future, not a past fact) [%s]: %s. Chapters %d–%d. Goal: %s. Conflict: %s. Consequence: %s.", p.ID, p.Title, p.StartChapter, p.EndChapter, goal, conflict, consequence))
+			lines = append(lines, fmt.Sprintf("Plan index (future; complete selected nodes follow) [%s]: %s. Chapters %d–%d. Goal: %s. Conflict: %s. Choice: %s. Consequence: %s.", p.ID, p.Title, p.StartChapter, p.EndChapter, goal, conflict, choice, consequence))
 		}
 	}
 	activeSkills := map[string]bool{}
@@ -126,11 +139,12 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 	}
 	for _, skill := range writingSkills() {
 		if activeSkills[skill.ID] && (contains(skill.Modes, "all") || (action == "agent" && (s.Mode == "undecided" || s.Mode == "hybrid")) || contains(skill.Modes, s.Mode)) {
-			lines = append(lines, "Selected craft approach: "+skill.Description)
+			lines = append(lines, "Selected craft approach: "+skill.Name)
 		}
 	}
-	lines = append(lines, "Naming preference: "+s.NamingStyle+". Forbidden names or title patterns: "+strings.Join(s.ForbiddenNames, ", ")+". Author preferences: "+strings.Join(s.Preferences, "; "))
+	lines = append(lines, "Naming preference: "+s.NamingStyle+". Forbidden names or title patterns: "+strings.Join(s.ForbiddenNames, ", ")+". Author preferences: "+strings.Join(distinctAuthorPreferences(project), "; "))
 	if action == "outline" {
+		lines = append(lines, "Narrative emphasis describes the recurring reading experience. Plan flexibility=fixed locks the author's choice; flexible permits proposing changes. An unspecified flexibility retains the confirmed plan's meaning. Keep open questions unresolved and review lasting consequences, character choices and repeated payoffs at unit boundaries.")
 		lines = append(lines, "Respect requested chapter counts and parent budgets. Detail the next 5–10 chapters first when writing an ongoing long serial. You may return {\"text\":\"explanation\",\"proposals\":[{\"kind\":\"plan\",\"title\":\"...\",\"content\":\"...\",\"plan\":{\"level\":\"volume|unit|chapter|scene\",\"parent_id\":\"existing ID or empty\",\"title\":\"...\",\"start_chapter\":1,\"end_chapter\":5,\"target_characters\":15000,\"goal\":\"...\",\"conflict\":\"...\"}}]}. These remain proposals until accepted.")
 	}
 	return strings.Join(lines, "\n")
@@ -140,44 +154,31 @@ func studioGuidance(project *Project, action string, chapter *Chapter) string {
 func (engine *Engine) contextPassages(project *Project, request AIRequest) ([]ContextItem, error) {
 	through := uint32(math.MaxUint32)
 	query := request.Instruction
-	if chapter := findChapter(project, request.ChapterID); chapter != nil {
+	chapterID := request.ChapterID
+	if chapterID == "" && request.WorkspaceContext != nil {
+		chapterID = request.WorkspaceContext.ActiveChapterID
+	}
+	if chapter := findChapter(project, chapterID); chapter != nil {
 		through = chapter.Number
 		if request.Action == "continue" && through > 0 {
 			through--
 		}
-		query += " " + chapter.Title + " " + chapter.Synopsis
+		query = creationQuery(project, chapter, request.Instruction)
 	}
 	items, err := engine.store.SearchPassages(project.ID, query, through, request.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	for _, fact := range project.Facts {
-		if fact.Status == "confirmed" && fact.Chapter <= through && factCurrent(project, &fact) {
-			score := 0
-			for term := range terms(query) {
-				if strings.Contains(lowerText(fact.Entity+" "+fact.Claim), term) {
-					score += 8
-				}
-			}
-			if score > 0 {
-				items = append(items, ContextItem{ID: "W:" + fact.ID, Title: fact.Entity, Kind: "wiki", Text: fact.Claim + "\nQuote: " + fact.Quote, Score: score, Reason: "Current author-confirmed source evidence"})
-			}
-		}
-	}
 	for _, memory := range latestCompilations(project) {
 		_, number, ok := project.SourceText(memory.SourceID)
-		if memory.Status != "confirmed" || !ok || number > through || !compilationCurrent(project, memory) {
+		if !ok || number > through || !compilationApproved(project, memory) {
 			continue
 		}
 		for i, section := range memory.Sections {
-			items = append(items, ContextItem{ID: fmt.Sprintf("M:%s:%d", memory.ID, i+1), Title: "Story memory", Kind: "memory", Text: section.Summary + "\nEvidence: " + strings.Join(section.EvidenceIDs, ", "), Score: 5})
+			items = append(items, ContextItem{ID: fmt.Sprintf("M:%s:%d", memory.ID, i+1), Title: "Story memory", Kind: "memory", Text: section.Summary + "\nEvidence: " + strings.Join(section.EvidenceIDs, ", "), Score: 5, SourceID: memory.SourceID, SourceHash: memory.SourceHash})
 		}
 	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
-	if len(items) > 24 {
-		items = items[:24]
-	}
-	return items, nil
+	return mergeKnowledgeContext(project, query, through, items, 24, request), nil
 }
 
 // loadStoredJob makes durable interrupted and completed tasks reviewable after a restart.

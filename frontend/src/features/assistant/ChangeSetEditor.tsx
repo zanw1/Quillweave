@@ -10,6 +10,9 @@ import { Badge, Button, ErrorBox } from "../../components/ui";
 import type { ChangeOperation, ChangeSet } from "../../domain/studio";
 import { entityKinds, type Project } from "../../domain/types";
 import { planLevels } from "../studio/Plans";
+import { memoryKinds } from "../studio/Memories";
+import { Select } from "../../components/Select";
+import { CandidateProvenance, RecoveryFields, WikiFields } from "./CandidateDetails";
 
 interface Props {
   project: Project;
@@ -30,6 +33,8 @@ const kindLabels: Record<string, string> = {
   chapter: "Chapter prose",
   location: "Location",
   route: "Travel route",
+  import_metadata: "Imported project metadata",
+  wiki: "Wiki evidence and summaries",
 };
 const fieldLabels: Record<string, string> = {
   title: "Title",
@@ -48,6 +53,7 @@ const fieldLabels: Record<string, string> = {
   naming_preference: "Naming preference",
   stage: "Stage",
   content: "Content",
+  text: "Legacy content",
   description: "Description",
   kind: "Type",
   aliases: "Aliases",
@@ -138,8 +144,39 @@ function OperationFields({
   onEdit: (value: Record<string, unknown>) => void;
 }) {
   const proposed = fields(operation.after_value);
-  const before = fields(operation.before_value);
+  const archived = fields(operation.before_value);
+  const before =
+    operation.target_kind === "chapter" && operation.op_type === "delete"
+      ? fields(archived.chapter)
+      : archived;
   const after = fields(operation.preview_value ?? operation.after_value);
+  if (operation.target_kind === "wiki") {
+    return <WikiFields operation={operation} disabled={disabled} onEdit={onEdit} />;
+  }
+  if (operation.target_kind === "import_metadata") {
+    const labels: Record<string, string> = {
+      plans_fixed: "Outline cast lists corrected",
+      entities_merged: "Combined entries merged",
+      source_categories_fixed: "Reference categories corrected",
+      profiles_moved: "Current profiles moved to dated memory",
+      references_updated: "Structured references updated",
+      initial_descriptions_fixed: "Initial character descriptions corrected",
+      records_returned_to_review: "Records returned to review",
+    };
+    return (
+      <div className="change-review-fields">
+        <p>{t("This repair updates imported metadata. Manuscript text and chapter history are retained.")}</p>
+        <dl>
+          {Object.entries(fields(proposed.report)).map(([key, value]) => (
+            <div key={key}>
+              <dt>{t(labels[key] || key)}</dt>
+              <dd>{String(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    );
+  }
   /** Resolve record references to the same titles shown in their destination pages. */
   function displayValue(key: string, value: unknown): string {
     if (
@@ -157,14 +194,29 @@ function OperationFields({
     if (key === "level" && typeof value === "string")
       return t(planLevels[value] || value);
     if (key === "kind" && typeof value === "string")
-      return t(entityKinds[value] || value);
+      return t(
+        (operation.target_kind === "memory"
+          ? memoryKinds[value]
+          : entityKinds[value]) || value,
+      );
     return valueText(value);
   }
   const keys = Object.keys(
     operation.op_type === "delete" ? before : proposed,
-  ).filter((key) => !internalFields.has(key));
+  ).filter(
+    (key) =>
+      !internalFields.has(key) &&
+      !(operation.target_kind === "chapter" && key === "mode"),
+  );
   return (
     <div className="change-review-fields">
+      {operation.target_kind === "memory" && operation.op_type !== "delete" && (
+        <p className="muted">
+          {t(
+            "Choose Future plan for events that have not happened. Source facts require an original passage.",
+          )}
+        </p>
+      )}
       {keys.map((key) => {
         const value = proposed[key];
         const label = t(fieldLabels[key] || key);
@@ -197,7 +249,21 @@ function OperationFields({
                 <summary>{t("Edit proposed value")}</summary>
                 <label>
                   <span className="sr-only">{t("Edit {0}", label)}</span>
-                  {typeof value === "boolean" ? (
+                  {operation.target_kind === "memory" && key === "kind" ? (
+                    <Select
+                      aria-label={t("Edit {0}", label)}
+                      value={String(value || "setting")}
+                      onChange={(event) =>
+                        onEdit({ ...proposed, kind: event.target.value })
+                      }
+                    >
+                      {Object.entries(memoryKinds).map(([kind, name]) => (
+                        <option key={kind} value={kind}>
+                          {t(name)}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : typeof value === "boolean" ? (
                     <input
                       type="checkbox"
                       aria-label={t("Edit {0}", label)}
@@ -271,6 +337,8 @@ export function ChangeSetEditor({
   const [remote, setRemote] = useState<ChangeSet | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [preparedRecovery, setPreparedRecovery] = useState("");
+  const recoveryRequest = useRef<string | null>(null);
   const pending =
     current.status === "staged" || current.status === "conflicted";
   const remotePending =
@@ -325,11 +393,13 @@ export function ChangeSetEditor({
       | "preview_changeset"
       | "apply_changeset"
       | "undo_changeset"
+      | "prepare_revert"
       | "reject_changeset",
   ) {
     setBusy(true);
     setError("");
     try {
+      if (command === "prepare_revert" && !recoveryRequest.current) recoveryRequest.current = crypto.randomUUID();
       if (
         command === "apply_changeset" &&
         beforeConfirm &&
@@ -346,12 +416,17 @@ export function ChangeSetEditor({
               ? current.preview_revision
               : project.revision,
           review_token: current.review_token,
+          request_id: command === "prepare_revert" ? recoveryRequest.current : undefined,
           ...(command === "preview_changeset" && dirty
             ? { operations: operations.filter((op) => selected.has(op.id)) }
             : {}),
         },
       );
-      adopt(result.changeset);
+      if (command !== "prepare_revert") adopt(result.changeset);
+      else {
+        setPreparedRecovery(result.changeset.id);
+        recoveryRequest.current = null;
+      }
       onChangeSetUpdated?.(result.changeset);
       await onRefresh();
     } catch (cause) {
@@ -367,7 +442,7 @@ export function ChangeSetEditor({
   }, [changeset.id]);
 
   /** Keep editable candidate values separate until the author requests an updated preview. */
-  function editOperation(id: string, value: Record<string, unknown>) {
+  function editOperation(id: string, value: unknown) {
     dirtyRef.current = true;
     setOperations((previous) =>
       previous.map((op) => (op.id === id ? { ...op, after_value: value } : op)),
@@ -391,7 +466,8 @@ export function ChangeSetEditor({
           {t(statusLabel)}
         </Badge>
       </header>
-      {error && <ErrorBox>{error}</ErrorBox>}
+      <CandidateProvenance candidate={current} />
+      {preparedRecovery && <p role="status">{t("Recovery candidate prepared")} · {preparedRecovery}. {t("Review it in the project overview.")}</p>}
       {remote && (
         <ErrorBox>
           {remotePending
@@ -427,9 +503,12 @@ export function ChangeSetEditor({
             ) : (
               <strong>{op.title || t(kindLabels[op.target_kind])}</strong>
             )}
-            <small>{t(kindLabels[op.target_kind] || op.target_kind)}</small>
+            <small>{t(op.op_type === "restore" ? "Recovery candidate" : kindLabels[op.target_kind] || op.target_kind)}</small>
           </div>
-          {pending && (
+          {pending && op.op_type === "restore" && (
+            <RecoveryFields operation={op} candidate={current} disabled={busy || !selected.has(op.id)} onEdit={(value) => editOperation(op.id, value)} />
+          )}
+          {pending && op.op_type !== "restore" && (
             <OperationFields
               operation={op}
               references={references}
@@ -487,6 +566,8 @@ export function ChangeSetEditor({
           {t("Saved revision")} · {current.applied_revision}
         </small>
       )}
+      {/* Errors sit beside the action buttons so a failed confirmation is visible in long candidates. */}
+      {error && <ErrorBox>{error}</ErrorBox>}
       <footer>
         {pending && (
           <>
@@ -499,7 +580,12 @@ export function ChangeSetEditor({
             <Button
               primary
               disabled={
-                busy || dirty || !!remote || !current.review_token || selected.size === 0
+                busy ||
+                dirty ||
+                !!remote ||
+                !current.review_token ||
+                !!current.revert_conflicts?.some((conflict) => !conflict.resolution) ||
+                selected.size === 0
               }
               onClick={() => void perform("apply_changeset")}
             >
@@ -521,10 +607,10 @@ export function ChangeSetEditor({
         {current.status === "applied" && (
           <Button
             disabled={busy}
-            onClick={() => void perform("undo_changeset")}
+            onClick={() => void perform(project.revision === current.applied_revision && !current.archived ? "undo_changeset" : "prepare_revert")}
           >
             <IconArrowBackUp size={15} />
-            {t("Undo commit")}
+            {t(project.revision === current.applied_revision && !current.archived ? "Undo commit" : "Prepare recovery candidate")}
           </Button>
         )}
         {busy && <span role="status">{t("Saving…")}</span>}

@@ -197,7 +197,7 @@ func streamArchiveProject(db documentDB, out io.Writer, id string) (string, erro
 	for _, bound := range []struct {
 		table string
 		limit int
-	}{{"runs", 20000}, {"experiments", 200}} {
+	}{{"runs", 20000}} {
 		var count int
 		if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+bound.table+" WHERE project_id=?", id).Scan(&count); err != nil {
 			return "", err
@@ -210,7 +210,7 @@ func streamArchiveProject(db documentDB, out io.Writer, id string) (string, erro
 		return "", err
 	}
 	object := archiveObject{writer: out}
-	if err := object.scalarFields(metadata, "chapters", "entities", "facts", "sources", "compilations", "studio", "conversations", "jobs", "experiments"); err != nil {
+	if err := object.scalarFields(metadata, "chapters", "entities", "facts", "sources", "compilations", "studio", "conversations", "jobs", "experiments", "writing_sessions", "wiki_sessions", "import_warnings"); err != nil {
 		return "", err
 	}
 	collections := []struct{ key, kind string }{{"chapters", "chapter"}, {"entities", "entity"}, {"facts", "fact"}, {"sources", "source"}, {"compilations", "compilation"}}
@@ -255,11 +255,17 @@ func streamArchiveProject(db documentDB, out io.Writer, id string) (string, erro
 	}); err != nil {
 		return "", err
 	}
-	if err := object.field("experiments", func(out io.Writer) error {
-		return streamArchiveRows(db, out, "SELECT document FROM experiments WHERE project_id=? ORDER BY rowid", id)
+	if err := object.field("writing_sessions", func(out io.Writer) error {
+		return streamArchiveRows(db, out, "SELECT document FROM writing_sessions WHERE project_id=? ORDER BY rowid", id)
 	}); err != nil {
 		return "", err
 	}
+	if err := object.field("wiki_sessions", func(out io.Writer) error {
+		return streamArchiveRows(db, out, "SELECT document FROM wiki_sessions WHERE project_id=? ORDER BY rowid", id)
+	}); err != nil {
+		return "", err
+	}
+
 	_, err := io.WriteString(out, "}")
 	return title, err
 }
@@ -278,7 +284,7 @@ func (store *Store) exportArchiveTo(ctx context.Context, id string, out io.Write
 	}
 	defer transaction.Rollback()
 	bounded := &archiveWriter{writer: out, ctx: ctx, limit: limit}
-	if _, err := io.WriteString(bounded, `{"format":"quillweave-2","project":`); err != nil {
+	if _, err := io.WriteString(bounded, `{"format":"quillweave-4","project":`); err != nil {
 		return "", err
 	}
 	title, err := streamArchiveProject(transaction, bounded, id)

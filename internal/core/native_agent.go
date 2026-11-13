@@ -2,8 +2,11 @@ package core
 
 import "errors"
 
-const agentModelCallLimit = 8
-const agentToolCallLimit = 16
+// The coordinator loop has no fixed model-call or tool-step cap: it ends when the
+// model stops calling tools, when the repeated-failure circuit breaker closes tool
+// use, when the context budget is exhausted, or when the author cancels. The
+// writing pipeline keeps its own independent budget below.
+const writingStageCallBudget = 12
 
 // nativeCapabilityKey scopes a compatibility fallback to the exact model, profile and protocol options.
 func nativeCapabilityKey(selected SelectedModel) string {
@@ -28,8 +31,12 @@ func nativeResultMessage(call NativeToolCall, content string) Message {
 // requestAgentModel retries an explicitly unsupported native function interface once within the shared call budget.
 func (engine *Engine) requestAgentModel(job *Job, selected *SelectedModel, messages []Message, calls *int) (modelOutput, []Message, error) {
 	*calls = *calls + 1
-	output, err := engine.streamJobModel(job.ID, "agent", job.ctx, selected.Config, messages, func(string) {})
-	if !errors.Is(err, errNativeToolsUnsupported) || !selected.Config.nativeTools || *calls >= agentModelCallLimit {
+	stream := engine.newAgentTextStream(job.ID)
+	output, err := engine.streamJobModel(job.ID, "agent", job.ctx, selected.Config, messages, stream.append, selected.ProfileID)
+	if err == nil {
+		stream.finish(output.Text)
+	}
+	if !errors.Is(err, errNativeToolsUnsupported) || !selected.Config.nativeTools {
 		return output, messages, err
 	}
 	engine.mu.Lock()
@@ -49,6 +56,10 @@ func (engine *Engine) requestAgentModel(job *Job, selected *SelectedModel, messa
 	engine.jobsMu.Unlock()
 	engine.addStep(job.ID, "native_tools", "done", "The model rejected native functions. Continuing with the compatible tool protocol.")
 	*calls = *calls + 1
-	output, err = engine.streamJobModel(job.ID, "agent", job.ctx, selected.Config, messages, func(string) {})
+	stream = engine.newAgentTextStream(job.ID)
+	output, err = engine.streamJobModel(job.ID, "agent", job.ctx, selected.Config, messages, stream.append, selected.ProfileID)
+	if err == nil {
+		stream.finish(output.Text)
+	}
 	return output, messages, err
 }

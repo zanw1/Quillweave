@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, message } from "../../lib/api";
+import { api, contentHash, message } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import {
   Badge,
@@ -20,7 +20,7 @@ export const memoryKinds: Record<string, string> = {
   setting: "Setting",
   fact: "Fact",
   inference: "Inference",
-  plan: "Planned",
+  plan: "Future plan",
   character: "Character state",
   relationship: "Relationship",
   knowledge: "Character knowledge",
@@ -38,6 +38,12 @@ const memoryStates: Record<string, string> = {
   abandoned: "Abandoned",
   alive: "Alive",
   dead: "Dead",
+};
+const approvalLabels: Record<string, string> = {
+  confirmed: "Confirmed",
+  superseded: "Superseded",
+  rejected: "Rejected",
+  proposed: "Proposed",
 };
 
 /** Initialize optional narrative metadata explicitly for manual or evidence-linked memories. */
@@ -69,11 +75,13 @@ export function Memories({
   project,
   onProject,
   onWiki,
+  onChapter,
   focusId,
 }: {
   project: Project;
   onProject: (project: Project) => void;
   onWiki: () => void;
+  onChapter?: (chapterId: string) => void;
   focusId?: string;
 }) {
   const [query, setQuery] = useState("");
@@ -95,6 +103,27 @@ export function Memories({
   const [base, setBase] = useState(project.revision);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sourceHashes, setSourceHashes] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let active = true;
+    setSourceHashes({});
+    const sources = [
+      ...project.chapters.map((item) => ({ id: item.id, text: item.body })),
+      ...project.sources.map((item) => ({ id: item.id, text: item.content })),
+    ];
+    Promise.all(
+      sources.map(async (item) => [item.id, await contentHash(item.text)] as const),
+    )
+      .then((entries) => {
+        if (active) setSourceHashes(Object.fromEntries(entries));
+      })
+      .catch((cause) => {
+        if (active) setError(message(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [project.chapters, project.sources]);
   useEffect(() => {
     const focused = project.studio.memories.find((item) => item.id === focusId);
     if (focused) {
@@ -143,6 +172,25 @@ export function Memories({
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase()),
   );
+
+  /** Keep author approval separate from whether its linked source still supports the memory. */
+  function sourceState(memory: StoryMemory): "current" | "checking" | "stale" {
+    if (!memory.source_id)
+      return ["fact", "inference"].includes(memory.kind) ? "stale" : "current";
+    const text =
+      project.chapters.find((item) => item.id === memory.source_id)?.body ??
+      project.sources.find((item) => item.id === memory.source_id)?.content;
+    if (text === undefined) return "stale";
+    const hash = sourceHashes[memory.source_id];
+    if (!hash) return "checking";
+    const boundToCurrent = hash === memory.source_hash ||
+      (!memory.source_hash && memory.status === "proposed");
+    const hasRequiredQuote = !["fact", "inference"].includes(memory.kind) || !!memory.quote;
+    return boundToCurrent && hasRequiredQuote &&
+      (!memory.quote || text.includes(memory.quote))
+      ? "current"
+      : "stale";
+  }
   return (
     <section className="studio-section">
       <div className="studio-section-heading">
@@ -204,95 +252,105 @@ export function Memories({
       )}
       {error && !editing && <ErrorBox>{error}</ErrorBox>}
       <div className="memory-grid">
-        {filtered.map((memory) => (
-          <article className={`memory-card ${memory.status}`} key={memory.id}>
-            <header>
-              <Badge>{t(memoryKinds[memory.kind])}</Badge>
-              <Badge tone={memory.status === "confirmed" ? "green" : "gray"}>
-                {t(
-                  memory.status === "confirmed"
-                    ? "Confirmed"
-                    : memory.status === "superseded"
-                      ? "Superseded"
-                      : memory.status === "rejected"
-                        ? "Rejected"
-                        : "Proposed",
-                )}
-              </Badge>
-            </header>
-            <h3>{memory.title || memory.entity}</h3>
-            <MarkdownResponse text={memory.content} />
-            <p className="muted">
-              {memory.entity} · {t(memoryStates[memory.state] || memory.state)}{" "}
-              · {t("Chapter")} {memory.chapter}
-              {memory.through_chapter > 0 && `–${memory.through_chapter}`}
-              {memory.due_chapter > 0 &&
-                ` · ${t("Due chapter")}: ${memory.due_chapter}`}
-            </p>
-            {memory.story_time && (
+        {filtered.map((memory) => {
+          const freshness = sourceState(memory);
+          const label = freshness === "current"
+            ? approvalLabels[memory.status] || "Proposed"
+            : freshness === "stale" ? "Dependencies changed" : "Checking sources…";
+          const tone = freshness === "stale"
+            ? "red"
+            : memory.status === "confirmed" && freshness === "current" ? "green" : "gray";
+          return (
+            <article className={`memory-card ${memory.status}`} key={memory.id}>
+              <header>
+                <Badge>{t(memoryKinds[memory.kind])}</Badge>
+                <Badge tone={tone}>{t(label)}</Badge>
+              </header>
+              <h3>{memory.title || memory.entity}</h3>
+              <MarkdownResponse text={memory.content} />
+              {freshness === "stale" && (
+                <p className="muted">
+                  {t("This memory is excluded from writing until its current source is reviewed.")}
+                </p>
+              )}
               <p className="muted">
-                {t("Story time")}: {memory.story_time}
+                {memory.entity} · {t(memoryStates[memory.state] || memory.state)}{" "}
+                · {t("Chapter")} {memory.chapter}
+                {memory.through_chapter > 0 && `–${memory.through_chapter}`}
+                {memory.due_chapter > 0 &&
+                  ` · ${t("Due chapter")}: ${memory.due_chapter}`}
               </p>
-            )}
-            {!!memory.known_by?.length && (
-              <p>
-                {t("Known by")}: {memory.known_by.join("、")}
-              </p>
-            )}
-            {memory.quote && <blockquote>{memory.quote}</blockquote>}
-            {memory.source_id && (
-              <small>
-                {t("Source")}:{" "}
-                {project.chapters.find(
-                  (chapter) => chapter.id === memory.source_id,
-                )?.title ||
-                  project.sources.find(
-                    (source) => source.id === memory.source_id,
+              {memory.story_time && (
+                <p className="muted">
+                  {t("Story time")}: {memory.story_time}
+                </p>
+              )}
+              {!!memory.known_by?.length && (
+                <p>
+                  {t("Known by")}: {memory.known_by.join("、")}
+                </p>
+              )}
+              {memory.quote && <blockquote>{memory.quote}</blockquote>}
+              {memory.source_id && (
+                <small>
+                  {t("Source")}:{" "}
+                  {project.chapters.find(
+                    (chapter) => chapter.id === memory.source_id,
                   )?.title ||
-                  memory.source_id}
-              </small>
-            )}
-            <div className="studio-actions">
-              <Button
-                disabled={!["confirmed", "proposed"].includes(memory.status)}
-                title={
-                  !["confirmed", "proposed"].includes(memory.status)
-                    ? t("Archived memory versions are read-only")
-                    : undefined
-                }
-                onClick={() => open(memory)}
-              >
-                {t("Edit")}
-              </Button>
-              {memory.status === "proposed" && (
-                <Button
-                  disabled={busy}
-                  onClick={() =>
-                    void save(
-                      { ...memory, status: "confirmed" },
-                      project.revision,
-                    )
-                  }
-                >
-                  {t("Accept")}
-                </Button>
+                    project.sources.find(
+                      (source) => source.id === memory.source_id,
+                    )?.title ||
+                    memory.source_id}
+                </small>
               )}
-              {memory.status !== "rejected" && (
+              <div className="studio-actions">
+                {onChapter &&
+                  project.chapters.some((item) => item.id === memory.source_id) && (
+                    <Button onClick={() => onChapter(memory.source_id)}>
+                      {t("Back to source")}
+                    </Button>
+                  )}
                 <Button
-                  disabled={busy}
-                  onClick={() =>
-                    void save(
-                      { ...memory, status: "rejected" },
-                      project.revision,
-                    )
+                  disabled={!["confirmed", "proposed"].includes(memory.status)}
+                  title={
+                    !["confirmed", "proposed"].includes(memory.status)
+                      ? t("Archived memory versions are read-only")
+                      : undefined
                   }
+                  onClick={() => open(memory)}
                 >
-                  {t("Reject")}
+                  {t("Edit")}
                 </Button>
-              )}
-            </div>
-          </article>
-        ))}
+                {memory.status === "proposed" && (
+                  <Button
+                    disabled={busy || freshness !== "current"}
+                    onClick={() =>
+                      void save(
+                        { ...memory, status: "confirmed" },
+                        project.revision,
+                      )
+                    }
+                  >
+                    {t("Accept")}
+                  </Button>
+                )}
+                {memory.status !== "rejected" && (
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      void save(
+                        { ...memory, status: "rejected" },
+                        project.revision,
+                      )
+                    }
+                  >
+                    {t("Reject")}
+                  </Button>
+                )}
+              </div>
+            </article>
+          );
+        })}
       </div>
       {editing && (
         <Modal

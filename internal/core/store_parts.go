@@ -15,6 +15,18 @@ type projectPart struct {
 	position           int
 }
 
+// projectMetadataJSON caches list counts without adding transient fields to public projects.
+func projectMetadataJSON(metadata Project, project *Project) ([]byte, error) {
+	counts := projectListCounts{Chapters: len(project.Chapters)}
+	for _, chapter := range project.Chapters {
+		counts.Words += wordCount(chapter.Body)
+	}
+	return jsonBytes(struct {
+		Project
+		Counts projectListCounts `json:"_list_counts"`
+	}{Project: metadata, Counts: counts})
+}
+
 // splitProject separates large independently editable records from the metadata document.
 func splitProject(project *Project) (Project, []projectPart) {
 	metadata := *project
@@ -68,7 +80,9 @@ func splitProject(project *Project) (Project, []projectPart) {
 	metadata.Studio.Routes = nil
 	metadata.Conversations = nil
 	metadata.ArchiveJobs = nil
-	metadata.Experiments = nil
+	metadata.WritingSessions = nil
+	metadata.WikiSessions = nil
+	metadata.ImportWarnings = nil
 	return metadata, parts
 }
 
@@ -272,7 +286,6 @@ func (store *Store) migrateStudioStore() error {
  CREATE INDEX IF NOT EXISTS conversations_project ON conversations(project_id,chapter_id);
  CREATE TABLE IF NOT EXISTS conversation_turns(id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,ordinal INTEGER NOT NULL,document TEXT NOT NULL,UNIQUE(session_id,ordinal));
  CREATE TABLE IF NOT EXISTS integrations(id INTEGER PRIMARY KEY CHECK(id=1),document TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS runs_status_owner ON runs(json_extract(document,'$.status'),COALESCE(json_extract(document,'$.execution_owner'),''),project_id);
  CREATE INDEX IF NOT EXISTS conversation_turns_status_job ON conversation_turns(json_extract(document,'$.status'),json_extract(document,'$.job_id'));`)
 	if err != nil {
@@ -326,8 +339,11 @@ func (store *Store) migrateStudioStore() error {
 	})
 }
 
-// SearchPassages performs bounded local full-text retrieval with a short-query fallback.
+// SearchPassages retains BM25 order and supplements it with Chinese short-name candidates.
 func (store *Store) SearchPassages(projectID, query string, through uint32, sessionIDs ...string) ([]ContextItem, error) {
+	if strings.TrimSpace(query) == "" {
+		return []ContextItem{}, nil
+	}
 	needles := []string{}
 	for term := range terms(query) {
 		if charCount(term) >= 3 {
@@ -356,7 +372,7 @@ func (store *Store) SearchPassages(projectID, query string, through uint32, sess
 	if len(sessionIDs) > 0 {
 		sessionID = sessionIDs[0]
 	}
-	statement := "SELECT item_id,title,kind,content FROM story_fts WHERE project_id=? AND CAST(chapter AS INTEGER)<=? AND (kind!='discussion' OR part_id LIKE ?) AND story_fts MATCH ? ORDER BY bm25(story_fts) LIMIT 24"
+	statement := "SELECT item_id,title,kind,content FROM story_fts WHERE project_id=? AND CAST(chapter AS INTEGER)<=? AND (kind!='discussion' OR part_id LIKE ?) AND story_fts MATCH ? ORDER BY bm25(story_fts),item_id LIMIT 24"
 	needle := strings.Join(needles, " OR ")
 	if needle == "" {
 		statement = `SELECT item_id,title,kind,content FROM story_fts WHERE project_id=? AND CAST(chapter AS INTEGER)<=? AND (kind!='discussion' OR part_id LIKE ?) AND (content LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\') LIMIT 24`
@@ -377,8 +393,8 @@ func (store *Store) SearchPassages(projectID, query string, through uint32, sess
 			rows.Close()
 			return nil, err
 		}
-		item.Score = 8
-		item.Reason = "Local full-text index"
+		item.Score = 48 - len(items)
+		item.Reason = fmt.Sprintf("Local FTS5 BM25 rank %d", len(items)+1)
 		if item.Kind == "discussion" {
 			item.Reason = "Earlier discussion excerpt from this branch; not an accepted story fact"
 		}
@@ -386,13 +402,26 @@ func (store *Store) SearchPassages(projectID, query string, through uint32, sess
 	}
 	err = rows.Err()
 	rows.Close()
-	if err != nil || len(items) > 0 || len(needles) == 0 {
+	if err != nil {
 		return items, err
 	}
-	return store.searchChinesePairs(projectID, query, through, sessionID)
+	pairs, err := store.searchChinesePairs(projectID, query, through, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	for _, item := range pairs {
+		if !ids[item.ID] {
+			items = append(items, item)
+		}
+	}
+	return rankKnowledgeContext(items, 48), nil
 }
 
-// searchChinesePairs recovers two-character names embedded in longer questions when trigram search misses.
+// searchChinesePairs supplements trigram matches with two-character Chinese terms on every query.
 func (store *Store) searchChinesePairs(projectID, query string, through uint32, sessionID string) ([]ContextItem, error) {
 	pairs := []string{}
 	for term := range terms(query) {
@@ -415,7 +444,7 @@ func (store *Store) searchChinesePairs(projectID, query string, through uint32, 
 		conditions = append(conditions, "(content LIKE ? OR title LIKE ?)")
 		args = append(args, "%"+pair+"%", "%"+pair+"%")
 	}
-	rows, err := store.db.Query("SELECT item_id,title,kind,content FROM story_fts WHERE project_id=? AND CAST(chapter AS INTEGER)<=? AND (kind!='discussion' OR part_id LIKE ?) AND ("+strings.Join(conditions, " OR ")+") LIMIT 24", args...)
+	rows, err := store.db.Query("SELECT item_id,title,kind,content FROM story_fts WHERE project_id=? AND CAST(chapter AS INTEGER)<=? AND (kind!='discussion' OR part_id LIKE ?) AND ("+strings.Join(conditions, " OR ")+") ORDER BY item_id LIMIT 48", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -425,8 +454,8 @@ func (store *Store) searchChinesePairs(projectID, query string, through uint32, 
 		if err := rows.Scan(&item.ID, &item.Title, &item.Kind, &item.Text); err != nil {
 			return nil, err
 		}
-		item.Score = 4
-		item.Reason = "Chinese pair fallback after no full-text matches"
+		item.Score = 12 + min(12, knowledgeMatchScore(item.Title+" "+item.Text, query))
+		item.Reason = "Chinese two-character candidate supplement"
 		if item.Kind == "discussion" {
 			item.Reason += "; discussion is not an accepted story fact"
 		}

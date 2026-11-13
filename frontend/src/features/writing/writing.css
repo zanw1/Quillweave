@@ -34,6 +34,25 @@
 .manuscript-meta {
   flex-wrap: wrap;
 }
+.chapter-delete-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+.chapter-delete-actions > [role="alert"] {
+  flex-basis: 100%;
+}
+.chapter-delete-impacts {
+  max-height: 240px;
+  overflow: auto;
+}
+.chapter-conflict-base pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
 @media (max-width: 700px) {
   .writing-parameters {
     padding: 17px;

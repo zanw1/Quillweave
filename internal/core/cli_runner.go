@@ -29,37 +29,45 @@ func printCLIChangePreview(stdout io.Writer, result any) error {
 	return nil
 }
 
+// ApplicationVersion is replaced with the release version when building the desktop and console companion together.
+var ApplicationVersion = "0.6.0"
+
 // IsCLICommand reports whether the first CLI argument invokes the headless CLI mode rather than the desktop GUI.
 func IsCLICommand(arg string) bool {
-	return contains([]string{"projects", "status", "agent", "change", "goal", "session", "job", "read", "export", "import", "help", "--help", "-h", "version", "--version"}, strings.TrimSpace(arg))
+	return contains([]string{"api", "writing", "connect", "projects", "status", "agent", "change", "goal", "session", "job", "read", "export", "import", "help", "--help", "-h", "version", "--version"}, strings.TrimSpace(arg))
 }
 
 type cliOptions struct {
-	dbPath     string
-	projectRef string
-	jsonOutput bool
-	apply      bool
-	confirm    string
-	intent     string
-	status     string
-	format     string
-	outputPath string
-	title      string
-	genre      string
-	premise    string
-	mode       string
-	stage      string
-	chars      uint32
-	chapters   uint32
-	volumes    uint32
-	sessionID  string
-	chapterID  string
-	requestID  string
-	resumeID   string
-	inputPath  string
-	language   string
-	offset     uint64
-	positional []string
+	dbPath           string
+	projectRef       string
+	jsonOutput       bool
+	readOnly         bool
+	creator          bool
+	client           string
+	wait             bool
+	backgroundWorker bool
+	apply            bool
+	confirm          string
+	intent           string
+	status           string
+	format           string
+	outputPath       string
+	title            string
+	genre            string
+	premise          string
+	mode             string
+	stage            string
+	chars            uint32
+	chapters         uint32
+	volumes          uint32
+	sessionID        string
+	chapterID        string
+	requestID        string
+	resumeID         string
+	inputPath        string
+	language         string
+	offset           uint64
+	positional       []string
 }
 
 // parseCLIFlags keeps value flags explicit, including the author's reviewed confirmation token.
@@ -113,6 +121,20 @@ func parseCLIFlags(args []string) (cliOptions, error) {
 			opts.projectRef = v
 		case "--json":
 			opts.jsonOutput = true
+		case "--read-only":
+			opts.readOnly = true
+		case "--creator":
+			opts.creator = true
+		case "--wait":
+			opts.wait = true
+		case "--background-worker":
+			opts.backgroundWorker = true
+		case "--client":
+			value, err := nextVal()
+			if err != nil {
+				return opts, err
+			}
+			opts.client = value
 		case "--apply":
 			opts.apply = true
 		case "--confirm":
@@ -267,16 +289,21 @@ func writeCLIError(stderr io.Writer, jsonMode bool, err error) int {
 
 // RunCLI executes headless Quillweave CLI commands against the shared SQLite store and Engine.
 func RunCLI(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && contains([]string{"api", "writing", "connect"}, args[0]) {
+		return RunCLIWithInput(args, os.Stdin, stdout, stderr)
+	}
 	if len(args) == 0 || contains([]string{"help", "--help", "-h"}, args[0]) {
 		fmt.Fprintln(stdout, "Usage: quillweave <projects|status|read|agent|session|job|change|goal|export|import> [--project <id>] [--json]")
 		fmt.Fprintln(stdout, "agent <instruction> [--session <id>] [--chapter <id>] [--resume <job-id>] [--request-id <id>]")
 		fmt.Fprintln(stdout, "session <list|create|show|fork> [id] [turn-id]; job <list|show> [id]")
 		fmt.Fprintln(stdout, "session list --offset <count> loads an older page of up to 100 conversations")
 		fmt.Fprintln(stdout, "change stage --input <json-file>; change preview <id>; change apply <id> --confirm <review-token>")
+		fmt.Fprintln(stdout, "api list|describe <operation>|call <operation> --input <file|-> --json; writing begin|compose|draft|review|status|refresh|finish|abandon --input <file|-> --json")
+		fmt.Fprintln(stdout, "connect codex|claude|cursor|zcode [--project <id>]; quillweave mcp [--project <id>] [--read-only]; omit --project to choose the work on each call")
 		return 0
 	}
 	if contains([]string{"version", "--version"}, args[0]) {
-		fmt.Fprintln(stdout, "quillweave cli 1.0")
+		fmt.Fprintf(stdout, "quillweave %s (api 1, database 6)\n", ApplicationVersion)
 		return 0
 	}
 	opts, err := parseCLIFlags(args)

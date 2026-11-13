@@ -170,7 +170,7 @@ func memorySuccessors(memories []StoryMemory) map[string]uint32 {
 	return result
 }
 
-// memoryVisibleAt retains historical intervals without letting a replaced value remain current.
+// memoryVisibleAt retains historical intervals while excluding interpretations revoked by a legacy rebuild.
 func memoryVisibleAt(memory StoryMemory, through uint32, successors map[string]uint32) bool {
 	if memory.Chapter > through || (memory.ThroughChapter > 0 && memory.ThroughChapter < through) {
 		return false
@@ -179,6 +179,10 @@ func memoryVisibleAt(memory StoryMemory, through uint32, successors map[string]u
 		return true
 	}
 	if memory.Status != "superseded" {
+		return false
+	}
+	// A whole-work retirement revokes the interpretation, rather than dating a story event.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(memory.State)), "superseded_by_") {
 		return false
 	}
 	if start, exists := successors[memory.ID]; exists {

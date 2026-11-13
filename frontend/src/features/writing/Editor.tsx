@@ -1,6 +1,6 @@
 import { Select } from "../../components/Select";
 import { t } from "../../lib/i18n";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   IconHistory,
   IconDeviceFloppy,
@@ -13,6 +13,15 @@ import { api, contentHash, date, message, wordCount } from "../../lib/api";
 import { Assistant } from "../assistant/Assistant";
 import { Badge, Button, Empty, ErrorBox, Modal } from "../../components/ui";
 import type { Chapter, Job, Project } from "../../domain/types";
+import { ChapterDeletion } from "./ChapterDeletion";
+import "./writing.css";
+import {
+  cacheChapterDraft,
+  forgetChapterDraft,
+  rememberChapterDraft,
+  retainedChapterDraft,
+  type ChapterDraft,
+} from "./drafts";
 
 interface Props {
   project: Project;
@@ -27,10 +36,7 @@ interface Props {
   onRegisterSave?: (save: (() => Promise<Project | null>) | null) => void;
   onSelection?: (text: string) => void;
 }
-type Draft = Pick<
-  Chapter,
-  "title" | "body" | "synopsis" | "status" | "target_words"
-> & { base_version?: string };
+type Draft = ChapterDraft;
 
 /** Identify a saved chapter revision using its durable version history. */
 function chapterVersion(chapter: Chapter): string {
@@ -60,8 +66,21 @@ function savedDraft(chapter: Chapter): Draft {
   };
 }
 
+/** Recover the common saved text from the mounted baseline or its next archived version. */
+function commonSavedVersion(chapter: Chapter, draft: Draft, previous: Chapter) {
+  if (draft.base_version === chapterVersion(previous)) return previous;
+  const prefix = `${chapter.id}:`;
+  if (!draft.base_version?.startsWith(prefix)) return undefined;
+  const base = draft.base_version.slice(prefix.length);
+  const index = base === "initial" ? -1 : chapter.versions.findIndex((item) => item.id === base);
+  if (base !== "initial" && index < 0) return undefined;
+  return chapter.versions[index + 1];
+}
+
 /** Restore uncommitted local drafts across navigation or reload. */
 function readDraft(key: string, chapter: Chapter): Draft {
+  const retained = retainedChapterDraft(key);
+  if (retained) return retained;
   try {
     const value = JSON.parse(localStorage.getItem(key) || "null");
     if (
@@ -103,6 +122,13 @@ export function Writing({
   const [targetWords, setTargetWords] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const editorSave = useRef<(() => Promise<Project | null>) | null>(null);
+  /** Share one current editor save callback with deletion and the workspace assistant. */
+  const registerSave = useCallback((save: (() => Promise<Project | null>) | null) => {
+    editorSave.current = save;
+    onRegisterSave?.(save);
+  }, [onRegisterSave]);
   /** Create chapter numbers through the backend to avoid conflicting allocation. */
   async function add() {
     setBusy(true);
@@ -132,6 +158,7 @@ export function Writing({
           <span>{t("Chapter list")}</span>
           <button
             className="icon-button"
+            disabled={deleting}
             onClick={() => setAdding(true)}
             aria-label={t("New chapter")}
           >
@@ -145,10 +172,19 @@ export function Writing({
             {project.chapters.length === 1 ? t("chapter") : t("chapters")}
           </span>
         </div>
+        <ChapterDeletion
+          project={project}
+          chapter={chapter}
+          beforeDelete={() => editorSave.current ? editorSave.current() : Promise.resolve(project)}
+          onProject={onProject}
+          onChapter={onChapter}
+          onPendingChange={setDeleting}
+        />
         {project.chapters.map((c) => (
           <button
             key={c.id}
             className={`chapter-item ${chapter?.id === c.id ? "active" : ""}`}
+            disabled={deleting}
             onClick={() => onChapter(c.id)}
           >
             <span className="chapter-number">
@@ -163,7 +199,7 @@ export function Writing({
             </div>
           </button>
         ))}
-        <button className="new-chapter" onClick={() => setAdding(true)}>
+        <button className="new-chapter" disabled={deleting} onClick={() => setAdding(true)}>
           <IconPlus size={16} />
           {t("Add chapter")}
         </button>
@@ -185,9 +221,9 @@ export function Writing({
             seed,
             onSeedConsumed,
             embedded,
-            onRegisterSave,
             onSelection,
           }}
+          onRegisterSave={registerSave}
         />
       ) : (
         <div className="fill">
@@ -270,12 +306,16 @@ function Editor({
   );
   const draftRef = useRef(draft);
   const previousChapter = useRef(chapter);
+  const projectRef = useRef(project);
+  if (project.revision >= projectRef.current.revision) projectRef.current = project;
   const saveRef = useRef<() => Promise<Project | null>>(() =>
     Promise.resolve(project),
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [history, setHistory] = useState(false);
+  const [comparison, setComparison] = useState(false);
+  const [cacheUnavailable, setCacheUnavailable] = useState(false);
   const [showAI, setShowAI] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const pendingSave = useRef<Promise<Project | null> | null>(null);
@@ -286,6 +326,7 @@ function Editor({
     draft.synopsis !== chapter.synopsis ||
     draft.status !== chapter.status ||
     draft.target_words !== chapter.target_words;
+  const conflicted = dirty && draft.base_version !== chapterVersion(chapter);
 
   useEffect(() => {
     const local = draftRef.current;
@@ -295,7 +336,7 @@ function Editor({
     ) {
       setDraft(savedDraft(chapter));
       previousChapter.current = chapter;
-    } else if (local.base_version !== chapterVersion(chapter)) {
+    } else if (!pendingSave.current && local.base_version !== chapterVersion(chapter)) {
       setError(
         "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.",
       );
@@ -309,14 +350,11 @@ function Editor({
 
   useEffect(() => {
     if (!dirty) {
-      localStorage.removeItem(draftKey);
+      forgetChapterDraft(draftKey);
+      setCacheUnavailable(false);
       return;
     }
-    try {
-      localStorage.setItem(draftKey, JSON.stringify(draft));
-    } catch {
-      setError("Local draft storage is full. Save the chapter soon.");
-    }
+    setCacheUnavailable(!cacheChapterDraft(draftKey, draft));
   }, [draft, dirty, draftKey]);
   useEffect(() => {
     /** Prompt before closing a browser with unsaved edits. */
@@ -334,51 +372,66 @@ function Editor({
   function setDraft(next: Draft | ((previous: Draft) => Draft)) {
     const value = typeof next === "function" ? next(draftRef.current) : next;
     draftRef.current = value;
+    rememberChapterDraft(draftKey, value);
     setDraftState(value);
   }
 
-  /** Save a revision while letting current dirty state own draft-cache cleanup. */
+  /** Drain pending saves and recheck input so a task receives the latest saved draft. */
   async function save(): Promise<Project | null> {
-    if (pendingSave.current) return pendingSave.current;
-    if (!dirty) return project;
-    if (draft.base_version !== chapterVersion(chapter)) {
-      setError(
-        "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.",
-      );
-      return null;
-    }
-    setSaving(true);
-    setError("");
-    const submitted = draftRef.current;
-    const request = api<Project>("save_chapter", {
-      project_id: project.id,
-      revision: project.revision,
-      chapter_id: chapter.id,
-      ...submitted,
-    })
-      .then((next) => {
-        const persisted = next.chapters.find((item) => item.id === chapter.id);
-        if (persisted) {
-          previousChapter.current = persisted;
-          setDraft((current) =>
-            sameDraft(current, submitted)
-              ? savedDraft(persisted)
-              : { ...current, base_version: chapterVersion(persisted) },
-          );
-        }
-        onProject(next);
-        return next;
-      })
-      .catch((cause) => {
-        setError(message(cause));
+    for (;;) {
+      if (pendingSave.current) {
+        if (!(await pendingSave.current)) return null;
+        continue;
+      }
+      const currentProject = projectRef.current;
+      const saved = currentProject.chapters.find((item) => item.id === chapter.id);
+      if (!saved) {
+        setError("Chapter not found");
         return null;
+      }
+      const submitted = draftRef.current;
+      if (sameDraft(submitted, saved)) return currentProject;
+      if (submitted.base_version !== chapterVersion(saved)) {
+        setError(
+          "This chapter was updated elsewhere. Your local draft is retained. Review the saved text before replacing it.",
+        );
+        return null;
+      }
+      setSaving(true);
+      setError("");
+      const request = api<Project>("save_chapter", {
+        project_id: currentProject.id,
+        revision: currentProject.revision,
+        chapter_id: saved.id,
+        ...submitted,
       })
-      .finally(() => {
-        pendingSave.current = null;
-        setSaving(false);
-      });
-    pendingSave.current = request;
-    return request;
+        .then((next) => {
+          if (next.revision >= projectRef.current.revision) projectRef.current = next;
+          const persisted = next.chapters.find((item) => item.id === saved.id);
+          if (persisted) {
+            previousChapter.current = persisted;
+            const unchanged = sameDraft(draftRef.current, submitted);
+            setDraft((current) =>
+              sameDraft(current, submitted)
+                ? savedDraft(persisted)
+                : { ...current, base_version: chapterVersion(persisted) },
+            );
+            if (unchanged) forgetChapterDraft(draftKey);
+          }
+          onProject(next);
+          return next;
+        })
+        .catch((cause) => {
+          setError(message(cause));
+          return null;
+        })
+        .finally(() => {
+          pendingSave.current = null;
+          setSaving(false);
+        });
+      pendingSave.current = request;
+      if (!(await request)) return null;
+    }
   }
   saveRef.current = save;
 
@@ -421,19 +474,15 @@ function Editor({
       });
       onProject(next);
       const c = next.chapters.find((c) => c.id === chapter.id)!;
-      setDraft({
-        title: c.title,
-        body: c.body,
-        synopsis: c.synopsis,
-        status: c.status,
-        target_words: c.target_words,
-      });
+      projectRef.current = next;
+      setDraft(savedDraft(c));
       setHistory(false);
     } catch (e) {
       setError(message(e));
     }
   }
   const version = chapter.versions.find((v) => v.id === selectedVersion);
+  const commonVersion = commonSavedVersion(chapter, draft, previousChapter.current);
   return (
     <div
       className={`editor-and-assistant ${showAI && !embedded ? "" : "focus-mode"}`}
@@ -483,6 +532,13 @@ function Editor({
             </Button>
           </div>
         </header>
+        {cacheUnavailable && (
+          <div className="editor-error">
+            <ErrorBox>
+              {t("Browser storage is unavailable. This draft is retained for this session. Save before closing the app.")}
+            </ErrorBox>
+          </div>
+        )}
         {error && (
           <div className="editor-error">
             <ErrorBox>{error}</ErrorBox>
@@ -492,6 +548,11 @@ function Editor({
             >
               {t("Refresh project status (keep draft)")}
             </button>
+            {conflicted && (
+              <button data-testid="resolve-chapter-conflict" className="text-button" onClick={() => setComparison(true)}>
+                {t("Compare and resolve chapter conflict")}
+              </button>
+            )}
           </div>
         )}
         <div className="editor-scroll">
@@ -545,20 +606,20 @@ function Editor({
                 className="text-button"
                 onClick={() => setShowPlan(!showPlan)}
               >
-                {showPlan ? t("Collapse scene plan") : t("Scene plan")}
+                {showPlan ? t("Collapse chapter notes") : t("Chapter notes")}
               </button>
             </div>
             {showPlan && (
               <label className="scene-plan">
-                {t("What changes in this chapter?")}
+                {t("Additional author requirements for this chapter")}
                 <textarea
-                  aria-label={t("Scene plan")}
+                  aria-label={t("Chapter notes")}
                   value={draft.synopsis}
                   onChange={(e) =>
                     setDraft({ ...draft, synopsis: e.target.value })
                   }
                   placeholder={t(
-                    "Character goals, obstacles, choices, consequences…",
+                    "Extra instructions or details to preserve…",
                   )}
                 />
               </label>
@@ -583,7 +644,9 @@ function Editor({
         <footer className="editor-footer">
           <span>
             {dirty
-              ? t("Draft stored on this device · Save to add it to the project")
+              ? cacheUnavailable
+                ? t("Draft retained for this session · Save before closing")
+                : t("Draft stored on this device · Save to add it to the project")
               : t("Chapter text and versions are stored locally")}
           </span>
           <button className="text-button" onClick={onWiki}>
@@ -656,6 +719,51 @@ function Editor({
                 </div>
               </>
             )}
+          </div>
+        </Modal>
+      )}
+      {comparison && (
+        <Modal
+          title={t("Resolve chapter conflict")}
+          wide
+          onClose={() => setComparison(false)}
+        >
+          <div className="modal-content">
+            <p>{t("Compare both versions before choosing which draft to save. Saving will retain the current saved text in version history.")}</p>
+            <div className="version-comparison">
+              <div>
+                <h4>{t("Saved chapter")}</h4>
+                <strong>{chapter.title}</strong>
+                <pre>{chapter.body || t("(Empty chapter)")}</pre>
+              </div>
+              <div>
+                <h4>{t("Current draft")}</h4>
+                <strong>{draft.title}</strong>
+                <pre>{draft.body || t("(Empty chapter)")}</pre>
+              </div>
+            </div>
+            <details className="chapter-conflict-base">
+              <summary>{t("Common saved version")}</summary>
+              {commonVersion ? <>
+                <strong>{commonVersion.title}</strong>
+                <pre>{commonVersion.body || t("(Empty chapter)")}</pre>
+              </> : <p>{t("The common saved version is no longer available in history.")}</p>}
+            </details>
+            <div className="modal-actions">
+              <Button onClick={() => setComparison(false)}>{t("Cancel")}</Button>
+              <Button data-testid="use-saved-chapter" onClick={() => {
+                previousChapter.current = chapter;
+                setDraft(savedDraft(chapter));
+                setError("");
+                setComparison(false);
+              }}>{t("Use saved chapter")}</Button>
+              <Button data-testid="keep-local-chapter" primary onClick={() => {
+                previousChapter.current = chapter;
+                setDraft({ ...draftRef.current, base_version: chapterVersion(chapter) });
+                setError("");
+                setComparison(false);
+              }}>{t("Keep local draft and save against this version")}</Button>
+            </div>
           </div>
         </Modal>
       )}

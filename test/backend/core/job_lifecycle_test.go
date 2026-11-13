@@ -136,6 +136,7 @@ func TestWikiCancelAtCommitBoundary(t *testing.T) {
 func TestCancelAfterStreamBeforeCompletion(t *testing.T) {
 	engine := testEngine(t)
 	project := testProject()
+	project.Chapters[0].Synopsis = "Continue the chosen visit to the lighthouse."
 	insertProject(t, engine, project)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var released sync.Once
@@ -152,7 +153,7 @@ func TestCancelAfterStreamBeforeCompletion(t *testing.T) {
 	config := defaultProvider()
 	config.Model, config.BaseURL = "mock", server.URL+"/v1"
 	configureModel(t, engine, config)
-	job := invoke[Job](t, engine, "start_ai", map[string]any{"project_id": project.ID, "chapter_id": project.Chapters[0].ID, "action": "continue", "instruction": "Continue"})
+	job := invoke[Job](t, engine, "start_ai", map[string]any{"project_id": project.ID, "chapter_id": project.Chapters[0].ID, "action": "ask", "instruction": "Continue"})
 	select {
 	case <-entered:
 	case <-time.After(4 * time.Second):

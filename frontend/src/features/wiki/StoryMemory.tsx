@@ -16,7 +16,7 @@ interface Props {
   view: "memory" | "health";
   onProject: (p: Project) => void;
   onChapter: (id: string) => void;
-  onReview: () => void;
+  onReview: (evidenceIds: string[]) => void;
 }
 
 /** Present project memory and knowledge checks with clear source and review boundaries. */
@@ -138,7 +138,7 @@ export function StoryMemory({
                     <h3>{source_title}</h3>
                     <Badge
                       tone={
-                        !current
+                        !current || unreviewed > 0
                           ? "red"
                           : record.status === "confirmed"
                             ? "green"
@@ -147,7 +147,7 @@ export function StoryMemory({
                               : "amber"
                       }
                     >
-                      {!current
+                      {!current || unreviewed > 0
                         ? t("Dependencies changed")
                         : record.status === "confirmed"
                           ? t("Confirmed")
@@ -229,7 +229,7 @@ export function StoryMemory({
                       </button>
                     )}
                     {unreviewed > 0 && (
-                      <Button onClick={onReview}>
+                      <Button onClick={() => onReview(ids)}>
                         {t("Review")}{" "}{unreviewed}{" "}{t("cited evidence records")}
                       </Button>
                     )}

@@ -62,7 +62,10 @@ func TestStructuredProposalReviewStates(t *testing.T) {
 				engine := testEngine(t)
 				project := testProject()
 				insertProject(t, engine, project)
-				value := map[string]any{"id": "pending-record", "title": "A reviewed record", "content": "Accepted author choice", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Find the letter"}
+				value := map[string]any{"id": "pending-record", "title": "A reviewed record", "content": "Accepted author choice"}
+				if kind == TargetPlan {
+					value = map[string]any{"id": "pending-record", "title": "A reviewed record", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Find the letter"}
+				}
 				job := structuredProposalJob(t, engine, project, []ChangeOperation{{TargetKind: kind, OpType: OpUpsert, Title: "A reviewed record", AfterValue: rawMessage(value)}})
 				assert(t, len(job.Proposals) == 1 && job.ChangeSets[0].Operations[0].ProposalID == job.Proposals[0].ID, "Structured operation has no compatibility proposal binding")
 				cs := invoke[struct {
@@ -95,7 +98,10 @@ func TestLegacyStructuredProposalCompatibility(t *testing.T) {
 				engine := testEngine(t)
 				project := testProject()
 				insertProject(t, engine, project)
-				value := map[string]any{"id": "pending-legacy", "title": "Legacy record", "content": "Original choice", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Original goal"}
+				value := map[string]any{"id": "pending-legacy", "title": "Legacy record", "content": "Original choice"}
+				if kind == TargetPlan {
+					value = map[string]any{"id": "pending-legacy", "title": "Legacy record", "level": "volume", "start_chapter": 1, "end_chapter": 3, "goal": "Original goal"}
+				}
 				job := structuredProposalJob(t, engine, project, []ChangeOperation{{TargetKind: kind, OpType: OpUpsert, Title: "Legacy record", AfterValue: rawMessage(value)}})
 				cs := invoke[struct {
 					ChangeSet ChangeSet `json:"changeset"`
@@ -233,13 +239,13 @@ func TestAgentWriterStagesVersionProtectedProse(t *testing.T) {
 	engine := testEngine(t)
 	p := testProject()
 	insertProject(t, engine, p)
-	server, calls := sequenceModel(t, []string{`{"tool":"writer","query":"Continue the scene","mode":"append"}`, "The keeper crossed the bridge.", `{"tool":"finish","text":"A continuation is ready for your review."}`})
+	server, calls := sequenceModel(t, []string{`{"tool":"writer","query":"Continue the scene","mode":"append"}`, writingCompositionFixture(), "The keeper crossed the bridge.", `{"summary":"The candidate is ready for the author's review.","issues":[],"memories":[]}`, `{"tool":"finish","text":"A continuation is ready for your review."}`})
 	config := defaultProvider()
 	config.Model = "fixture"
 	config.BaseURL = server.URL
 	configureModel(t, engine, config)
 	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID, "action": "agent", "instruction": "Help write the next passage"}))
-	assert(t, job.Status == "done" && calls.Load() == 3 && job.Calls == 3 && len(job.Proposals) == 1, job.Error)
+	assert(t, job.Status == "done" && calls.Load() == 5 && job.Calls == 5 && len(job.Proposals) == 1 && job.Writing != nil && job.Writing.Review.Structured, job.Error)
 	before := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	assert(t, before.Chapters[0].Body == p.Chapters[0].Body, "The writer applied prose automatically")
 	accepted := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": p.ID, "revision": before.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted", "mode": "append"})
@@ -247,6 +253,8 @@ func TestAgentWriterStagesVersionProtectedProse(t *testing.T) {
 }
 
 // TestAgentBudgetAndInvalidProposalDoNotCreateChanges bounds unsuccessful tool exploration.
+// With no fixed call cap the repeated-identical-failure breaker closes tool use and the
+// context budget ends the loop; an invalid proposal never creates changes either way.
 func TestAgentBudgetAndInvalidProposalDoNotCreateChanges(t *testing.T) {
 	engine := testEngine(t)
 	p := testProject()
@@ -257,7 +265,7 @@ func TestAgentBudgetAndInvalidProposalDoNotCreateChanges(t *testing.T) {
 	config.BaseURL = server.URL
 	configureModel(t, engine, config)
 	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": "", "action": "agent", "instruction": "Propose a plan"}))
-	assert(t, job.Status == "error" && job.Calls == 8 && len(job.Proposals) == 0, "An invalid proposal bypassed structure validation or the call budget")
+	assert(t, job.Status == "error" && job.Calls > 8 && len(job.Proposals) == 0, "An invalid proposal bypassed structure validation or never reached a bound: "+job.Error)
 	current := invoke[Project](t, engine, "get_project", map[string]any{"project_id": p.ID})
 	assert(t, current.Revision == p.Revision && len(current.Studio.Plans) == 0, "Failed exploration modified the work")
 }
@@ -304,7 +312,7 @@ func TestAgentPrivateContinuationKeepsOriginalVisibleEnvelope(t *testing.T) {
 	next := finishJob(t, engine, invoke[Job](t, engine, "start_ai", args))
 	assert(t, next.Status == "done" && restored.Load(), "Private state was paired with transformed display prose instead of the original provider envelope")
 	runs := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": p.ID})
-	assert(t, !strings.Contains(jsonText(runs), "PRIVATE_"), "Public history exposed provider-private state")
+	assert(t, strings.Contains(jsonText(runs), "PRIVATE_INTERMEDIATE") && !strings.Contains(jsonText(runs), `"provider_context"`), "Provider thought text was lost or private replay fields leaked into history")
 }
 
 // TestAgentSearchBudgetIncludesFallback bounds external cost even when every configured provider fails.
@@ -380,4 +388,224 @@ func TestNarrativeReviewHintsUseEvidenceAndRecordedSetup(t *testing.T) {
 	for _, finding := range studioFindings(&p, later.ID) {
 		assert(t, finding.Kind != "clue_setup", "A recorded historical setup was ignored")
 	}
+}
+
+// TestAutomaticOutputTransaction exercises ordinary creation saves, retry, undo and stale-context protection.
+func TestAutomaticOutputTransaction(t *testing.T) {
+	for _, policy := range []string{"review", "auto"} {
+		t.Run(policy, func(t *testing.T) {
+			engine := testEngine(t)
+			project := testProject()
+			insertProject(t, engine, project)
+			job := Job{ID: newID(), ProjectID: project.ID, Action: "outline", Status: "running", CommitPolicy: policy, BaseRevision: project.Revision, ownerID: engine.owner.id}
+			proposal := StudioProposal{ID: newID(), Kind: "plan", Title: "The next choice", Status: "proposed", Plan: &StoryPlan{ID: "new-plan", Level: "chapter", Title: "The next choice", StartChapter: 2, EndChapter: 2, Goal: "Ask the keeper"}}
+			job.Proposals = []StudioProposal{proposal}
+			job.ChangeSets = []ChangeSet{*proposalsToChangeSet(&project, &job, job.Proposals)}
+			assert(t, engine.store.SaveRun(job.ID, project.ID, storedJob(&job)) == nil, "Unable to install the running fixture")
+			job.Status = "done"
+			assert(t, engine.store.finishConversation(&job) == nil, "Unable to publish output")
+			saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+			if policy == "review" {
+				assert(t, len(saved.Studio.Plans) == 0 && saved.Revision == project.Revision, "Review policy applied a plan")
+				return
+			}
+			assert(t, len(saved.Studio.Plans) == 1 && saved.Revision == project.Revision+1, "Automatic creation did not save exactly one revision")
+			assert(t, job.ChangeSets[0].Status == ChangeSetApplied && job.Proposals[0].Status == "accepted", "Automatic receipt diverged from the compatibility proposal")
+			assert(t, engine.store.finishConversation(&job) == nil, "Idempotent completion failed")
+			again := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+			assert(t, again.Revision == saved.Revision && len(again.Studio.Plans) == 1, "Completion retried the write")
+			undone := invoke[struct {
+				Project Project `json:"project"`
+			}](t, engine, "undo_changeset", map[string]any{"project_id": project.ID, "changeset_id": job.ChangeSets[0].ID, "revision": again.Revision})
+			assert(t, len(undone.Project.Studio.Plans) == 0, "Automatic output could not be undone")
+		})
+	}
+	t.Run("concurrent edit", func(t *testing.T) {
+		engine := testEngine(t)
+		project := testProject()
+		insertProject(t, engine, project)
+		job := Job{ID: newID(), ProjectID: project.ID, Status: "running", CommitPolicy: "auto", BaseRevision: project.Revision, ownerID: engine.owner.id}
+		job.ChangeSets = []ChangeSet{{ID: newID(), ProjectID: project.ID, JobID: job.ID, Source: "agent", BaseRevision: project.Revision, Status: ChangeSetStaged, Operations: []ChangeOperation{{TargetKind: TargetProjectMeta, OpType: OpUpsert, AfterValue: rawMessage(map[string]string{"premise": "Stale generated premise"})}}}}
+		assert(t, engine.store.SaveRun(job.ID, project.ID, storedJob(&job)) == nil, "Unable to install fixture")
+		project.Premise = "Author's newer premise"
+		assert(t, engine.store.Save(&project, project.Revision) == nil, "Unable to save newer premise")
+		job.Status = "done"
+		assert(t, engine.store.finishConversation(&job) == nil, "Unable to preserve conflict")
+		saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+		assert(t, saved.Premise == project.Premise && job.ChangeSets[0].Status == ChangeSetStaged && strings.Contains(job.Progress, "retained"), "Automatic output overwrote a concurrent author edit")
+	})
+}
+
+// TestAutomaticInferenceDoesNotRetireConfirmedState distinguishes saving an index from accepting its interpretation.
+func TestAutomaticInferenceDoesNotRetireConfirmedState(t *testing.T) {
+	for _, kind := range []string{"character", "rule", "setting", "plan"} {
+		t.Run(kind, func(t *testing.T) {
+			project := testProject()
+			old := StoryMemory{ID: "accepted-state", Kind: kind, Entity: "Lin Wu", Title: "Current task", Content: "Investigate", Status: "confirmed", State: "active"}
+			project.Studio.Memories = append(project.Studio.Memories, old)
+			next := old
+			next.Content, next.Quote, next.SourceID = "Visits the lighthouse", "visit the lighthouse", project.Chapters[0].ID
+			cs := ChangeSet{CommitPolicy: "auto", Operations: []ChangeOperation{{ID: "derived-state", TargetKind: TargetMemory, TargetID: old.ID, OpType: OpUpsert, BeforeValue: rawMessage(old), AfterValue: rawMessage(next)}}}
+			assert(t, applyChangeSetToProject(&project, &cs) == nil, "Automatic evidence index could not be saved")
+			assert(t, project.Studio.Memories[0].Status == "confirmed" && project.Studio.Memories[0].Content == old.Content, "An inferred change retired accepted state")
+			derived := project.Studio.Memories[1]
+			assert(t, derived.Status == "proposed" && derived.Epistemic == "inferred" && derived.Supersedes == old.ID, "Derived state lost its evidence boundary")
+			assert(t, len(cs.Operations[0].BeforeValue) == 0, "A new inference captured accepted state as its undo target")
+			assert(t, undoChangeSetOnProject(&project, &cs) == nil && len(project.Studio.Memories) == 1 && project.Studio.Memories[0].Status == "confirmed", "Undoing derived state changed accepted memory")
+		})
+	}
+}
+
+// TestAutomaticStageRecovery retains an invalid attempt without blocking a corrected same-task write.
+func TestAutomaticStageRecovery(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	server, _ := sequenceModel(t, []string{
+		`{"tool":"propose_changes","operations":[{"target_kind":"route","op_type":"upsert","title":"Garden path","after_value":{"id":"garden-path","from_id":"gate","to_id":"pond","travel_hours":1}}]}`,
+		`{"tool":"propose_changes","operations":[{"target_kind":"location","op_type":"upsert","title":"Gate","after_value":{"id":"gate","name":"Gate","kind":"place"}},{"target_kind":"location","op_type":"upsert","title":"Pond","after_value":{"id":"pond","name":"Pond","kind":"place"}},{"target_kind":"route","op_type":"upsert","title":"Garden path","after_value":{"id":"garden-path","from_id":"gate","to_id":"pond","travel_hours":1}}]}`,
+		`{"tool":"finish","text":"The corrected path has a receipt."}`,
+	})
+	config := nativeConfig("openai")
+	config.BaseURL, config.ContextChars = server.URL, 64000
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", AIRequest{ProjectID: project.ID, Action: "agent", Instruction: "Save a garden path with its two locations", CommitPolicy: "auto", History: []Message{}}))
+	saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, job.Status == "done" && len(saved.Studio.Routes) == 1 && len(saved.Studio.Locations) == 2, "An invalid attempt blocked the corrected automatic stage: "+job.Error)
+	assert(t, len(job.ChangeSets) == 2 && job.ChangeSets[0].Status == ChangeSetConflicted && job.ChangeSets[1].Status == ChangeSetApplied, "The failed attempt or successful receipt was lost")
+	assert(t, job.Steps[0].Status == "error" && strings.Contains(job.Steps[0].Detail, "existing locations"), "The coordinator was told an invalid stage succeeded")
+}
+
+// TestAutomaticAuthorRuleHasNoInferredSource keeps an explicit author constraint independent of the selected chapter.
+func TestAutomaticAuthorRuleHasNoInferredSource(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	server, _ := sequenceModel(t, []string{
+		`{"tool":"propose","proposal":{"kind":"memory","title":"No romantic rivalry","memory":{"kind":"rule","title":"No romantic rivalry","content":"Conflicts must not compete for a partner's attention"}}}`,
+		`{"tool":"finish","text":"The author constraint is saved."}`,
+	})
+	config := defaultProvider()
+	config.BaseURL, config.Model, config.ContextChars = server.URL, "author-rule", 64000
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", AIRequest{ProjectID: project.ID, ChapterID: project.Chapters[0].ID, Action: "agent", Instruction: "Save my explicit constraint: no romantic rivalry", CommitPolicy: "auto", History: []Message{}}))
+	saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, job.Status == "done" && len(saved.Studio.Memories) == 1, "The author constraint was not saved")
+	rule := saved.Studio.Memories[0]
+	assert(t, rule.Status == "confirmed" && rule.SourceID == "" && rule.SourceHash == "", "An author instruction became an inference from the selected chapter")
+}
+
+// TestAutoOutlineThenWriterInOneTask verifies the writer can consume the plan this same author request just created.
+func TestAutoOutlineThenWriterInOneTask(t *testing.T) {
+	engine := testEngine(t)
+	project := NewProject("Connected production", "Fantasy", "A keeper protects the old garden")
+	previous := NewChapter(1, "The old focus")
+	previous.Body = "The keeper repaired the garden wall."
+	project.Chapters = []Chapter{previous}
+	project.Studio.Plans = []StoryPlan{{ID: "old-focus", Level: "chapter", Title: previous.Title, StartChapter: 1, EndChapter: 1, Goal: "STALE_NAVIGATION_GOAL", Status: "confirmed"}}
+	insertProject(t, engine, project)
+	var coordinator atomic.Int32
+	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body := string(readBodyForStudioTest(t, r))
+		switch {
+		case strings.Contains(body, "[Writing composition stage]"):
+			assert(t, !strings.Contains(body, "STALE_NAVIGATION_GOAL"), "The coordinator's old page focus entered the new chapter composition")
+			fmt.Fprint(w, streamPayload(writingCompositionFixture()))
+		case strings.Contains(body, "[Writing review stage]"):
+			fmt.Fprint(w, streamPayload(`{"summary":"Ready.","issues":[],"memories":[]}`))
+		case strings.Contains(body, "[Writing prose stage]"):
+			fmt.Fprint(w, streamPayload("The keeper closes the garden gate after carrying the injured bird inside."))
+		default:
+			switch coordinator.Add(1) {
+			case 1:
+				fmt.Fprint(w, streamPayload(`{"tool":"propose_changes","operations":[{"target_kind":"plan","op_type":"upsert","title":"The garden gate","after_value":{"id":"same-turn-plan","level":"chapter","title":"The garden gate","start_chapter":2,"end_chapter":2,"goal":"Protect the injured bird"}}]}`))
+			case 2:
+				fmt.Fprint(w, streamPayload(`{"tool":"writer","plan_id":"same-turn-plan","query":"Write this newly saved chapter"}`))
+			case 3:
+				fmt.Fprint(w, streamPayload(`{"tool":"propose_changes","operations":[{"target_kind":"entity","op_type":"upsert","title":"The keeper","after_value":{"name":"The keeper","kind":"character","description":"The garden's caretaker"}}]}`))
+			default:
+				fmt.Fprint(w, streamPayload(`{"tool":"finish","text":"The outline, chapter and character record have receipts."}`))
+			}
+		}
+	})
+	config := nativeConfig("openai")
+	config.BaseURL, config.ContextChars = server.URL, 64000
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", AIRequest{ProjectID: project.ID, ChapterID: previous.ID, WorkspaceContext: &WorkspaceContext{ActiveChapterID: previous.ID, ActivePlanID: "old-focus"}, Action: "agent", Instruction: "Create a chapter outline, write that chapter, then save the keeper's setup", CommitPolicy: "auto", History: []Message{}}))
+	saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, job.Status == "done" && len(saved.Studio.Plans) == 2 && len(saved.Chapters) == 2 && strings.Contains(saved.Chapters[1].Body, "injured bird"), "The same-turn writer could not consume its saved outline: "+job.Error)
+	assert(t, saved.Chapters[0].Body == previous.Body, "Writing the next chapter altered the chapter displayed by the coordinator")
+	assert(t, len(saved.Entities) == 1 && len(job.ChangeSets) == 3, "Later setting changes were lost after the writer advanced the revision")
+	for _, cs := range job.ChangeSets {
+		assert(t, cs.Status == ChangeSetApplied, "A completed automatic stage remained pending")
+	}
+}
+
+// TestAutomaticPlanRepairRebuildsWriter lets an authorized local repair continue without reusing stale scene work.
+func TestAutomaticPlanRepairRebuildsWriter(t *testing.T) {
+	engine := testEngine(t)
+	project := NewProject("Repair and continue", "Fantasy", "A keeper protects a bird")
+	project.Studio.Plans = []StoryPlan{{ID: "repair-plan", Level: "chapter", Title: "The gate", StartChapter: 1, EndChapter: 1, Goal: "Open the gate", Status: "confirmed"}}
+	insertProject(t, engine, project)
+	var coordinator, compositions, drafts, reviews atomic.Int32
+	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body := string(readBodyForStudioTest(t, r))
+		switch {
+		case strings.Contains(body, "[Writing composition stage]"):
+			compositions.Add(1)
+			fmt.Fprint(w, streamPayload(writingCompositionFixture()))
+		case strings.Contains(body, "[Writing prose stage]"):
+			if drafts.Add(1) == 1 {
+				fmt.Fprint(w, streamPayload("The keeper opened the gate."))
+			} else {
+				fmt.Fprint(w, streamPayload("The keeper carried the bird inside and closed the gate."))
+			}
+		case strings.Contains(body, "[Writing review stage]"):
+			if reviews.Add(1) == 1 {
+				fmt.Fprint(w, streamPayload(`{"summary":"Repair the local goal.","issues":[{"kind":"reading","scope":"plan","quote":"opened the gate","explanation":"This local goal leaves the bird exposed","suggestion":"Protect the bird inside"}],"memories":[],"needs_revision":true}`))
+			} else {
+				fmt.Fprint(w, streamPayload(`{"summary":"The new goal is fulfilled.","issues":[],"memories":[],"needs_revision":false}`))
+			}
+		default:
+			switch coordinator.Add(1) {
+			case 1, 3:
+				fmt.Fprint(w, streamPayload(`{"tool":"writer","plan_id":"repair-plan","query":"Write the selected chapter"}`))
+			case 2:
+				fmt.Fprint(w, streamPayload(`{"tool":"propose_changes","operations":[{"target_kind":"plan","op_type":"upsert","title":"Protect the bird","after_value":{"id":"repair-plan","level":"chapter","title":"The gate","start_chapter":1,"end_chapter":1,"goal":"Carry the bird inside and close the gate"}}]}`))
+			default:
+				fmt.Fprint(w, streamPayload(`{"tool":"finish","text":"The repaired chapter has a receipt."}`))
+			}
+		}
+	})
+	config := defaultProvider()
+	config.BaseURL, config.Model, config.ContextChars = server.URL, "local-plan-repair", 64000
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", AIRequest{ProjectID: project.ID, Action: "agent", Instruction: "Write the chapter; you may repair the flexible local goal to protect the bird", CommitPolicy: "auto", History: []Message{}}))
+	saved := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, job.Status == "done" && job.Writing != nil && job.Writing.Saved, "The repaired writer did not continue: "+job.Error)
+	assert(t, compositions.Load() == 2 && drafts.Load() == 2 && len(saved.Chapters) == 1 && strings.Contains(saved.Chapters[0].Body, "closed the gate"), "The repaired plan reused stale work or created another chapter")
+	assert(t, !strings.Contains(saved.Chapters[0].Body, "opened the gate"), "The old, unaccepted prose was also applied")
+}
+
+// TestScopedWriterUsesExplicitTarget preserves an earlier selection without treating its navigation plan as the new target.
+func TestScopedWriterUsesExplicitTarget(t *testing.T) {
+	project := testProject()
+	target := NewChapter(2, "The garden")
+	project.Chapters = append(project.Chapters, target)
+	project.Studio.Plans = []StoryPlan{
+		{ID: "old-focus", Level: "chapter", Title: "Old chapter", StartChapter: 1, EndChapter: 1, Goal: "STALE_NAVIGATION_GOAL", Status: "confirmed"},
+		{ID: "target-plan", Level: "chapter", Title: target.Title, StartChapter: 2, EndChapter: 2, Goal: "Protect the injured bird", Status: "confirmed"},
+	}
+	workspace := &WorkspaceContext{ActiveChapterID: project.Chapters[0].ID, ActivePlanID: "old-focus", SelectedText: project.Chapters[0].Body}
+	job := Job{ID: "target-task", ProjectID: project.ID, ChapterID: target.ID, CommitPolicy: "auto", WorkspaceContext: workspace, Instruction: "Write the garden chapter"}
+	request := scopedAgentRequest(&project, job, agentStepEnvelope{Tool: "writer", PlanID: "target-plan", Query: job.Instruction})
+	assert(t, request.CommitPolicy == "auto" && request.WorkspaceContext.ActiveChapterID == target.ID && request.WorkspaceContext.ActivePlanID == "target-plan", "The writer inherited an old navigation target or lost automatic saving")
+	assert(t, workspace.ActivePlanID == "old-focus" && workspace.ActiveChapterID == project.Chapters[0].ID && workspace.SelectedText != "", "Targeting a writer mutated the author's original workspace")
+	found := false
+	for _, item := range request.Retrieved {
+		found = found || item.Kind == "selection" && item.SourceID == project.Chapters[0].ID && item.SourceHash == hashText(project.Chapters[0].Body) && item.Text == workspace.SelectedText
+	}
+	assert(t, found && request.WorkspaceContext.SelectedText == "", "The earlier selection was lost or relabeled as prose from the new target")
+	prompt, err := prepareAI(&project, request, 64000)
+	assert(t, err == nil && !strings.Contains(jsonText(prompt.Messages), "STALE_NAVIGATION_GOAL") && strings.Contains(jsonText(prompt.Messages), "Protect the injured bird"), "An unrelated confirmed plan entered the target chapter's writing context")
 }

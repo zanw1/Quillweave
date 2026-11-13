@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -40,6 +41,8 @@ type modelStream struct {
 	reasoning              strings.Builder
 	encrypted              strings.Builder
 	onText                 func(string)
+	publicReasoningBytes   int
+	publicSummaries        map[string]string
 	usage                  ModelUsage
 	uncachedInput          *int64
 	outputWithoutReasoning *int64
@@ -127,7 +130,7 @@ func parseLine(line, protocol string) (string, bool, error) {
 
 // appendText checks the aggregate limit before publishing answer-text increments.
 func (stream *modelStream) appendText(text string) error {
-	if stream.text.Len()+stream.reasoning.Len()+stream.encrypted.Len()+len(text) > maxStreamBytes {
+	if stream.text.Len()+max(stream.reasoning.Len(), stream.publicReasoningBytes)+stream.encrypted.Len()+len(text) > maxStreamBytes {
 		return errors.New("The model response exceeds the size limit")
 	}
 	if text != "" {
@@ -142,7 +145,7 @@ func (stream *modelStream) appendContext(reasoning, encrypted string) error {
 	if !preservesProviderContext(stream.config) {
 		return nil
 	}
-	if stream.text.Len()+stream.reasoning.Len()+stream.encrypted.Len()+len(reasoning)+len(encrypted) > maxStreamBytes {
+	if stream.text.Len()+max(stream.reasoning.Len()+len(reasoning), stream.publicReasoningBytes)+stream.encrypted.Len()+len(encrypted) > maxStreamBytes {
 		return errors.New("The model response exceeds the size limit")
 	}
 	stream.reasoning.WriteString(reasoning)
@@ -191,6 +194,9 @@ func (stream *modelStream) payload(event, data string) error {
 		if err := stream.native.collect(stream.config.Protocol, kind, data, value); err != nil {
 			return err
 		}
+	}
+	if err := stream.publishReasoning(kind, value); err != nil {
+		return err
 	}
 	switch stream.config.Protocol {
 	case "openai":
@@ -414,17 +420,69 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 	request.Header = headers
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: time.Duration(config.TimeoutSeconds) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(request)
-	if err != nil {
+	// The configured timeout bounds stream IDLENESS (no bytes, text or reasoning deltas),
+	// not total duration: reasoning models legitimately think in silence for minutes
+	// before the first token, and long prose keeps streaming well past any total cap.
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+	idleLimit := time.Duration(config.TimeoutSeconds) * time.Second
+	if idleLimit < 10*time.Second {
+		idleLimit = 180 * time.Second
+	}
+	absoluteLimit := max(30*time.Minute, idleLimit*6)
+	started := time.Now()
+	var lastActivity atomic.Int64
+	touch := func() { lastActivity.Store(time.Now().UnixNano()) }
+	touch()
+	var watchdogCause atomic.Value // string: "idle" or "total"
+	watchDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastActivity.Load())) > idleLimit {
+					watchdogCause.Store("idle")
+					cancelWatch()
+					return
+				}
+				if time.Since(started) > absoluteLimit {
+					watchdogCause.Store("total")
+					cancelWatch()
+					return
+				}
+			}
+		}
+	}()
+	defer close(watchDone)
+	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	var response *http.Response
+	for attempt := 0; ; attempt++ {
+		request = request.WithContext(watchCtx)
+		response, err = client.Do(request)
+		if err == nil {
+			break
+		}
 		if ctx.Err() != nil {
 			return modelOutput{}, errors.New("Task cancelled")
 		}
-		var timeout interface{ Timeout() bool }
-		if errors.As(err, &timeout) && timeout.Timeout() {
-			return modelOutput{}, errors.New("Model connection timed out")
+		if cause, fired := watchdogCause.Load().(string); fired {
+			return modelOutput{}, streamTimeoutError(cause, idleLimit)
 		}
-		return modelOutput{}, errors.New("Unable to connect to the model service. Check the API URL and network")
+		if attempt >= 1 {
+			var timeout interface{ Timeout() bool }
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				return modelOutput{}, errors.New("Model connection timed out")
+			}
+			return modelOutput{}, errors.New("Unable to connect to the model service. Check the API URL and network")
+		}
+		// Nothing was received yet, so replaying the request is safe.
+		if request.GetBody != nil {
+			request.Body, _ = request.GetBody()
+		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -436,7 +494,12 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 		}
 		return modelOutput{}, modelHTTPError(response.StatusCode)
 	}
-	stream := modelStream{config: config, onText: onText, steps: map[string]string{}}
+	// Text and reasoning deltas both count as stream activity for the idle watchdog.
+	if inner := config.onReasoning; inner != nil {
+		config.onReasoning = func(delta string) { touch(); inner(delta) }
+	}
+	wrappedOnText := func(text string) { touch(); onText(text) }
+	stream := modelStream{config: config, onText: wrappedOnText, steps: map[string]string{}}
 	defer func() { output.Usage = stream.usage }()
 	pending := []byte{}
 	buffer := make([]byte, 32768)
@@ -447,6 +510,9 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 			return modelOutput{}, errors.New("Task cancelled")
 		}
 		count, readErr := response.Body.Read(buffer)
+		if count > 0 {
+			touch()
+		}
 		pending = append(pending, buffer[:count]...)
 		if len(pending) > maxStreamFrameBytes {
 			return modelOutput{}, errors.New("The model response exceeds the size limit")
@@ -484,6 +550,9 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 		if readErr != nil {
 			if ctx.Err() != nil {
 				return modelOutput{}, errors.New("Task cancelled")
+			}
+			if cause, fired := watchdogCause.Load().(string); fired {
+				return modelOutput{}, streamTimeoutError(cause, idleLimit)
 			}
 			if readErr != io.EOF {
 				return modelOutput{}, errors.New("The model stream was interrupted or timed out")
@@ -526,6 +595,14 @@ func streamModelOutput(ctx context.Context, config ProviderConfig, messages []Me
 		format = config.Protocol
 	}
 	return modelOutput{Text: stream.text.String(), Reasoning: stream.reasoning.String(), Encrypted: stream.encrypted.String(), Usage: stream.usage, ToolCalls: calls, ProviderBlocks: blocks, ProviderFormat: format}, nil
+}
+
+// streamTimeoutError names the watchdog cause so timeout, cancel and upstream failures stay distinguishable.
+func streamTimeoutError(cause string, idleLimit time.Duration) error {
+	if cause == "total" {
+		return errors.New("The model stream exceeded the total time limit while still active")
+	}
+	return fmt.Errorf("The model stream went idle (no output for %s). It may still be reasoning; retry, or raise the provider timeout", idleLimit)
 }
 
 // modelHTTPError returns actionable HTTP errors while excluding raw provider response bodies.

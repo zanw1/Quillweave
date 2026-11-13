@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,10 @@ type ModelUsage struct {
 type ModelCallMetric struct {
 	Purpose             string     `json:"purpose"`
 	Model               string     `json:"model"`
+	ProfileID           string     `json:"profile_id,omitempty"`
+	ProviderID          string     `json:"provider_id,omitempty"`
+	ReasoningEffort     string     `json:"reasoning_effort,omitempty"`
+	MaxOutputTokens     uint32     `json:"max_output_tokens,omitempty"`
 	Protocol            string     `json:"protocol"`
 	Usage               ModelUsage `json:"usage"`
 	DurationMS          int64      `json:"duration_ms"`
@@ -250,8 +255,15 @@ func (stream *modelStream) readSeparateReasoningUsage(usage map[string]any, outp
 }
 
 // streamJobModel records each real request's usage, latency and byte-stable prefix fingerprint.
-func (engine *Engine) streamJobModel(jobID, purpose string, ctx context.Context, config ProviderConfig, messages []Message, onText func(string)) (modelOutput, error) {
-	metric := ModelCallMetric{Purpose: purpose, Model: config.Model, Protocol: config.Protocol, InputChars: messageChars(messages) + nativeToolChars(config)}
+func (engine *Engine) streamJobModel(jobID, purpose string, ctx context.Context, config ProviderConfig, messages []Message, onText func(string), profileIDs ...string) (modelOutput, error) {
+	config, budgetErr := applyRequestTokenBudget(config, messages)
+	if budgetErr != nil {
+		return modelOutput{}, budgetErr
+	}
+	metric := ModelCallMetric{Purpose: purpose, Model: config.Model, Protocol: config.Protocol, ProviderID: config.ProviderID, ReasoningEffort: config.ReasoningEffort, MaxOutputTokens: config.MaxTokens, InputChars: messageChars(messages) + nativeToolChars(config)}
+	if len(profileIDs) > 0 {
+		metric.ProfileID = profileIDs[0]
+	}
 	configuration, _, _ := modelRequest(config, nil)
 	metric.ConfigHash = hashText(jsonText([]any{config.ProviderID, config.Protocol, config.BaseURL, configuration}))
 	bodyText := ""
@@ -273,13 +285,33 @@ func (engine *Engine) streamJobModel(jobID, purpose string, ctx context.Context,
 	}
 	engine.noteModelCall(jobID)
 	started := time.Now()
+	reasoningID, textID := newID(), newID()
+	var reasoning, raw strings.Builder
+	visible := ""
+	config.onReasoning = func(delta string) {
+		reasoning.WriteString(delta)
+		engine.updateChatActivity(jobID, ChatActivity{ID: reasoningID, Kind: "reasoning", Text: reasoning.String(), Purpose: purpose, Status: "running"})
+	}
 	output, err := streamModelOutput(ctx, config, messages, func(text string) {
 		if text != "" && metric.FirstTextMS == nil {
 			elapsed := time.Since(started).Milliseconds()
 			metric.FirstTextMS = &elapsed
 		}
 		onText(text)
+		if contains([]string{"agent", "generation", "writing_draft", "writing_composition", "writing_review"}, purpose) {
+			raw.WriteString(text)
+			visible = agentProsePrefix(raw.String())
+			engine.updateChatActivity(jobID, ChatActivity{ID: textID, Kind: "text", Text: visible, Purpose: purpose, Status: "running"})
+		}
 	})
+	status := "done"
+	if err != nil {
+		status = "interrupted"
+	} else if raw.Len() > 0 {
+		visible = visibleAgentOutput(output.Text)
+	}
+	engine.updateChatActivity(jobID, ChatActivity{ID: reasoningID, Kind: "reasoning", Text: reasoning.String(), Purpose: purpose, Status: status})
+	engine.updateChatActivity(jobID, ChatActivity{ID: textID, Kind: "text", Text: visible, Purpose: purpose, Status: status})
 	metric.DurationMS, metric.Usage, metric.Succeeded = time.Since(started).Milliseconds(), output.Usage, err == nil
 	engine.jobsMu.Lock()
 	if job := engine.jobs[jobID]; job != nil {

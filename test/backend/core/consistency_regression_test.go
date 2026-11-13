@@ -13,6 +13,37 @@ import (
 	"testing"
 )
 
+// TestEntityRenameKeepsStructuredMemoryAndPlanReferences moves names without altering quoted author text.
+func TestEntityRenameKeepsStructuredMemoryAndPlanReferences(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	project.Entities = []Entity{{ID: "person", Name: "Lin Wu", Kind: "character", Aliases: []string{}}}
+	project.Studio.Memories = []StoryMemory{{ID: "memory", Kind: "knowledge", Status: "confirmed", Entity: "Lin Wu", KnownBy: []string{"Lin Wu", "Mara"}, Content: "Lin Wu knows about the letter.", Quote: "Lin Wu found a letter.", SourceID: project.Chapters[0].ID, SourceHash: hashText(project.Chapters[0].Body)}}
+	project.Studio.Plans = []StoryPlan{{ID: "plan", Level: "chapter", Title: "Find the letter", Status: "confirmed", StartChapter: 1, EndChapter: 1, Characters: []string{"Lin Wu", "person"}}}
+	insertProject(t, engine, project)
+	entity := project.Entities[0]
+	entity.Name = "Lin Zhou"
+	saved := invoke[Project](t, engine, "save_entity", map[string]any{"project_id": project.ID, "revision": project.Revision, "entity": entity})
+	memory := saved.Studio.Memories[0]
+	assert(t, memory.Entity == "Lin Zhou" && memory.KnownBy[0] == "Lin Zhou" && memory.KnownBy[1] == "Mara", "Renaming left stale structured memory references")
+	assert(t, saved.Studio.Plans[0].Characters[0] == "Lin Zhou" && saved.Studio.Plans[0].Characters[1] == "person", "Renaming did not preserve name and stable-ID plan references")
+	assert(t, memory.Content == project.Studio.Memories[0].Content && memory.Quote == project.Studio.Memories[0].Quote && saved.Chapters[0].Body == project.Chapters[0].Body, "Renaming rewrote the quoted original source")
+	entity = saved.Entities[0]
+	entity.Name = "Lin Kai"
+	staged := invoke[ChangeSet](t, engine, "stage_changeset", map[string]any{"project_id": saved.ID, "changeset": ChangeSet{Operations: []ChangeOperation{{TargetKind: TargetEntity, TargetID: entity.ID, OpType: OpUpsert, AfterValue: rawMessage(entity)}}}})
+	preview := invoke[struct {
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": saved.ID, "changeset_id": staged.ID})
+	applied := invoke[struct {
+		Project Project `json:"project"`
+	}](t, engine, "apply_changeset", map[string]any{"project_id": saved.ID, "changeset_id": staged.ID, "revision": saved.Revision, "review_token": preview.ChangeSet.ReviewToken})
+	assert(t, applied.Project.Studio.Memories[0].Entity == "Lin Kai", "Adopting a rename did not update story memory")
+	restored := invoke[struct {
+		Project Project `json:"project"`
+	}](t, engine, "undo_changeset", map[string]any{"project_id": saved.ID, "changeset_id": staged.ID, "revision": applied.Project.Revision})
+	assert(t, restored.Project.Studio.Memories[0].Entity == "Lin Zhou" && restored.Project.Studio.Memories[0].KnownBy[0] == "Lin Zhou" && restored.Project.Studio.Plans[0].Characters[0] == "Lin Zhou", "Undoing a rename left changed structured references")
+}
+
 // TestSpecialistHandoffCarriesParentEvidence verifies scoped context and actual child costs through normal Agent execution.
 func TestSpecialistHandoffCarriesParentEvidence(t *testing.T) {
 	engine := testEngine(t)
@@ -27,7 +58,7 @@ func TestSpecialistHandoffCarriesParentEvidence(t *testing.T) {
 		if body["tools"] == nil {
 			childCalls.Add(1)
 			text := jsonText(body)
-			for _, required := range []string{"PARENT_AUTHOR_GOAL", "PRIOR_EVIDENCE", "MAGIC_COSTS_MEMORY", "SELECTED_PASSAGE", session.ID, project.ID, "project_revision", "parent_model_calls_remaining", "open questions"} {
+			for _, required := range []string{"PARENT_AUTHOR_GOAL", "PRIOR_EVIDENCE", "MAGIC_COSTS_MEMORY", "SELECTED_PASSAGE", session.ID, project.ID, "project_revision", "open questions"} {
 				if !strings.Contains(text, required) {
 					t.Errorf("Specialist handoff omitted %s", required)
 				}
@@ -353,6 +384,11 @@ func TestRepairedPreviewAndStartSharePrivateBudget(t *testing.T) {
 	insertProject(t, engine, p)
 	reason := strings.Repeat("PRIVATE_CONTEXT ", 500)
 	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body := string(readBodyForStudioTest(t, r))
+		if strings.Contains(body, "Summarize this fiction-author conversation") {
+			fmt.Fprint(w, streamPayload(`{"goal":"Continue the author's discussion","constraints":[],"rejected":[],"pending":[],"open_questions":[],"next_steps":[]}`))
+			return
+		}
 		fmt.Fprint(w, "data: "+jsonText(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"reasoning_content": reason}}}})+"\n\n"+streamPayload("Visible response"))
 	})
 	config := nativeConfig("openai")
@@ -369,11 +405,18 @@ func TestRepairedPreviewAndStartSharePrivateBudget(t *testing.T) {
 	config.ContextChars = 4000
 	configureModel(t, engine, config)
 	args := map[string]any{"project_id": p.ID, "chapter_id": "", "session_id": session.ID, "action": "ask", "instruction": "Continue", "history": []Message{{Role: "assistant", Content: first.Text, SourceJobID: first.ID}}}
-	_, previewErr := engine.Dispatch("prepare_ai", rawMessage(args))
-	_, startErr := engine.Dispatch("start_ai", rawMessage(args))
-	if previewErr == nil || startErr == nil || previewErr.Error() != startErr.Error() {
+	preview, previewErr := engine.Dispatch("prepare_ai", rawMessage(args))
+	started, startErr := engine.Dispatch("start_ai", rawMessage(args))
+	if previewErr != nil || startErr != nil {
 		t.Fatalf("Preview and start disagree: %v / %v", previewErr, startErr)
 	}
+	assert(t, preview.(Prompt).Chars > 4000 && len(preview.(Prompt).HistoryGroups) == 1, "The preview omitted private context instead of marking a foldable exchange")
+	continued := finishJob(t, engine, started.(Job))
+	assert(t, continued.Status == "done" && continued.Prompt.Checkpoint != nil, "A foldable private exchange could not be checkpointed: "+continued.Error)
+	args["instruction"] = strings.Repeat("CURRENT_AUTHOR_TEXT ", 500)
+	_, previewErr = engine.Dispatch("prepare_ai", rawMessage(args))
+	_, startErr = engine.Dispatch("start_ai", rawMessage(args))
+	assert(t, previewErr != nil && startErr != nil && previewErr.Error() == startErr.Error(), "Oversized mandatory text bypassed preview or submission checks")
 }
 
 // TestRepairedDelegateBudgetChecksCompleteInstructions checks all roles at and around their real HTTP budget.
@@ -386,7 +429,7 @@ func TestRepairedDelegateBudgetChecksCompleteInstructions(t *testing.T) {
 				p.Chapters[0].Body = ""
 				p.requestLanguage, p.taskLanguage = "en", "en"
 				parent := Job{ID: strings.Repeat("j", 36), ProjectID: p.ID, ChapterID: p.Chapters[0].ID, Instruction: "Delegate a scene task", Language: "en"}
-				request := scopedAgentRequest(&p, parent, agentStepEnvelope{Tool: role, Query: "Bounded scene task"}, 7)
+				request := scopedAgentRequest(&p, parent, agentStepEnvelope{Tool: role, Query: "Bounded scene task"})
 				task, suffix := request.Action, request.systemAppend
 				base, err := prepareAI(&p, request, 24000)
 				if err != nil {
@@ -468,6 +511,9 @@ func TestRepairedDelegateBudgetChecksCompleteInstructions(t *testing.T) {
 					if childCalls.Load() != 0 || job.Steps[0].Status != "error" || len(job.Proposals) != 0 {
 						t.Fatal("The role instruction bypassed the request budget")
 					}
+				} else if role == "writer" {
+					assert(t, childCalls.Load() == 0 && job.Steps[0].Status == "error", "The new composition contract bypassed its complete HTTP budget")
+					assert(t, job.Writing != nil && job.Writing.Phase == "composing" && len(job.Proposals) == 0, "An over-budget composition was reported as generated prose")
 				} else if childCalls.Load() != 1 || int(actualChars.Load()) != expected || job.Steps[0].Status != "done" {
 					t.Fatalf("The complete role request used %d characters, wanted %d: %s", actualChars.Load(), expected, jsonText(job.Steps))
 				}
@@ -559,7 +605,7 @@ func TestRepairedPendingMemoryAndNoOpEdit(t *testing.T) {
 	}
 }
 
-// TestRepairedSharedSettingsKeepKeysOnlyForMatchingDestinations exercises metadata refresh without persisting secrets.
+// TestRepairedSharedSettingsKeepKeysOnlyForMatchingDestinations exercises shared encrypted keys with destination isolation.
 func TestRepairedSharedSettingsKeepKeysOnlyForMatchingDestinations(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "key-refresh.sqlite3")
 	a, err := NewEngine(path)
@@ -580,14 +626,14 @@ func TestRepairedSharedSettingsKeepKeysOnlyForMatchingDestinations(t *testing.T)
 		Settings IntegrationSettings `json:"settings"`
 		Keys     map[string]bool     `json:"key_status"`
 	}](t, b, "get_integrations", nil)
-	if view.Keys["fixture"] || view.Keys["hindsight"] {
-		t.Fatal("A peer obtained process-local keys")
+	if !view.Keys["fixture"] || view.Keys["hindsight"] {
+		t.Fatal("The saved search credential was missing or a retired credential was restored")
 	}
 	view.Settings.MaxSearches = 3
 	invoke[map[string]any](t, b, "save_integrations", map[string]any{"settings": view.Settings})
 	snapshot, _, err := a.researchSnapshot()
 	if err != nil || snapshot.MaxSearches != 3 || snapshot.Providers[0].APIKey != "TEST_SEARCH_SECRET" || snapshot.HindsightKey != "" {
-		t.Fatal("Matching destinations lost their process-local credentials")
+		t.Fatal("Matching destinations lost their encrypted credentials")
 	}
 	view = invoke[struct {
 		Settings IntegrationSettings `json:"settings"`

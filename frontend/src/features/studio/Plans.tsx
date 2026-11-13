@@ -30,7 +30,9 @@ export function blankPlan(parent?: StoryPlan): StoryPlan {
     id: "",
     parent_id: parent?.id || "",
     level: parent
-      ? levels[Math.min(4, levels.indexOf(parent.level) + 1)]
+      ? parent.level === "volume"
+        ? "chapter"
+        : levels[Math.min(4, levels.indexOf(parent.level) + 1)]
       : "volume",
     title: "",
     theme: "",
@@ -46,6 +48,8 @@ export function blankPlan(parent?: StoryPlan): StoryPlan {
     end_chapter: parent?.end_chapter || 1,
     target_characters: 0,
     status: "confirmed",
+    flexibility: "flexible",
+    open_questions: [],
   };
 }
 
@@ -81,11 +85,86 @@ export function Plans({
   focusId?: string;
 }) {
   const [editing, setEditing] = useState<StoryPlan | null>(null);
+  const [selectedId, setSelectedId] = useState(focusId || "");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const plansById = new Map(project.studio.plans.map((plan) => [plan.id, plan]));
+  const selectedPlan =
+    plansById.get(focusId || selectedId) ||
+    project.studio.plans[0];
+  const rows = orderedPlans(project.studio.plans);
+  const duplicateOutlines =
+    selectedPlan?.level === "chapter"
+      ? project.studio.plans.filter(
+          (plan) =>
+            plan.level === "chapter" && plan.status === "confirmed" &&
+            plan.start_chapter === selectedPlan.start_chapter,
+        )
+      : [];
+  /** Limit materialization to confirmed descendants of the currently focused plan. */
+  const scopedChapterPlans = rows.filter(({ plan }) => {
+    if (plan.level !== "chapter" || plan.status !== "confirmed") return false;
+    let current: StoryPlan | undefined = plan;
+    while (current) {
+      if (current.id === selectedPlan?.id) return true;
+      current = plansById.get(current.parent_id);
+    }
+    return false;
+  });
+  useEffect(() => {
+    if (selectedPlan && !focusId) onFocus?.(selectedPlan.id);
+  }, [selectedPlan?.id, focusId]);
+  useEffect(() => {
+    if (!focusId) return;
+    setCollapsed((current) => {
+      const next = new Set(current);
+      let parentId = project.studio.plans.find(
+        (plan) => plan.id === focusId,
+      )?.parent_id;
+      while (parentId) {
+        next.delete(parentId);
+        parentId = project.studio.plans.find(
+          (plan) => plan.id === parentId,
+        )?.parent_id;
+      }
+      return next.size === current.size ? current : next;
+    });
+  }, [focusId, project.id]);
+
+  /** Select a plan while keeping the assistant's focused planning context in sync. */
+  function selectPlan(id: string) {
+    setSelectedId(id);
+    onFocus?.(id);
+  }
+
+  /** Collapse only directory descendants, retaining the selected detail for reading. */
+  function togglePlan(id: string) {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** Hide rows beneath a collapsed ancestor without changing their saved hierarchy. */
+  function visiblePlan(plan: StoryPlan) {
+    let parentId = plan.parent_id;
+    while (parentId) {
+      if (collapsed.has(parentId)) return false;
+      parentId =
+        project.studio.plans.find((parent) => parent.id === parentId)
+          ?.parent_id || "";
+    }
+    return true;
+  }
   useEffect(() => {
     publishSetupDraft(
       "plan",
       editing
-        ? { label: editing.title || t("Add plan"), text: JSON.stringify(editing) }
+        ? {
+            label: editing.title || t("Add plan"),
+            text: JSON.stringify(editing),
+          }
         : null,
     );
     return () => publishSetupDraft("plan", null);
@@ -102,9 +181,14 @@ export function Plans({
 
   /** Capture the revision belonging to the draft so stale edits cannot overwrite newer plans. */
   function open(plan: StoryPlan) {
-    setEditing(plan);
+    setEditing({ ...plan, characters: (plan.characters || []).map(characterName) });
     setBase(project.revision);
     setError("");
+  }
+
+  /** Render legacy entity identifiers as names while retaining ordinary author-entered names. */
+  function characterName(value: string) {
+    return project.entities.find((entity) => entity.id === value)?.name || value;
   }
 
   /** Save a validated plan or materialize confirmed chapter goals through real domain commands. */
@@ -122,9 +206,22 @@ export function Plans({
         ...args,
       });
       onProject(next);
+      if (command === "save_plan") {
+        const saved =
+          next.studio.plans.find((plan) => plan.id === editing?.id) ||
+          next.studio.plans.find(
+            (plan) => !project.studio.plans.some((old) => old.id === plan.id),
+          );
+        if (saved) selectPlan(saved.id);
+      }
+      if (command === "delete_plan") selectPlan(next.studio.plans[0]?.id || "");
       setEditing(null);
-      if (command === "create_planned_chapters" && next.chapters.length)
-        onChapter?.(next.chapters[0].id);
+      if (command === "create_planned_chapters") {
+        const created = next.chapters.find(
+          (chapter) => !project.chapters.some((old) => old.id === chapter.id),
+        );
+        if (created) onChapter?.(created.id);
+      }
     } catch (error) {
       setError(message(error));
     } finally {
@@ -133,13 +230,12 @@ export function Plans({
   }
 
   return (
-    <section className="studio-section">
+    <section className="studio-section plans-section">
       <div className="studio-section-heading">
         <div>
           <h2>{t("Plans")}</h2>
           <p className="muted">
-            {t("Book")} → {t("Volume")} → {t("Unit")} → {t("Chapter")} →{" "}
-            {t("Scene")}
+            {t("Plan the current scope. Units and scenes are optional.")}
           </p>
         </div>
         <Button primary onClick={() => open(blankPlan())}>
@@ -155,13 +251,25 @@ export function Plans({
         </Button>
         <ReviewSetupButton onAsk={onAsk} />
         <Button
-          disabled={
-            busy ||
-            !project.studio.plans.some(
-              (plan) => plan.level === "chapter" && plan.status === "confirmed",
+          disabled={!selectedPlan}
+          onClick={() =>
+            onAsk(
+              `${t("Read the saved prose in this planning scope. Review continuing consequences, independent character choices, repeated payoffs and the original reading experience. Propose only affected future plan changes, retaining unresolved questions.")}\n${JSON.stringify(selectedPlan)}`,
+              "agent",
             )
           }
-          onClick={() => void change("create_planned_chapters", {})}
+        >
+          {t("Review this story unit")}
+        </Button>
+        <Button
+          disabled={
+            busy || scopedChapterPlans.length === 0
+          }
+          onClick={() =>
+            void change("create_planned_chapters", {
+              plan_id: selectedPlan?.id || "",
+            })
+          }
         >
           {t("Create chapter drafts")}
         </Button>
@@ -175,68 +283,177 @@ export function Plans({
           )}
         />
       )}
-      <div className="plan-list">
-        {orderedPlans(project.studio.plans).map(({ plan, depth }) => (
-          <article
-            className="plan-card"
-            key={plan.id}
-            id={`plan-${plan.id}`}
-            onClick={() => onFocus?.(plan.id)}
-            onFocusCapture={() => onFocus?.(plan.id)}
-            style={{ marginLeft: Math.min(depth, 4) * 18 }}
-          >
-            <header>
-              <Badge tone="blue">{t(planLevels[plan.level])}</Badge>
-              <h3>{plan.title}</h3>
-              <Badge>
-                {t(plan.status === "confirmed" ? "Confirmed" : "Proposed")}
-              </Badge>
-            </header>
-            <p>{plan.goal}</p>
-            <dl>
-              <dt>{t("Conflict")}</dt>
-              <dd>{plan.conflict || "—"}</dd>
-              <dt>{t("Consequence")}</dt>
-              <dd>{plan.consequence || "—"}</dd>
-            </dl>
-            <p className="muted">
-              {t("Chapter")} {plan.start_chapter}–{plan.end_chapter} ·{" "}
-              {plan.target_characters.toLocaleString()} {t("characters")} ·{" "}
-              {plan.pacing}
-            </p>
-            <div className="studio-actions">
-              {plan.level === "chapter" &&
-                project.chapters.some(
-                  (chapter) => chapter.number === plan.start_chapter,
-                ) && (
+      <div className="plan-workspace">
+        {!!rows.length && (
+          <nav className="plan-directory" aria-label={t("Plan directory")}>
+            {rows
+              .filter(({ plan }) => visiblePlan(plan))
+              .map(({ plan, depth }) => {
+                const hasChildren = project.studio.plans.some(
+                  (child) => child.parent_id === plan.id,
+                );
+                return (
+                  <div
+                    className="plan-tree-row"
+                    key={plan.id}
+                    style={{ paddingLeft: depth * 14 }}
+                  >
+                    {hasChildren ? (
+                      <button
+                        type="button"
+                        className="plan-tree-toggle"
+                        aria-label={t(
+                          collapsed.has(plan.id)
+                            ? "Expand plan"
+                            : "Collapse plan",
+                        )}
+                        aria-expanded={!collapsed.has(plan.id)}
+                        onClick={() => togglePlan(plan.id)}
+                      >
+                        {collapsed.has(plan.id) ? "▸" : "▾"}
+                      </button>
+                    ) : (
+                      <span className="plan-tree-toggle" />
+                    )}
+                    <button
+                      type="button"
+                      className={`plan-tree-select${selectedPlan?.id === plan.id ? " active" : ""}`}
+                      aria-current={
+                        selectedPlan?.id === plan.id ? "true" : undefined
+                      }
+                      onClick={() => selectPlan(plan.id)}
+                    >
+                      <small>
+                        {t(planLevels[plan.level])} · {plan.start_chapter}
+                        {plan.end_chapter !== plan.start_chapter
+                          ? `–${plan.end_chapter || "…"}`
+                          : ""}
+                      </small>
+                      <span>{plan.title}</span>
+                    </button>
+                  </div>
+                );
+              })}
+          </nav>
+        )}
+        <div className="plan-list">
+          {(selectedPlan ? [selectedPlan] : []).map((plan) => (
+            <article
+              className="plan-card"
+              key={plan.id}
+              id={`plan-${plan.id}`}
+              onClick={() => onFocus?.(plan.id)}
+              onFocusCapture={() => onFocus?.(plan.id)}
+            >
+              <header>
+                <Badge tone="blue">{t(planLevels[plan.level])}</Badge>
+                <h3>{plan.title}</h3>
+                <Badge>
+                  {t(
+                    plan.status === "confirmed"
+                      ? "Confirmed"
+                      : plan.status === "rejected"
+                        ? "Rejected"
+                        : "Proposed",
+                  )}
+                </Badge>
+                {plan.flexibility && (
+                  <Badge>
+                    {t(
+                      plan.flexibility === "fixed"
+                        ? "Locked direction"
+                        : "Revisable direction",
+                    )}
+                  </Badge>
+                )}
+              </header>
+              {duplicateOutlines.length > 1 && (
+                <div className="studio-actions">
+                  <p className="muted">
+                    {t("Other confirmed outlines for this chapter will become proposals.")}
+                  </p>
                   <Button
+                    disabled={busy}
                     onClick={() =>
-                      onChapter?.(
-                        project.chapters.find(
-                          (chapter) => chapter.number === plan.start_chapter,
-                        )!.id,
-                      )
+                      void change("save_plan", {
+                        plan: { ...plan, status: "confirmed" },
+                        resolve_conflicts: true,
+                      })
                     }
                   >
-                    {t("Open chapter")}
+                    {t("Use this outline")}
+                  </Button>
+                </div>
+              )}
+              <dl>
+                <dt>{t("Goal")}</dt>
+                <dd>{plan.goal || t("To be developed")}</dd>
+                <dt>{t("Conflict")}</dt>
+                <dd>{plan.conflict || "—"}</dd>
+                <dt>{t("Choice / action")}</dt>
+                <dd>{plan.choice || t("To be developed")}</dd>
+                <dt>{t("Consequence")}</dt>
+                <dd>{plan.consequence || "—"}</dd>
+              </dl>
+              {!!plan.open_questions?.length && (
+                <p className="preserve">
+                  {t("Open questions")} · {plan.open_questions.join("\n")}
+                </p>
+              )}
+              <p className="muted">
+                {t("Chapter")} {plan.start_chapter}–{plan.end_chapter} ·{" "}
+                {plan.target_characters > 0
+                  ? `${t("Target characters")} ${plan.target_characters.toLocaleString()}`
+                  : t("Target length not set")}{" "}
+                · {plan.pacing}
+              </p>
+              {!!plan.characters?.length && (
+                <p className="muted">
+                  {t("Characters involved")} ·{" "}
+                  {plan.characters.map(characterName).join("、")}
+                </p>
+              )}
+              {!!plan.clues?.length && (
+                <p className="preserve">
+                  {t("Clues and payoffs")} · {plan.clues.join("\n")}
+                </p>
+              )}
+              <div className="studio-actions">
+                {plan.level === "chapter" &&
+                  project.chapters.some(
+                    (chapter) => chapter.number === plan.start_chapter,
+                  ) && (
+                    <Button
+                      onClick={() =>
+                        onChapter?.(
+                          project.chapters.find(
+                            (chapter) => chapter.number === plan.start_chapter,
+                          )!.id,
+                        )
+                      }
+                    >
+                      {t("Open chapter")}
+                    </Button>
+                  )}
+                <Button onClick={() => open(plan)}>{t("Edit")}</Button>
+                {plan.level !== "scene" && (
+                  <Button onClick={() => open(blankPlan(plan))}>
+                    {t("Add plan")}
                   </Button>
                 )}
-              <Button onClick={() => open(plan)}>{t("Edit")}</Button>
-              <Button onClick={() => open(blankPlan(plan))}>
-                {t("Add plan")}
-              </Button>
-              <Button
-                disabled={busy}
-                onClick={() => {
-                  if (window.confirm(`${t("Delete")}: ${plan.title}?`))
-                    void change("delete_plan", { plan_id: plan.id });
-                }}
-              >
-                {t("Delete")}
-              </Button>
-            </div>
-          </article>
-        ))}
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm(`${t("Delete")}: ${plan.title}?`))
+                      void change("delete_plan", { plan_id: plan.id });
+                  }}
+                >
+                  {t("Delete")}
+                </Button>
+              </div>
+            </article>
+          ))}
+        </div>
       </div>
       {editing && (
         <Modal
@@ -252,6 +469,19 @@ export function Plans({
             }}
           >
             <div className="form-grid">
+              <label>
+                {t("Status")}
+                <Select
+                  value={editing.status}
+                  onChange={(event) =>
+                    setEditing({ ...editing, status: event.target.value })
+                  }
+                >
+                  <option value="confirmed">{t("Confirmed")}</option>
+                  <option value="proposed">{t("Proposed")}</option>
+                  <option value="rejected">{t("Rejected")}</option>
+                </Select>
+              </label>
               <label>
                 {t("Level")}
                 <Select
@@ -360,6 +590,36 @@ export function Plans({
                 />
               </label>
             </div>
+            <label>
+              {t("Plan flexibility")}
+              <Select
+                value={editing.flexibility || ""}
+                onChange={(event) =>
+                  setEditing({
+                    ...editing,
+                    flexibility: event.target.value as StoryPlan["flexibility"],
+                  })
+                }
+              >
+                <option value="">{t("Existing author decision")}</option>
+                <option value="fixed">{t("Locked direction")}</option>
+                <option value="flexible">{t("Revisable direction")}</option>
+              </Select>
+            </label>
+            <label>
+              {t("Open questions")}
+              <textarea
+                value={editing.open_questions?.join("\n") || ""}
+                onChange={(event) =>
+                  setEditing({
+                    ...editing,
+                    open_questions: event.target.value
+                      .split("\n")
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </label>
             <div className="form-grid">
               <label>
                 {t("Characters involved")}

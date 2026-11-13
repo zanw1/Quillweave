@@ -388,24 +388,6 @@
 .decision-card p {
   white-space: pre-wrap;
 }
-.policy-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-.policy-grid fieldset {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.evaluation-result {
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
 .table-scroll {
   overflow-x: auto;
 }
@@ -484,9 +466,6 @@
     padding: 0 14px;
     gap: 16px;
     font-size: 12px;
-  }
-  .policy-grid {
-    grid-template-columns: 1fr;
   }
   .studio-search {
     flex-wrap: wrap;
@@ -654,6 +633,75 @@
   width: 100%;
   min-height: 100%;
 }
+
+.plans-section {
+  container-type: inline-size;
+  container-name: planning;
+}
+.plan-workspace {
+  display: grid;
+  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.plan-directory {
+  max-height: 72vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.plan-tree-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.plan-tree-toggle {
+  width: 24px;
+  min-width: 24px;
+  padding: 12px 0;
+  color: var(--muted);
+}
+.plan-tree-select {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 10px 8px;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.plan-tree-select small {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.plan-tree-select.active {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.plan-list {
+  min-width: 0;
+}
+.plan-card dd {
+  white-space: pre-wrap;
+}
+@media (max-width: 950px) {
+  .plan-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-directory {
+    max-height: 260px;
+  }
+}
+@container planning (max-width: 720px) {
+  .plan-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-directory {
+    max-height: 260px;
+  }
+}
 .character-world-hub > .workspace-page {
   width: 100%;
 }
@@ -691,3 +739,16 @@
     display: none;
   }
 }
+/* Share one bounded knowledge view across state, evidence and map projections. */
+.knowledge-overview { padding: 20px; min-width: 0; }
+.knowledge-query { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.knowledge-query label { display: grid; gap: 6px; flex: 1 1 160px; min-width: 0; }
+.knowledge-query label:nth-child(2) { flex: 0 1 120px; }
+.knowledge-summary { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+.knowledge-maintenance { padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
+.knowledge-maintenance summary { cursor: pointer; }
+.knowledge-receipt, .knowledge-record-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.knowledge-receipt { padding: 10px 0; border-top: 1px solid var(--line); margin-top: 10px; }
+.knowledge-records { display: grid; gap: 14px; margin-top: 20px; }
+.knowledge-records article { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.knowledge-records article p { font-size: 13px; line-height: 1.7; }

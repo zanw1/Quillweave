@@ -7,6 +7,8 @@ import (
 
 // rekeyChangeSet preserves imported history while requiring a fresh preview in the restored project.
 func rekeyChangeSet(cs *ChangeSet, projectID string, sessions, turns, jobs map[string]string) {
+	rekeyChangeEffects(cs.Effects, sessions)
+	rekeyChangeEffects(cs.RestoreEffects, sessions)
 	cs.ProjectID = projectID
 	cs.SessionID, cs.TurnID, cs.JobID = sessions[cs.SessionID], turns[cs.TurnID], jobs[cs.JobID]
 	cs.ReviewToken, cs.PreviewRevision = "", 0
@@ -17,6 +19,13 @@ func rekeyChangeSet(cs *ChangeSet, projectID string, sessions, turns, jobs map[s
 	}
 	for i := range cs.Operations {
 		op := &cs.Operations[i]
+		if op.OpType == "restore" {
+			var effects []ChangeEffect
+			if decodeJSON(op.AfterValue, &effects) == nil {
+				rekeyChangeEffects(effects, sessions)
+				op.AfterValue = rawMessage(effects)
+			}
+		}
 		var value map[string]any
 		if decodeJSON(op.AfterValue, &value) == nil && value != nil {
 			if id, ok := value["session_id"].(string); ok {
@@ -29,6 +38,8 @@ func rekeyChangeSet(cs *ChangeSet, projectID string, sessions, turns, jobs map[s
 
 // rekeyArchive isolates imported sessions, jobs and research records while retaining internal provenance links.
 func rekeyArchive(project *Project) {
+	rekeyProjectWriting(project)
+	rekeyProjectWiki(project)
 	sessions, turns, jobs := map[string]string{}, map[string]string{}, map[string]string{}
 	for _, s := range project.Conversations {
 		sessions[s.ID] = newID()
@@ -86,14 +97,17 @@ func rekeyArchive(project *Project) {
 	for i := range project.Studio.ChangeSets {
 		rekeyChangeSet(&project.Studio.ChangeSets[i], project.ID, sessions, turns, jobs)
 	}
-	for i := range project.Experiments {
-		project.Experiments[i].ID = newID()
-	}
 }
 
-// importArchiveRuntime restores public task and experiment records without importing provider-private state.
+// importArchiveRuntime restores public task records without importing provider-private state.
 func importArchiveRuntime(db documentDB, project *Project) error {
-	if len(project.ArchiveJobs) > 20000 || len(project.Experiments) > 200 {
+	if err := importProjectWriting(db, project); err != nil {
+		return err
+	}
+	if err := importProjectWiki(db, project); err != nil {
+		return err
+	}
+	if len(project.ArchiveJobs) > 20000 {
 		return errors.New("Too many runtime records in the backup")
 	}
 	for _, job := range project.ArchiveJobs {
@@ -101,14 +115,6 @@ func importArchiveRuntime(db documentDB, project *Project) error {
 			return errors.New("Invalid archived task")
 		}
 		if _, err := db.ExecContext(context.Background(), "INSERT INTO runs(id,project_id,document) VALUES(?,?,?)", job.ID, project.ID, jsonText(job)); err != nil {
-			return err
-		}
-	}
-	for _, experiment := range project.Experiments {
-		if err := validateExperiment(experiment); err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(context.Background(), "INSERT INTO experiments(id,project_id,document) VALUES(?,?,?)", experiment.ID, project.ID, jsonText(experiment)); err != nil {
 			return err
 		}
 	}

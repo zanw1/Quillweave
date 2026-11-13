@@ -12,17 +12,24 @@ import (
 	"time"
 )
 
-// TestExtractionRejectsInvalidEvidence rejects fabricated quotes, invalid kinds, and malformed analysis.
+// TestExtractionRejectsInvalidEvidence rejects malformed analysis while skipping individual invalid facts.
 func TestExtractionRejectsInvalidEvidence(t *testing.T) {
 	source := "Lin Wu found a letter."
 	valid := jsonText(map[string]any{"facts": []Candidate{testCandidate()}})
-	facts, err := parseCandidates(valid, source)
-	assert(t, err == nil && len(facts) == 1, "A valid fact was not parsed")
-	for _, raw := range []string{"I think the character is happy", strings.ReplaceAll(valid, "explicit", "certain"), strings.ReplaceAll(valid, "Lin Wu found a letter.", "A quote absent from the source."), `{"facts":null}`} {
-		_, err := parseCandidates(raw, source)
-		assert(t, err != nil, "Invalid analysis was accepted")
+	facts, skipped, err := parseCandidates(valid, source)
+	assert(t, err == nil && len(facts) == 1 && len(skipped) == 0, "A valid fact was not parsed")
+	for _, raw := range []string{"I think the character is happy", `{"facts":null}`} {
+		_, _, err := parseCandidates(raw, source)
+		assert(t, err != nil, "Malformed analysis was accepted")
 	}
-	_, err = parseCandidates("```json\n"+valid+"\n```", source)
+	for _, raw := range []string{strings.ReplaceAll(valid, "explicit", "certain"), strings.ReplaceAll(valid, "Lin Wu found a letter.", "A quote absent from the source.")} {
+		facts, skipped, err := parseCandidates(raw, source)
+		assert(t, err == nil && len(facts) == 0 && len(skipped) == 1, "An invalid fact was not skipped individually")
+	}
+	mixed := jsonText(map[string]any{"facts": []Candidate{testCandidate(), {Entity: "Lin Wu", Kind: "event", Claim: "Unsupported quote.", Quote: "Absent text.", Epistemic: "explicit"}}})
+	facts, skipped, err = parseCandidates(mixed, source)
+	assert(t, err == nil && len(facts) == 1 && len(skipped) == 1, "A mixed batch did not keep its valid fact")
+	_, _, err = parseCandidates("```json\n"+valid+"\n```", source)
 	assert(t, err == nil, "A valid fenced JSON block was rejected")
 }
 
@@ -33,6 +40,77 @@ func TestWikiIsIdempotentAndPreservesReview(t *testing.T) {
 	project.Facts[0].Status = "rejected"
 	count, err := ingest(&project, project.Chapters[0].ID, hashText(project.Chapters[0].Body), []Candidate{testCandidate()}, "mock")
 	assert(t, err == nil && count == 0 && project.Facts[0].Status == "rejected", "Repeated compilation changed review status")
+}
+
+// TestKnowledgeMaintenanceArchivesOnlyCertainCandidates preserves semantic review and restores exact original states.
+func TestKnowledgeMaintenanceArchivesOnlyCertainCandidates(t *testing.T) {
+	project := testProject()
+	chapter := project.Chapters[0]
+	ingestCandidate(t, &project)
+	valid := project.Facts[0]
+	stale := valid
+	stale.ID, stale.SourceHash = "stale", hashText("old source")
+	duplicate := valid
+	duplicate.ID = "duplicate"
+	confirmed := stale
+	confirmed.ID, confirmed.Status = "confirmed-stale", "confirmed"
+	project.Facts = append(project.Facts, stale, duplicate, confirmed)
+	project.Studio.Memories = []StoryMemory{
+		{ID: "accepted", Kind: "knowledge", Entity: "Lin Wu", Title: "Letter", Content: "Accepted meaning", Status: "confirmed", Chapter: 1, SourceID: chapter.ID, SourceHash: hashText(chapter.Body), Quote: chapter.Body},
+		{ID: "conflict", Kind: "knowledge", Entity: "Lin Wu", Title: "Letter", Content: "Different interpretation", Status: "proposed", Chapter: 1, SourceID: chapter.ID, SourceHash: hashText(chapter.Body), Quote: chapter.Body},
+	}
+	preview := knowledgeMaintenancePreview(&project)
+	assert(t, preview.ArchiveCount == 2 && preview.ReviewCount == 1, "The preview did not distinguish deterministic cleanup from interpretation")
+	assert(t, applyKnowledgeMaintenance(&project, preview.Digest) == nil, "Previewed maintenance could not be applied")
+	assert(t, project.Facts[1].Status == "rejected" && project.Facts[2].Status == "rejected", "Obsolete and duplicate candidates remained pending")
+	assert(t, project.Facts[3].Status == "confirmed" && project.Studio.Memories[1].Status == "proposed", "Maintenance changed an author decision or resolved an interpretation")
+	receipt := project.Studio.KnowledgeMaintenance[0]
+	assert(t, undoKnowledgeMaintenance(&project, receipt.ID) == nil, "The maintenance receipt could not restore candidate states")
+	assert(t, project.Facts[1].Status == "pending" && project.Facts[2].Status == "pending", "Undo did not restore the original review queue")
+	assert(t, undoKnowledgeMaintenance(&project, receipt.ID) != nil, "A maintenance receipt was undone twice")
+}
+
+// TestKnowledgeMaintenanceRejectsChangedPreviewAndUndo protects concurrent author edits and refuses partial restoration.
+func TestKnowledgeMaintenanceRejectsChangedPreviewAndUndo(t *testing.T) {
+	project := testProject()
+	ingestCandidate(t, &project)
+	project.Facts[0].SourceHash = hashText("old")
+	preview := knowledgeMaintenancePreview(&project)
+	project.Revision++
+	assert(t, applyKnowledgeMaintenance(&project, preview.Digest) != nil, "An obsolete preview digest was accepted")
+	preview = knowledgeMaintenancePreview(&project)
+	assert(t, applyKnowledgeMaintenance(&project, preview.Digest) == nil, "Current maintenance failed")
+	project.Facts[0].Claim = "Author edited this record"
+	assert(t, undoKnowledgeMaintenance(&project, project.Studio.KnowledgeMaintenance[0].ID) != nil, "Undo overwrote later author edits")
+	assert(t, project.Facts[0].Status == "rejected", "A failed undo partially changed record state")
+}
+
+// TestWikiEntityKindsAreIndependentOfFactKinds keeps object events out of the character registry.
+func TestWikiEntityKindsAreIndependentOfFactKinds(t *testing.T) {
+	for _, kind := range EntityKinds {
+		t.Run(kind, func(t *testing.T) {
+			project := testProject()
+			project.Chapters[0].Body = "The old iron sword was repaired."
+			candidate := Candidate{Entity: "old iron sword", EntityKind: kind, Kind: "event", Claim: "Was repaired", Quote: project.Chapters[0].Body, Epistemic: "explicit"}
+			parsed, skipped, err := parseCandidates(jsonText(map[string]any{"facts": []Candidate{candidate}}), project.Chapters[0].Body)
+			assert(t, err == nil && len(parsed) == 1 && len(skipped) == 0, "An explicit entity type was rejected")
+			_, err = ingest(&project, project.Chapters[0].ID, hashText(project.Chapters[0].Body), parsed, "fixture")
+			assert(t, err == nil && len(project.Entities) == 1 && project.Entities[0].Kind == kind, "The fact kind overrode the entity type")
+		})
+	}
+	project := testProject()
+	candidate := testCandidate()
+	candidate.EntityKind = ""
+	_, err := ingest(&project, project.Chapters[0].ID, hashText(project.Chapters[0].Body), []Candidate{candidate}, "legacy")
+	assert(t, err == nil && project.Entities[0].Kind == "concept" && strings.Contains(project.Entities[0].Description, "review"), "A legacy unknown entity was silently guessed to be a character")
+	project.Entities[0].Name, project.Entities[0].Kind, project.Entities[0].Aliases = "Known person", "character", []string{candidate.Entity}
+	project.Facts = nil
+	candidate.EntityKind = "item"
+	_, err = ingest(&project, project.Chapters[0].ID, hashText(project.Chapters[0].Body), []Candidate{candidate}, "fixture")
+	assert(t, err == nil && len(project.Entities) == 1 && project.Entities[0].Kind == "character" && project.Facts[0].Entity == "Known person", "Reusing an alias created or retyped a known entity")
+	candidate.EntityKind = "invalid-type"
+	parsed, skipped, err := parseCandidates(jsonText(map[string]any{"facts": []Candidate{candidate}}), project.Chapters[0].Body)
+	assert(t, err == nil && len(parsed) == 0 && len(skipped) == 1, "An unsupported explicit entity type was accepted")
 }
 
 // TestStaleEvidenceCannotBeConfirmed checks that changed sources invalidate evidence confirmation and publication.

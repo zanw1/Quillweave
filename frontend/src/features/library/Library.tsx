@@ -21,6 +21,11 @@ import {
 } from "../../components/ui";
 import { Assistant } from "../assistant/Assistant";
 import type { ContextItem, Project, Source } from "../../domain/types";
+import {
+  decodeReferenceText,
+  referenceChapters,
+  type ReferenceChapter,
+} from "../../lib/referenceText";
 
 /** Import and retrieve source material with attribution and a separate legacy archive. */
 export function Library({
@@ -47,6 +52,13 @@ export function Library({
   const [analyze, setAnalyze] = useState<Source | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [reference, setReference] = useState<{
+    text: string;
+    name: string;
+    encoding: string;
+    chapters: ReferenceChapter[];
+  } | null>(null);
+  const [chapterRange, setChapterRange] = useState({ start: 1, end: 1 });
   const file = useRef<HTMLInputElement>(null);
   const kinds: Record<string, string> = {
     research: "Reference",
@@ -54,26 +66,50 @@ export function Library({
     world: "Worldbuilding",
     legacy: "Legacy archive",
   };
-  /** Read a selected UTF-8 file into the local import form. */
+  /** Select an attributable chapter range without sending an entire long novel to the model. */
+  function selectReferenceRange(
+    document: NonNullable<typeof reference>,
+    start: number,
+    end: number,
+  ) {
+    const first = document.chapters[Math.max(0, start - 1)];
+    const last =
+      document.chapters[Math.min(document.chapters.length - 1, end - 1)];
+    if (!first || !last || start > end) return;
+    setChapterRange({ start, end });
+    setDraft((previous) => ({
+      ...previous,
+      title: `${document.name.replace(/\.[^.]+$/, "").slice(0, 75)} · ${start}–${end}`,
+      category: "craft",
+      content: `[Writing reference]\nFile ${document.name}\nEncoding ${document.encoding}\nOriginal lines ${first.line}–${last.endLine}\nSelected headings ${first.title} / ${last.title}\n\n${document.text.slice(first.start, last.end)}`,
+    }));
+  }
+
+  /** Decode a selected local text and expose chapter ranges before importing the chosen source. */
   async function readFile(selectedFile?: File) {
     if (!selectedFile) return;
-    if (selectedFile.size > 5_000_000) {
-      setError("The file exceeds 5 MB. Split it before importing.");
+    if (selectedFile.size > 100_000_000) {
+      setError("The reference file exceeds 100 MB.");
       return;
     }
     try {
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(
-        await selectedFile.arrayBuffer(),
-      );
+      const decoded = decodeReferenceText(await selectedFile.arrayBuffer());
+      const chapters = referenceChapters(decoded.text);
+      setError("");
+      if (chapters.length) {
+        const document = { ...decoded, name: selectedFile.name, chapters };
+        setReference(document);
+        selectReferenceRange(document, 1, 1);
+        return;
+      }
+      setReference(null);
       setDraft((previous) => ({
         ...previous,
         title: selectedFile.name,
-        content,
+        content: decoded.text,
       }));
     } catch {
-      setError(
-        "Import UTF-8 TXT or Markdown files. Convert the encoding if needed.",
-      );
+      setError("Unable to decode this file as UTF-8, UTF-16 or GB18030 text.");
     }
   }
   /** Save sources for later author-triggered Wiki compilation. */
@@ -90,6 +126,7 @@ export function Library({
       );
       setAdding(false);
       setDraft({ title: "", content: "", category: "research", url: "" });
+      setReference(null);
       setResults(null);
     } catch (e) {
       setError(message(e));
@@ -285,6 +322,53 @@ export function Library({
                   </Select>
                 </label>
               </div>
+              {reference && (
+                <div className="reference-import-range">
+                  <p>
+                    {t("Detected encoding")} · {reference.encoding} ·{" "}
+                    {t("Detected chapters")} {reference.chapters.length}
+                  </p>
+                  <p className="muted">
+                    {t(
+                      "Choose a chapter range to preserve original line references. Duplicate headings keep their original order.",
+                    )}
+                  </p>
+                  <div className="form-grid">
+                    <label>
+                      {t("First chapter position")}
+                      <input
+                        type="number"
+                        min={1}
+                        max={chapterRange.end}
+                        value={chapterRange.start}
+                        onChange={(event) =>
+                          selectReferenceRange(
+                            reference,
+                            Number(event.target.value),
+                            chapterRange.end,
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      {t("Last chapter position")}
+                      <input
+                        type="number"
+                        min={chapterRange.start}
+                        max={reference.chapters.length}
+                        value={chapterRange.end}
+                        onChange={(event) =>
+                          selectReferenceRange(
+                            reference,
+                            chapterRange.start,
+                            Number(event.target.value),
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
               <label>
                 {t("Source URL (optional)")}
                 <input
@@ -366,14 +450,24 @@ export function Library({
               <Button
                 primary
                 onClick={() => {
-                  if (onAskSource) onAskSource(selected);
-                  else setAnalyze(selected);
+                  setAnalyze(selected);
                   setSelected(null);
                 }}
               >
                 <IconSparkles size={17} />
-                {t("Compile this source with AI")}
+                {t("Compile this source into the Wiki")}
               </Button>
+              {onAskSource && (
+                <Button
+                  onClick={() => {
+                    onAskSource(selected);
+                    setSelected(null);
+                  }}
+                >
+                  <IconArrowUpRight size={16} />
+                  {t("Ask about this source")}
+                </Button>
+              )}
               <p className="muted">
                 {t(
                   "The complete source is analyzed in chunks. Proposed facts enter the Wiki review queue.",

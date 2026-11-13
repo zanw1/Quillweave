@@ -1,3 +1,4 @@
+import { zhChat } from "./zh-chat";
 import { zhBase } from "./zh-base";
 import { zhMessages } from "./zh-messages";
 import { zhStudio } from "./zh-studio";
@@ -9,4 +10,5 @@ export const zhCN: Record<string, string> = {
   ...zhMessages,
   ...zhStudio,
   ...zhSearch,
+  ...zhChat,
 };

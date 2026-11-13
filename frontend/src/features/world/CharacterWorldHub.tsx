@@ -5,6 +5,7 @@ import { Badge } from "../../components/ui";
 import { Wiki } from "../wiki/Wiki";
 import { Memories } from "../studio/Memories";
 import { WorldMap } from "./WorldMap";
+import { StoryKnowledgeOverview } from "./StoryKnowledgeOverview";
 import type { Project, WikiHealth } from "../../domain/types";
 import { ReviewSetupButton } from "../studio/ReviewSetupButton";
 
@@ -32,7 +33,7 @@ export function CharacterWorldHub({
   onOpenTarget,
   onAsk,
 }: Props) {
-  const [section, setSection] = useState<"wiki" | "memory" | "map">(
+  const [section, setSection] = useState<"wiki" | "memory" | "map" | "overview">(
     initialSection,
   );
   useEffect(() => {
@@ -56,6 +57,14 @@ export function CharacterWorldHub({
         role="tablist"
         aria-label={t("Story settings")}
       >
+        <button
+          role="tab"
+          aria-selected={section === "overview"}
+          className={`hub-tab ${section === "overview" ? "active" : ""}`}
+          onClick={() => setSection("overview")}
+        >
+          <IconBook2 size={16} />{t("Effective story knowledge")}
+        </button>
         <button
           role="tab"
           aria-selected={section === "map"}
@@ -91,7 +100,9 @@ export function CharacterWorldHub({
           </span>
         )}
       </div>
-      {section === "map" ? (
+      {section === "overview" ? (
+        <StoryKnowledgeOverview project={project} onProject={onProject} onChapter={onChapter} onOpenTarget={onOpenTarget} />
+      ) : section === "map" ? (
         <WorldMap
           project={project}
           onProject={onProject}
@@ -114,6 +125,7 @@ export function CharacterWorldHub({
             project={project}
             onProject={onProject}
             onWiki={() => setSection("wiki")}
+            onChapter={onChapter}
             focusId={focusId}
           />
           {findings.length > 0 && (

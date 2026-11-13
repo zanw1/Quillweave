@@ -207,15 +207,13 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID})
 	var seed Job
 	for i := 0; i < 2; i++ {
-		seed = finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID, "session_id": session.ID, "action": "continue", "instruction": fmt.Sprintf("Review choice %d", i), "request_id": fmt.Sprintf("archive-%d", i)}))
+		seed = finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": p.Chapters[0].ID, "session_id": session.ID, "action": "review", "instruction": fmt.Sprintf("Review choice %d", i), "request_id": fmt.Sprintf("archive-%d", i)}))
 		if seed.Status != "done" {
 			t.Fatal(seed.Error)
 		}
 	}
 	seedArchiveTasks(t, engine, p, seed, 280)
 	t.Logf("Prepared 280 tasks and 560 turns from two model responses in %s", time.Since(started))
-	experiment := PolicyExperiment{Policies: []ExplorationPolicy{{ID: "base", Order: "breadth", MaxCalls: 1, MaxDepth: 1}, {ID: "candidate", Order: "depth", MaxCalls: 1, MaxDepth: 1}}, Cases: []DiscoveryCase{}}
-	invoke[map[string]any](t, engine, "record_experiment", map[string]any{"project_id": p.ID, "experiment": experiment})
 	p = invoke[Project](t, engine, "save_memory", map[string]any{"project_id": p.ID, "revision": p.Revision, "memory": StoryMemory{Kind: "rule", Title: "代价", Content: "魔法需要代价", Status: "confirmed", SessionID: session.ID}})
 	exportStarted := time.Now()
 	transfer := invoke[archiveTransferInfo](t, engine, "begin_archive_export", map[string]any{"project_id": p.ID})
@@ -249,11 +247,10 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	if restored.ID == p.ID || restored.Chapters[0].Body != p.Chapters[0].Body {
 		t.Fatal("Large backup changed the manuscript")
 	}
-	var jobs, experiments int
+	var jobs int
 	engine.store.db.QueryRow("SELECT COUNT(*) FROM runs WHERE project_id=?", restored.ID).Scan(&jobs)
-	engine.store.db.QueryRow("SELECT COUNT(*) FROM experiments WHERE project_id=?", restored.ID).Scan(&experiments)
 	sessions := invoke[[]Conversation](t, engine, "list_conversations", map[string]any{"project_id": restored.ID, "chapter_id": ""})
-	if jobs != 280 || experiments != 1 || len(sessions) != 1 || len(sessions[0].Turns) != 560 || sessions[0].ID == session.ID || sessions[0].OriginChapterID != p.Chapters[0].ID || restored.Studio.Memories[0].SessionID != sessions[0].ID {
+	if jobs != 280 || len(sessions) != 1 || len(sessions[0].Turns) != 560 || sessions[0].ID == session.ID || sessions[0].OriginChapterID != p.Chapters[0].ID || restored.Studio.Memories[0].SessionID != sessions[0].ID {
 		t.Fatal("A runtime collection or rekeyed provenance link was lost")
 	}
 	rows := invoke[[]Job](t, engine, "get_runs", map[string]any{"project_id": restored.ID})
@@ -268,7 +265,7 @@ func TestLargeArchiveTransferRoundtrip(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatal("Backup or restoration unexpectedly called a model")
 	}
-	t.Logf("Restored %d-byte v2 JSON with 280 tasks, 560 turns, memory provenance, pending proposals and an experiment through bounded frames", transfer.Size)
+	t.Logf("Restored %d-byte v3 JSON with 280 tasks, 560 turns, memory provenance, pending proposals and an experiment through bounded frames", transfer.Size)
 }
 
 // TestArchiveTransferGuardsAndCleanup checks negative frames and removes every owned temporary file.
@@ -303,7 +300,7 @@ func TestArchiveImportRejectsMalformedDataAtomically(t *testing.T) {
 	p := testProject()
 	insertProject(t, engine, p)
 	exported := invoke[map[string]string](t, engine, "export", map[string]any{"project_id": p.ID, "format": "archive"})["content"]
-	malformed := []string{exported + "{}", strings.Replace(exported, `"sources":[]`, `"sources":null`, 1), strings.Replace(exported, `"format":"quillweave-2"`, `"format":"unknown"`, 1), strings.Replace(exported, `"project":{`, `"project":{"id":"duplicate",`, 1)}
+	malformed := []string{exported + "{}", strings.Replace(exported, `"sources":[]`, `"sources":null`, 1), strings.Replace(exported, `"format":"quillweave-4"`, `"format":"unknown"`, 1), strings.Replace(exported, `"project":{`, `"project":{"id":"duplicate",`, 1)}
 	for _, content := range malformed {
 		if content == exported {
 			t.Fatal("Malformed fixture did not change its target")

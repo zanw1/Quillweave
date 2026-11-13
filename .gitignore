@@ -6,7 +6,6 @@ __pycache__/
 *.pyc
 build/bin/
 build/releases/
-参考/
 .env
 .env.*
 !.env.example
@@ -16,3 +15,11 @@ build/releases/
 aidd-wiki
 # Local historical verification evidence; not an active suite.
 test/archive/
+
+# Local reading corpus and cloned reference projects are not runtime dependencies.
+/参考/
+# Local manuscript screenshots and verification evidence.
+/output/writing-system-2026-11-12/
+.agents
+output
+skills-lock.json

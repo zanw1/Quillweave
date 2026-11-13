@@ -213,6 +213,31 @@ func TestLargeStoryIncrementalSaveAndRetrieval(t *testing.T) {
 	t.Logf("Incremental save of one chapter: %s", time.Since(started))
 }
 
+// TestWritingMemoryCandidatesRetainEvidenceAndUncertainty binds actual deltas without promoting a located quotation.
+func TestWritingMemoryCandidatesRetainEvidenceAndUncertainty(t *testing.T) {
+	project := testProject()
+	chapter := &project.Chapters[0]
+	project.Entities = []Entity{{ID: "lin", Name: "Lin Wu", Aliases: []string{"The visitor"}, Kind: "character"}}
+	input := StoryMemory{Kind: "knowledge", Entity: "The visitor", Title: "Letter", Content: "The visitor may know the sender", State: "active", Quote: "Lin Wu found a letter.", KnownBy: []string{"Lin Wu"}}
+	memories := writingMemoryCandidates(&project, chapter, chapter.Body, []StoryMemory{input, input, {Kind: "rule", Content: "Invented world rule", Quote: input.Quote}, {Kind: "fact", Content: "Missing evidence", Quote: "Not in this source"}, {Kind: "invalid", Title: "Bad kind", Content: "Rejected", Quote: input.Quote}, {Kind: "fact", Content: "Missing title", Quote: input.Quote}})
+	assert(t, len(memories) == 1, "Repeated or ungrounded candidates were accepted")
+	memory := memories[0]
+	assert(t, memory.Status == "proposed" && memory.Epistemic == "inferred" && memory.Entity == "Lin Wu", "Source location was confused with semantic confirmation")
+	assert(t, memory.SourceID == chapter.ID && memory.SourceHash == hashText(chapter.Body) && memory.Chapter == 1, "A new memory lost its exact source revision")
+	project.Studio.Memories = memories
+	assert(t, len(writingMemoryCandidates(&project, chapter, chapter.Body, []StoryMemory{input})) == 0, "Saving the same chapter created another copy of an unchanged memory")
+}
+
+// TestPlanSceneCardsCloneIndependently preserves nested scene and participant data in asynchronous project copies.
+func TestPlanSceneCardsCloneIndependently(t *testing.T) {
+	project := testProject()
+	project.Studio.Plans = []StoryPlan{{ID: "plan", Level: "chapter", Title: "Scene", StartChapter: 1, EndChapter: 1, Status: "confirmed", SceneCards: []WritingScene{{POV: "Lin Wu", Goal: "Read letter", Characters: []WritingSceneCharacter{{Name: "Lin Wu", Want: "Find sender"}}}}}}
+	copy := cloneProject(project)
+	copy.Studio.Plans[0].SceneCards[0].Characters[0].Want = "Changed"
+	assert(t, project.Studio.Plans[0].SceneCards[0].Characters[0].Want == "Find sender", "A scene-card participant shared mutable state across project snapshots")
+	assert(t, validateStudio(&project.Studio) == nil, "An existing chapter outline could not retain optional scene cards")
+}
+
 // TestProposalAcceptanceIsExplicitAndAtomic proves generated plans stay pending and cannot be applied twice.
 func TestProposalAcceptanceIsExplicitAndAtomic(t *testing.T) {
 	engine := testEngine(t)
@@ -231,4 +256,117 @@ func TestProposalAcceptanceIsExplicitAndAtomic(t *testing.T) {
 	result := acceptProposalAfterPreview(t, engine, map[string]any{"project_id": p.ID, "revision": p.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
 	assert(t, len(result.Project.Studio.Plans) == 1 && result.Job.Proposals[0].Status == "accepted", "Acceptance did not update work and proposal together")
 	reject(t, engine, "review_proposal", map[string]any{"project_id": p.ID, "revision": result.Project.Revision, "job_id": job.ID, "proposal_id": job.Proposals[0].ID, "decision": "accepted"})
+}
+
+// TestConfirmedChapterPlansHaveOneEffectiveOutline rejects ambiguous chapter plans without deleting alternatives.
+func TestConfirmedChapterPlansHaveOneEffectiveOutline(t *testing.T) {
+	engine := testEngine(t)
+	p := testProject()
+	insertProject(t, engine, p)
+	first := StoryPlan{ID: "first-outline", Level: "chapter", Title: "First outline", StartChapter: 2, EndChapter: 2, Status: "confirmed"}
+	saved := invoke[Project](t, engine, "save_plan", map[string]any{"project_id": p.ID, "revision": p.Revision, "plan": first})
+	second := first
+	second.ID, second.Title = "second-outline", "Alternative outline"
+	reject(t, engine, "save_plan", map[string]any{"project_id": p.ID, "revision": saved.Revision, "plan": second})
+	second.Status = "proposed"
+	saved = invoke[Project](t, engine, "save_plan", map[string]any{"project_id": p.ID, "revision": saved.Revision, "plan": second})
+	assert(t, len(saved.Studio.Plans) == 2 && saved.Studio.Plans[1].Status == "proposed", "An alternative was deleted or silently confirmed")
+	legacy := saved
+	legacy.Studio.Plans[1].Status = "confirmed"
+	_, err := resolveWritingPlan(&legacy, Job{}, agentStepEnvelope{PlanID: first.ID})
+	assert(t, err != nil && strings.Contains(err.Error(), "multiple confirmed"), "A legacy duplicate silently selected one outline")
+}
+
+// TestCreatePlannedChaptersUsesSelectedScope preserves existing chapters and leaves other volumes unmaterialized.
+func TestCreatePlannedChaptersUsesSelectedScope(t *testing.T) {
+	engine := testEngine(t)
+	p := testProject()
+	p.Studio.Plans = []StoryPlan{
+		{ID: "volume-a", Level: "volume", Title: "Selected volume", StartChapter: 1, EndChapter: 2, Status: "confirmed"},
+		{ID: "volume-b", Level: "volume", Title: "Later volume", StartChapter: 3, EndChapter: 3, Status: "confirmed"},
+		{ID: "outline-2", ParentID: "volume-a", Level: "chapter", Title: "New chapter", StartChapter: 2, EndChapter: 2, Status: "confirmed"},
+		{ID: "outline-3", ParentID: "volume-b", Level: "chapter", Title: "Later chapter", StartChapter: 3, EndChapter: 3, Status: "confirmed"},
+	}
+	insertProject(t, engine, p)
+	created := invoke[Project](t, engine, "create_planned_chapters", map[string]any{"project_id": p.ID, "revision": p.Revision, "plan_id": "volume-a"})
+	assert(t, len(created.Chapters) == 2 && created.Chapters[0].Body == p.Chapters[0].Body && created.Chapters[1].Title == "New chapter", "Materialization ignored the selected planning scope")
+}
+
+// TestLegacyPlanConflictsCanBeResolvedIncrementally keeps every alternative while the author chooses effective outlines.
+func TestLegacyPlanConflictsCanBeResolvedIncrementally(t *testing.T) {
+	engine := testEngine(t)
+	p := testProject()
+	for _, number := range []uint32{2, 3} {
+		for index := 0; index < 3; index++ {
+			p.Studio.Plans = append(p.Studio.Plans, StoryPlan{ID: fmt.Sprintf("outline-%d-%d", number, index), Level: "chapter", Title: fmt.Sprintf("Chapter %d alternative %d", number, index), StartChapter: number, EndChapter: number, Status: "confirmed"})
+		}
+	}
+	// Store.Insert represents an older database that admitted conflicting confirmed outlines.
+	insertProject(t, engine, p)
+	chosen := p.Studio.Plans[1]
+	saved := invoke[Project](t, engine, "save_plan", map[string]any{"project_id": p.ID, "revision": p.Revision, "plan": chosen, "resolve_conflicts": true})
+	assert(t, len(saved.Studio.Plans) == 6 && confirmedChapterPlanConflicts(saved.Studio.Plans) == 2, "Resolving one chapter deleted alternatives or required all conflicts at once")
+	for _, plan := range saved.Studio.Plans {
+		if plan.StartChapter == 2 {
+			assert(t, (plan.Status == "confirmed") == (plan.ID == chosen.ID), "The wrong alternative remained effective")
+		}
+	}
+	chosen = p.Studio.Plans[4]
+	saved = invoke[Project](t, engine, "save_plan", map[string]any{"project_id": p.ID, "revision": saved.Revision, "plan": chosen, "resolve_conflicts": true})
+	assert(t, validateStudio(&saved.Studio) == nil && len(saved.Studio.Plans) == 6, "The final choice failed to restore a valid plan tree")
+}
+
+// TestKnowledgeMaintenanceDispatchRoundTrip verifies read-only previews, revision checks and durable reversible cleanup through public commands.
+func TestKnowledgeMaintenanceDispatchRoundTrip(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	ingestCandidate(t, &project)
+	project.Facts[0].SourceHash = hashText("Earlier chapter body")
+	chapter := project.Chapters[0]
+	project.Studio.Memories = []StoryMemory{
+		{ID: "stale-memory", Kind: "knowledge", Entity: "Lin Wu", Title: "Letter", Content: "Earlier interpretation", Status: "proposed", Epistemic: "inferred", Chapter: 1, SourceID: chapter.ID, SourceHash: hashText("Earlier chapter body"), Quote: "Lin Wu found a letter."},
+		{ID: "current-memory", Kind: "knowledge", Entity: "Lin Wu", Title: "Letter", Content: "Uncertain interpretation", Status: "proposed", Epistemic: "inferred", Chapter: 1, SourceID: chapter.ID, SourceHash: hashText(chapter.Body), Quote: "Lin Wu found a letter."},
+	}
+	insertProject(t, engine, project)
+	project = invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	before := project.Revision
+	view := invoke[struct {
+		Items       []ContextItem               `json:"items"`
+		Maintenance KnowledgeMaintenancePreview `json:"maintenance"`
+	}](t, engine, "story_knowledge", map[string]any{"project_id": project.ID, "through_chapter": 1, "query": "Lin Wu", "include_candidates": true})
+	preview := invoke[KnowledgeMaintenancePreview](t, engine, "preview_memory_maintenance", map[string]any{"project_id": project.ID})
+	assert(t, preview.Revision == before && preview.Digest == view.Maintenance.Digest && preview.ArchiveCount == 2, "Public knowledge views disagreed on the current maintenance preview")
+	assert(t, strings.Contains(jsonText(view.Items), "Lin Wu found a letter.") && !strings.Contains(jsonText(view.Items), "Uncertain interpretation"), "Current candidates lost source navigation or leaked an inferred claim as a fact")
+	stored := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, stored.Revision == before && stored.Facts[0].Status == "pending" && len(stored.Studio.KnowledgeMaintenance) == 0, "Reading a knowledge view mutated the project")
+	reject(t, engine, "apply_memory_maintenance", map[string]any{"project_id": project.ID, "revision": before, "digest": "obsolete-preview"})
+	reject(t, engine, "apply_memory_maintenance", map[string]any{"project_id": project.ID, "revision": before + 1, "digest": preview.Digest})
+	project = invoke[Project](t, engine, "apply_memory_maintenance", map[string]any{"project_id": project.ID, "revision": before, "digest": preview.Digest})
+	assert(t, project.Revision == before+1 && project.Facts[0].Status == "rejected" && project.Studio.Memories[0].Status == "rejected" && project.Studio.Memories[1].Status == "proposed", "Maintenance did not archive precisely the obsolete candidates")
+	assert(t, len(project.Studio.KnowledgeMaintenance) == 1 && len(project.Studio.KnowledgeMaintenance[0].Entries) == 2, "Maintenance did not persist its affected-record receipt")
+	receiptID := project.Studio.KnowledgeMaintenance[0].ID
+	state := project.Studio
+	state.KnowledgeMaintenance = nil
+	project = invoke[Project](t, engine, "save_studio", map[string]any{"project_id": project.ID, "revision": project.Revision, "studio": state})
+	assert(t, len(project.Studio.KnowledgeMaintenance) == 1 && project.Studio.KnowledgeMaintenance[0].ID == receiptID, "Saving older studio settings erased the server-owned maintenance receipt")
+	reject(t, engine, "undo_memory_maintenance", map[string]any{"project_id": project.ID, "revision": before + 1, "receipt_id": receiptID})
+	undoRevision := project.Revision
+	project = invoke[Project](t, engine, "undo_memory_maintenance", map[string]any{"project_id": project.ID, "revision": undoRevision, "receipt_id": receiptID})
+	assert(t, project.Revision == undoRevision+1 && project.Facts[0].Status == "pending" && project.Studio.Memories[0].Status == "proposed" && project.Studio.Memories[1].Status == "proposed", "Public undo did not restore the exact candidate review states")
+	stored = invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, stored.Revision == project.Revision && stored.Studio.KnowledgeMaintenance[0].UndoneAt != "" && stored.Facts[0].Status == "pending", "Undo results did not survive the database boundary")
+	reject(t, engine, "undo_memory_maintenance", map[string]any{"project_id": project.ID, "revision": stored.Revision, "receipt_id": receiptID})
+}
+
+// TestAddSourceReplacesByID covers in-place source replacement that keeps the id stable and rejects unknown ids.
+func TestAddSourceReplacesByID(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	saved := invoke[Project](t, engine, "add_source", map[string]any{"project_id": project.ID, "revision": project.Revision, "title": "Craft notes", "category": "craft", "url": "", "content": "old content"})
+	assert(t, len(saved.Sources) == 1, "Adding a source without source_id did not append it")
+	id := saved.Sources[0].ID
+	replaced := invoke[Project](t, engine, "add_source", map[string]any{"project_id": project.ID, "revision": saved.Revision, "source_id": id, "title": "Craft notes v2", "category": "craft", "url": "", "content": "new content"})
+	assert(t, len(replaced.Sources) == 1 && replaced.Sources[0].ID == id && replaced.Sources[0].Title == "Craft notes v2" && replaced.Sources[0].Content == "new content", "A source with source_id was not replaced in place")
+	reject(t, engine, "add_source", map[string]any{"project_id": project.ID, "revision": replaced.Revision, "source_id": "missing", "title": "Craft notes", "category": "craft", "url": "", "content": "ignored"})
 }

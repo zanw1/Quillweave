@@ -20,29 +20,31 @@ import (
 
 // Project preserves the existing JSON fields and persistence format.
 type Project struct {
-	ID                  string             `json:"id"`
-	Title               string             `json:"title"`
-	Genre               string             `json:"genre"`
-	Premise             string             `json:"premise"`
-	Style               string             `json:"style"`
-	Outline             string             `json:"outline"`
-	Revision            uint64             `json:"revision"`
-	CreatedAt           string             `json:"created_at"`
-	UpdatedAt           string             `json:"updated_at"`
-	Chapters            []Chapter          `json:"chapters"`
-	Entities            []Entity           `json:"entities"`
-	Facts               []Fact             `json:"facts"`
-	Sources             []Source           `json:"sources"`
-	WikiPurpose         string             `json:"wiki_purpose"`
-	Compilations        []WikiCompilation  `json:"compilations"`
-	WritingStyle        string             `json:"writing_style"`
-	DefaultChapterWords uint32             `json:"default_chapter_words"`
-	NarrativePov        string             `json:"narrative_pov"`
-	ModelOverrides      map[string]string  `json:"model_overrides"`
-	Studio              StudioState        `json:"studio"`
-	Conversations       []Conversation     `json:"conversations,omitempty"`
-	ArchiveJobs         []Job              `json:"jobs,omitempty"`
-	Experiments         []PolicyExperiment `json:"experiments,omitempty"`
+	ID                  string                   `json:"id"`
+	Title               string                   `json:"title"`
+	Genre               string                   `json:"genre"`
+	Premise             string                   `json:"premise"`
+	Style               string                   `json:"style"`
+	Outline             string                   `json:"outline"`
+	Revision            uint64                   `json:"revision"`
+	CreatedAt           string                   `json:"created_at"`
+	UpdatedAt           string                   `json:"updated_at"`
+	Chapters            []Chapter                `json:"chapters"`
+	Entities            []Entity                 `json:"entities"`
+	Facts               []Fact                   `json:"facts"`
+	Sources             []Source                 `json:"sources"`
+	WikiPurpose         string                   `json:"wiki_purpose"`
+	Compilations        []WikiCompilation        `json:"compilations"`
+	WritingStyle        string                   `json:"writing_style"`
+	DefaultChapterWords uint32                   `json:"default_chapter_words"`
+	NarrativePov        string                   `json:"narrative_pov"`
+	ModelOverrides      map[string]string        `json:"model_overrides"`
+	Studio              StudioState              `json:"studio"`
+	Conversations       []Conversation           `json:"conversations,omitempty"`
+	ArchiveJobs         []Job                    `json:"jobs,omitempty"`
+	WritingSessions     []ExternalWritingSession `json:"writing_sessions,omitempty"`
+	ImportWarnings      []string                 `json:"import_warnings,omitempty"`
+	WikiSessions        []ExternalWikiSession    `json:"wiki_sessions,omitempty"`
 	requestLanguage     string
 	taskLanguage        string
 }
@@ -56,17 +58,18 @@ type MemorySection struct {
 
 // WikiCompilation preserves the existing JSON fields and persistence format.
 type WikiCompilation struct {
-	ID              string          `json:"id"`
-	SourceID        string          `json:"source_id"`
-	SourceHash      string          `json:"source_hash"`
-	RulesHash       string          `json:"rules_hash"`
-	Fingerprint     string          `json:"fingerprint"`
-	CompilerVersion string          `json:"compiler_version"`
-	Model           string          `json:"model"`
-	Chunks          uint64          `json:"chunks"`
-	Sections        []MemorySection `json:"sections"`
-	Status          string          `json:"status"`
-	CreatedAt       string          `json:"created_at"`
+	ID              string              `json:"id"`
+	SourceID        string              `json:"source_id"`
+	SourceHash      string              `json:"source_hash"`
+	RulesHash       string              `json:"rules_hash"`
+	Fingerprint     string              `json:"fingerprint"`
+	CompilerVersion string              `json:"compiler_version"`
+	Model           string              `json:"model"`
+	Chunks          uint64              `json:"chunks"`
+	Sections        []MemorySection     `json:"sections"`
+	Status          string              `json:"status"`
+	CreatedAt       string              `json:"created_at"`
+	Provenance      *ExternalProvenance `json:"provenance,omitempty"`
 }
 
 // Chapter preserves the existing JSON fields and persistence format.
@@ -114,26 +117,28 @@ type Source struct {
 
 // Fact preserves the existing JSON fields and persistence format.
 type Fact struct {
-	ID            string `json:"id"`
-	Entity        string `json:"entity"`
-	Kind          string `json:"kind"`
-	Claim         string `json:"claim"`
-	SourceID      string `json:"source_id"`
-	SourceHash    string `json:"source_hash"`
-	Quote         string `json:"quote"`
-	Chapter       uint32 `json:"chapter"`
-	StoryTime     string `json:"story_time"`
-	Location      string `json:"location"`
-	RelatedEntity string `json:"related_entity"`
-	Epistemic     string `json:"epistemic"`
-	Status        string `json:"status"`
-	Model         string `json:"model"`
-	CreatedAt     string `json:"created_at"`
+	ID            string              `json:"id"`
+	Entity        string              `json:"entity"`
+	Kind          string              `json:"kind"`
+	Claim         string              `json:"claim"`
+	SourceID      string              `json:"source_id"`
+	SourceHash    string              `json:"source_hash"`
+	Quote         string              `json:"quote"`
+	Chapter       uint32              `json:"chapter"`
+	StoryTime     string              `json:"story_time"`
+	Location      string              `json:"location"`
+	RelatedEntity string              `json:"related_entity"`
+	Epistemic     string              `json:"epistemic"`
+	Status        string              `json:"status"`
+	Model         string              `json:"model"`
+	CreatedAt     string              `json:"created_at"`
+	Provenance    *ExternalProvenance `json:"provenance,omitempty"`
 }
 
 // Candidate preserves the existing JSON fields and persistence format.
 type Candidate struct {
 	Entity        string `json:"entity"`
+	EntityKind    string `json:"entity_kind,omitempty"`
 	Kind          string `json:"kind"`
 	Claim         string `json:"claim"`
 	Quote         string `json:"quote"`
@@ -159,6 +164,10 @@ type ProviderConfig struct {
 	APIVersion      string       `json:"api_version,omitempty"`
 	ModelLimits     *ModelLimits `json:"model_limits,omitempty"`
 	nativeTools     bool
+	resultTool      *resultToolSpec
+	chatOutputAuto  bool
+	tokenBaseline   *tokenUsageBaseline
+	onReasoning     func(string)
 }
 
 // ModelProfile preserves the existing JSON fields and persistence format.
@@ -180,24 +189,28 @@ type ModelSettings struct {
 
 // AIRequest preserves the existing JSON fields and persistence format.
 type AIRequest struct {
-	ProjectID        string            `json:"project_id"`
-	ChapterID        string            `json:"chapter_id"`
-	Action           string            `json:"action"`
-	Instruction      string            `json:"instruction"`
-	SourceID         string            `json:"source_id"`
-	History          []Message         `json:"history"`
-	Force            bool              `json:"force"`
-	SessionID        string            `json:"session_id,omitempty"`
-	RequestID        string            `json:"request_id,omitempty"`
-	UILanguage       string            `json:"ui_language,omitempty"`
-	Language         string            `json:"language,omitempty"`
-	ResumeJobID      string            `json:"resume_job_id,omitempty"`
-	ExtractionJobID  string            `json:"extraction_job_id,omitempty"`
-	IntentHint       string            `json:"intent_hint,omitempty"`
-	CommitPolicy     string            `json:"commit_policy,omitempty"`
-	WorkspaceContext *WorkspaceContext `json:"workspace_context,omitempty"`
-	SearchSelection  *SearchSelection  `json:"search_selection,omitempty"`
-	Retrieved        []ContextItem     `json:"-"`
+	ProjectID        string              `json:"project_id"`
+	ChapterID        string              `json:"chapter_id"`
+	Action           string              `json:"action"`
+	Instruction      string              `json:"instruction"`
+	SourceID         string              `json:"source_id"`
+	History          []Message           `json:"history"`
+	Force            bool                `json:"force"`
+	SessionID        string              `json:"session_id,omitempty"`
+	RequestID        string              `json:"request_id,omitempty"`
+	UILanguage       string              `json:"ui_language,omitempty"`
+	Language         string              `json:"language,omitempty"`
+	ResumeJobID      string              `json:"resume_job_id,omitempty"`
+	ExtractionJobID  string              `json:"extraction_job_id,omitempty"`
+	IntentHint       string              `json:"intent_hint,omitempty"`
+	CommitPolicy     string              `json:"commit_policy,omitempty"`
+	WorkspaceContext *WorkspaceContext   `json:"workspace_context,omitempty"`
+	SearchSelection  *SearchSelection    `json:"search_selection,omitempty"`
+	ModelSelection   *ChatModelSelection `json:"model_selection,omitempty"`
+	SkillIDs         []string            `json:"skill_ids,omitempty"`
+	Compact          bool                `json:"compact,omitempty"`
+	Retrieved        []ContextItem       `json:"-"`
+	writingResume    *WritingRun
 	systemAppend     string
 	conversation     *Conversation
 	historyGroups    []HistoryGroup
@@ -220,17 +233,22 @@ type Message struct {
 
 // Prompt preserves the existing JSON fields and persistence format.
 type Prompt struct {
-	Warning       string                  `json:"warning,omitempty"`
-	Messages      []Message               `json:"messages"`
-	Context       []ContextItem           `json:"context"`
-	SourceHash    string                  `json:"source_hash"`
-	SourceID      string                  `json:"source_id"`
-	Chars         int                     `json:"chars"`
-	ToolChars     int                     `json:"tool_chars,omitempty"`
-	HistoryGroups []HistoryGroup          `json:"history_groups,omitempty"`
-	Checkpoint    *ConversationCheckpoint `json:"checkpoint,omitempty"`
-	BibleCurrent  string                  `json:"bible_current,omitempty"`
-	BibleBaseline string                  `json:"bible_baseline,omitempty"`
+	Warning        string                  `json:"warning,omitempty"`
+	Messages       []Message               `json:"messages"`
+	Context        []ContextItem           `json:"context"`
+	SourceHash     string                  `json:"source_hash"`
+	SourceID       string                  `json:"source_id"`
+	Chars          int                     `json:"chars"`
+	ToolChars      int                     `json:"tool_chars,omitempty"`
+	HistoryGroups  []HistoryGroup          `json:"history_groups,omitempty"`
+	Checkpoint     *ConversationCheckpoint `json:"checkpoint,omitempty"`
+	BibleCurrent   string                  `json:"bible_current,omitempty"`
+	BibleBaseline  string                  `json:"bible_baseline,omitempty"`
+	ModelSelection *ChatModelSelection     `json:"model_selection,omitempty"`
+	Budget         *TokenBudget            `json:"budget,omitempty"`
+	CarriedRecords []CarriedRecord         `json:"carried_records,omitempty"`
+	ForceCompact   bool                    `json:"force_compact,omitempty"`
+	Skills         []SkillDescriptor       `json:"skills,omitempty"`
 }
 
 // LintFinding preserves the existing JSON fields and persistence format.
@@ -245,12 +263,15 @@ type LintFinding struct {
 
 // ContextItem preserves the existing JSON fields and persistence format.
 type ContextItem struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Kind   string `json:"kind"`
-	Text   string `json:"text"`
-	Score  int    `json:"score"`
-	Reason string `json:"reason"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	Text       string `json:"text"`
+	Score      int    `json:"score"`
+	Reason     string `json:"reason"`
+	Required   bool   `json:"required,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+	SourceHash string `json:"source_hash,omitempty"`
 }
 
 // GraphNode preserves the existing JSON fields and persistence format.

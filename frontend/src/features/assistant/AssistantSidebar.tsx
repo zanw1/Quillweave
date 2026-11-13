@@ -32,6 +32,7 @@ export function ExtractChangeSetButton({
 }: ExtractButtonProps) {
   const [extracting, setExtracting] = useState(false);
 
+  /** Stage the selected response through its owning conversation. */
   async function extract() {
     if (!text.trim() || extracting) return;
     setExtracting(true);
@@ -89,6 +90,63 @@ export function AssistantModals({
                 {t(context.warning)}
               </p>
             )}
+            {context.budget && (
+              <div className="chat-context-budget">
+                <p>
+                  {t("Input tokens")} · {context.budget.estimated ? "~" : ""}
+                  {context.budget.input_tokens_estimate.toLocaleString()}
+                </p>
+                <p>
+                  {t("Context window")} ·{" "}
+                  {context.budget.context_window_tokens
+                    ? context.budget.context_window_tokens.toLocaleString()
+                    : t("Unknown")}
+                </p>
+                <p>
+                  {t("Output budget")} ·{" "}
+                  {context.budget.output_tokens.toLocaleString()}
+                </p>
+                {context.budget.needs_compaction && (
+                  <p>
+                    {t("Earlier exchanges will be compacted before sending.")}
+                  </p>
+                )}
+                {context.budget.warning && (
+                  <p role="status">{t(context.budget.warning)}</p>
+                )}
+              </div>
+            )}
+            {!!context.carried_records?.length && (
+              <details className="context-item">
+                <summary>{t("What this turn carries")}</summary>
+                {context.carried_records.map((record) => (
+                  <p key={record.id}>
+                    {record.label}
+                    <small> · {record.id}</small>
+                  </p>
+                ))}
+              </details>
+            )}
+            {!!context.skills?.length && (
+              <details className="context-item">
+                <summary>{t("Skills")}</summary>
+                {context.skills.map((skill) => (
+                  <p key={skill.id}>
+                    {skill.name}
+                    <small>
+                      {" "}
+                      · {skill.source} · {skill.version.slice(0, 12)}
+                    </small>
+                  </p>
+                ))}
+              </details>
+            )}
+            {context.checkpoint && (
+              <details className="context-item">
+                <summary>{t("Conversation summary")}</summary>
+                <p className="preserve">{context.checkpoint.summary}</p>
+              </details>
+            )}
             <p className="muted">
               {t("Total")} {context.chars.toLocaleString()}{" "}
               {t(
@@ -98,9 +156,19 @@ export function AssistantModals({
             {context.context.map((item) => (
               <details className="context-item" key={item.id}>
                 <summary>
-                  {item.title}
+                  {t(item.title)}
+                  {item.required && <Badge>{t("Required evidence")}</Badge>}
                   <small>{item.id}</small>
                 </summary>
+                <p className="muted">
+                  {item.reason && <span> {t(item.reason)}</span>}
+                  {item.source_hash && (
+                    <small>
+                      {" "}
+                      · {t("Source version")} {item.source_hash.slice(0, 12)}
+                    </small>
+                  )}
+                </p>
                 <p className="preserve">{item.text}</p>
               </details>
             ))}

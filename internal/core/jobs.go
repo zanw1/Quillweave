@@ -9,31 +9,35 @@ import (
 )
 
 type Job struct {
-	ID                   string            `json:"id"`
-	ProjectID            string            `json:"project_id"`
-	ChapterID            string            `json:"chapter_id"`
-	Action               string            `json:"action"`
-	Instruction          string            `json:"instruction"`
-	Status               string            `json:"status"`
-	Text                 string            `json:"text"`
-	Error                string            `json:"error"`
-	Progress             string            `json:"progress"`
-	CreatedAt            string            `json:"created_at"`
-	Model                string            `json:"model"`
-	Prompt               Prompt            `json:"prompt"`
-	SessionID            string            `json:"session_id,omitempty"`
-	Language             string            `json:"language,omitempty"`
-	IntentHint           string            `json:"intent_hint,omitempty"`
-	CommitPolicy         string            `json:"commit_policy,omitempty"`
-	WorkspaceContext     *WorkspaceContext `json:"workspace_context,omitempty"`
-	Steps                []AgentStep       `json:"steps"`
-	Proposals            []StudioProposal  `json:"proposals"`
-	ChangeSets           []ChangeSet       `json:"changesets,omitempty"`
-	Calls                int               `json:"calls"`
-	Metrics              []ModelCallMetric `json:"metrics,omitempty"`
-	SearchSelection      *SearchSelection  `json:"search_selection,omitempty"`
-	SearchModelProfileID string            `json:"search_model_profile_id,omitempty"`
-	BaseRevision         uint64            `json:"base_revision"`
+	ID                   string              `json:"id"`
+	ProjectID            string              `json:"project_id"`
+	ChapterID            string              `json:"chapter_id"`
+	Action               string              `json:"action"`
+	Instruction          string              `json:"instruction"`
+	Status               string              `json:"status"`
+	Text                 string              `json:"text"`
+	Error                string              `json:"error"`
+	Progress             string              `json:"progress"`
+	CreatedAt            string              `json:"created_at"`
+	Model                string              `json:"model"`
+	ModelSelection       *ChatModelSelection `json:"model_selection,omitempty"`
+	SkillIDs             []string            `json:"skill_ids,omitempty"`
+	Prompt               Prompt              `json:"prompt"`
+	SessionID            string              `json:"session_id,omitempty"`
+	Language             string              `json:"language,omitempty"`
+	IntentHint           string              `json:"intent_hint,omitempty"`
+	CommitPolicy         string              `json:"commit_policy,omitempty"`
+	WorkspaceContext     *WorkspaceContext   `json:"workspace_context,omitempty"`
+	Steps                []AgentStep         `json:"steps"`
+	Proposals            []StudioProposal    `json:"proposals"`
+	ChangeSets           []ChangeSet         `json:"changesets,omitempty"`
+	Calls                int                 `json:"calls"`
+	Metrics              []ModelCallMetric   `json:"metrics,omitempty"`
+	SearchSelection      *SearchSelection    `json:"search_selection,omitempty"`
+	SearchModelProfileID string              `json:"search_model_profile_id,omitempty"`
+	BaseRevision         uint64              `json:"base_revision"`
+	Writing              *WritingRun         `json:"writing,omitempty"`
+	Activity             []ChatActivity      `json:"activity,omitempty"`
 	checkpointedAt       time.Time
 	ctx                  context.Context
 	cancel               context.CancelFunc
@@ -120,9 +124,20 @@ func (engine *Engine) retainProviderOutput(jobID string, selected SelectedModel,
 func (job *Job) snapshot() Job {
 	value := *job
 	value.Steps = append([]AgentStep{}, job.Steps...)
+	value.Activity = append([]ChatActivity{}, job.Activity...)
 	value.Proposals = append([]StudioProposal{}, job.Proposals...)
 	value.ChangeSets = append([]ChangeSet{}, job.ChangeSets...)
+	for i := range value.ChangeSets {
+		value.ChangeSets[i].Operations = append([]ChangeOperation{}, value.ChangeSets[i].Operations...)
+		value.ChangeSets[i].Skipped = append([]ChangeOperation{}, value.ChangeSets[i].Skipped...)
+	}
 	value.Metrics = append([]ModelCallMetric{}, job.Metrics...)
+	value.SkillIDs = append([]string{}, job.SkillIDs...)
+	value.Writing = copyWritingRun(job.Writing)
+	if job.ModelSelection != nil {
+		selection := *job.ModelSelection
+		value.ModelSelection = &selection
+	}
 	return value
 }
 
@@ -141,11 +156,13 @@ func (engine *Engine) start(request AIRequest) (any, error) {
 		return engine.loadJob(prepared.prior, request.ProjectID)
 	}
 	project, request := prepared.project, prepared.request
-	request.CommitPolicy = "review"
 	selected, synthesis, prompt, resumeText := prepared.selected, prepared.synthesis, prepared.prompt, prepared.resumeText
 	ctx, cancel := context.WithCancel(engine.ctx)
 	job := &Job{ID: newID(), ProjectID: request.ProjectID, ChapterID: request.ChapterID, Action: request.Action, Instruction: request.Instruction, Status: "running", Progress: "Connecting to the model…", CreatedAt: now(), Model: selected.ProfileName + " / " + selected.Config.Model, Prompt: prompt, ctx: ctx, cancel: cancel, SessionID: request.SessionID, Language: responseLanguage(&project, request.Language), IntentHint: request.IntentHint, CommitPolicy: request.CommitPolicy, WorkspaceContext: request.WorkspaceContext, BaseRevision: project.Revision, Steps: []AgentStep{}, Proposals: []StudioProposal{}, ChangeSets: []ChangeSet{}}
 	job.Text = resumeText
+	job.Writing = copyWritingRun(request.writingResume)
+	job.ModelSelection = request.ModelSelection
+	job.SkillIDs = append([]string{}, request.SkillIDs...)
 	job.SearchSelection = request.SearchSelection
 	job.SearchModelProfileID = selected.ProfileID
 	job.ownerID = engine.owner.id
@@ -257,6 +274,8 @@ func (engine *Engine) setProgress(id, text string) {
 func (engine *Engine) executeJob(job Job, project Project, selected, synthesis SelectedModel) {
 	defer engine.workers.Done()
 	defer job.cancel()
+	stopWatching := engine.watchJobCancellation(job)
+	defer stopWatching()
 	progress, outcome := engine.runJob(job, &project, selected, synthesis)
 	// Use the same lock order as commands to avoid settings-save and task-completion deadlocks.
 	engine.mu.Lock()
@@ -313,18 +332,26 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 	if job.Action == "agent" {
 		return engine.runAgent(job, project, selected)
 	}
+	if contains([]string{"continue", "rewrite"}, job.Action) {
+		if job.IntentHint == "write_from_outline" && job.Action == "continue" {
+			if err := engine.ensureWritingChapter(project, &job, agentStepEnvelope{ChapterID: job.ChapterID}); err != nil {
+				return "", err
+			}
+		}
+		mode := "append"
+		if job.Action == "rewrite" {
+			mode = "replace"
+		}
+		_, _, err := engine.runChapterProduction(job, project, selected, job.Prompt, mode, 1, agentStepEnvelope{})
+		return writingResultSummary(project, engine.writingOutcome(job.ID)), err
+	}
 	if job.Action != "wiki" {
-		output, err := engine.streamJobModel(job.ID, "generation", job.ctx, config, job.Prompt.Messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "generation", job.ctx, config, job.Prompt.Messages, func(text string) { engine.appendText(job.ID, text) }, selected.ProfileID)
 		if err != nil {
 			return "", err
 		}
-		count := engine.recordProposals(job.ID, output.Text, project)
-		if count == 0 && contains([]string{"continue", "rewrite"}, job.Action) {
-			mode := "append"
-			if job.Action == "rewrite" {
-				mode = "replace"
-			}
-			engine.recordProposals(job.ID, jsonText(map[string]any{"proposals": []StudioProposal{{Kind: "chapter", Mode: mode, Title: localText(project, "Chapter prose proposal", "章节正文建议"), Content: job.Text + output.Text}}}), project)
+		if _, propErr := engine.recordProposals(job.ID, output.Text, project); propErr != nil {
+			return "", propErr
 		}
 		if conversationAction(job.Action) {
 			engine.retainProviderOutput(job.ID, selected, output)
@@ -335,27 +362,41 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 	if !ok {
 		return "", errors.New("Source text not found")
 	}
-	parts := chunks(source, min(6000, max(1000, int(config.ContextChars)-3000)), 150)
+	parts, err := prepareWikiChunks(project, source, config)
+	if err != nil {
+		return "", err
+	}
 	candidates := []Candidate{}
+	skippedTotal := 0
 	for index, part := range parts {
 		if job.ctx.Err() != nil {
 			return "", errors.New("Task cancelled")
 		}
 		engine.setProgress(job.ID, fmt.Sprintf("Stage 1: Extracting source evidence %d/%d", index+1, len(parts)))
 		messages := extractionPrompt(part, project)
-		if uint64(messageChars(messages)) > config.ContextChars {
-			return "", errors.New("Character details and tracking focus exceed the context budget. Increase the budget")
+		if err := wikiMessagesBudget(config, messages); err != nil {
+			return "", err
 		}
-		output, err := engine.streamJobModel(job.ID, "evidence_extraction", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "evidence_extraction", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) }, selected.ProfileID)
 		if err != nil {
 			return "", err
 		}
-		parsed, err := parseCandidates(output.Text, part)
+		parsed, skipped, err := parseCandidates(output.Text, part)
 		if err != nil {
 			return "", err
 		}
 		candidates = append(candidates, parsed...)
+		if len(skipped) > 0 {
+			skippedTotal += len(skipped)
+			engine.appendText(job.ID, fmt.Sprintf("\n\nSkipped %d invalid candidates in this chunk:\n- %s\n", len(skipped), strings.Join(skipped, "\n- ")))
+		}
 		engine.appendText(job.ID, "\n\n")
+	}
+	if len(candidates) == 0 {
+		if skippedTotal > 0 {
+			return "", errors.New("Every extracted candidate failed evidence validation. Review the raw analysis and retry; no compilation was cached")
+		}
+		return "The source contained no supported evidence records. No compilation was cached", nil
 	}
 	staged := cloneProject(*project)
 	if _, err := ingest(&staged, job.Prompt.SourceID, job.Prompt.SourceHash, candidates, config.Model); err != nil {
@@ -367,7 +408,10 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 			facts = append(facts, fact)
 		}
 	}
-	sections, err := engine.compileMemories(job, project, synthesis.Config, facts)
+	if len(facts) == 0 {
+		return "The extracted evidence was already rejected. No compilation was cached", nil
+	}
+	sections, err := engine.compileMemories(job, project, synthesis.Config, facts, synthesis.ProfileID)
 	if err != nil {
 		return "", err
 	}
@@ -415,28 +459,32 @@ func (engine *Engine) runJob(job Job, project *Project, selected, synthesis Sele
 	if err := engine.store.Save(&latest, revision); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Evidence extraction and story memory compilation complete. Added %d evidence records for review. The memory awaits author approval", count), nil
+	summary := fmt.Sprintf("Evidence extraction and story memory compilation complete. Added %d evidence records for review. The memory awaits author approval", count)
+	if skippedTotal > 0 {
+		summary += fmt.Sprintf(". %d invalid candidates were skipped and listed in the raw analysis", skippedTotal)
+	}
+	return summary, nil
 }
 
 // compileMemories groups up to twelve evidence records per batch within the model context budget.
-func (engine *Engine) compileMemories(job Job, project *Project, config ProviderConfig, facts []Fact) ([]MemorySection, error) {
+func (engine *Engine) compileMemories(job Job, project *Project, config ProviderConfig, facts []Fact, profileIDs ...string) ([]MemorySection, error) {
 	sections := []MemorySection{}
 	for start := 0; start < len(facts); {
 		end := start + 1
 		messages := memoryPrompt(project, facts[start:end])
-		if uint64(messageChars(messages)) > config.ContextChars {
-			return nil, errors.New("One evidence record exceeds the memory context budget. Increase the budget")
+		if err := wikiMessagesBudget(config, messages); err != nil {
+			return nil, fmt.Errorf("One evidence record exceeds the memory context budget: %w", err)
 		}
 		for end < len(facts) && end-start < 12 {
 			extended := memoryPrompt(project, facts[start:end+1])
-			if uint64(messageChars(extended)) > config.ContextChars {
+			if wikiMessagesBudget(config, extended) != nil {
 				break
 			}
 			messages = extended
 			end++
 		}
 		engine.setProgress(job.ID, fmt.Sprintf("Stage 2: Compiling story memory from evidence %d–%d", start+1, end))
-		output, err := engine.streamJobModel(job.ID, "memory_compilation", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) })
+		output, err := engine.streamJobModel(job.ID, "memory_compilation", job.ctx, config, messages, func(text string) { engine.appendText(job.ID, text) }, profileIDs...)
 		if err != nil {
 			return nil, err
 		}

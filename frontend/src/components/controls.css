@@ -542,6 +542,12 @@ input[type="radio"]:disabled {
 .modal-actions > .button {
   min-width: 76px;
 }
+.modal > .modal-actions {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 16px var(--dialog-padding);
+  border-top: 1px solid var(--line);
+}
 .drawer {
   margin: 0 0 0 auto;
   width: min(850px, max(540px, 45vw));

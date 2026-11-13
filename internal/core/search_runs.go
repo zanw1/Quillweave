@@ -71,8 +71,11 @@ func (engine *Engine) startSearchRun(input searchStart) (searchRun, error) {
 		if plan.Profile.Native() && input.ParentJobID != "" && input.ModelAllowance < 1 {
 			return websearch.Fail("SEARCH_BUDGET_EXHAUSTED", "The parent task's model call budget is exhausted", 409)
 		}
-		for i := range models.Profiles {
-			models.Profiles[i].Config.APIKey = engine.models.keyFor(models.Profiles[i])
+		if err := engine.store.restoreModelCredentials(db, &models); err != nil {
+			return err
+		}
+		if err := engine.refreshSearchCredentialsLocked(db); err != nil {
+			return err
 		}
 		key, generation, err := engine.searchCredentialLocked(plan.Profile, models)
 		if err != nil {

@@ -9,6 +9,11 @@ const metadata = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 
+/** Keep desktop and console artifacts distinct on case-insensitive macOS and Windows filesystems. */
+export function companionFilename(target) {
+  return `quillweave-cli${target === "windows" ? ".exe" : ""}`;
+}
+
 /** Run build commands with argument arrays and stop when a child fails. */
 function run(command, args, env = process.env) {
   const result = spawnSync(command, args, {
@@ -57,12 +62,15 @@ export function nativeEnvironment(target, arch) {
 }
 
 /** Package a native application with the existing bundle identifier and data location. */
-function packageMac(binary, temporary, output) {
+function packageMac(binary, companion, temporary, output) {
   const bundle = path.join(temporary, "Quillweave.app");
   const contents = path.join(bundle, "Contents");
   fs.mkdirSync(path.join(contents, "MacOS"), { recursive: true });
   fs.copyFileSync(binary, path.join(contents, "MacOS", "Quillweave"));
   fs.chmodSync(path.join(contents, "MacOS", "Quillweave"), 0o755);
+  fs.copyFileSync(companion, path.join(contents, "MacOS", companionFilename("darwin")));
+  fs.chmodSync(path.join(contents, "MacOS", companionFilename("darwin")), 0o755);
+  fs.cpSync(path.join(root, "integrations", "skills"), path.join(contents, "Resources", "agent-skills"), { recursive: true });
   fs.writeFileSync(
     path.join(contents, "Info.plist"),
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -152,7 +160,8 @@ function build() {
       temporary,
       target === "windows" ? "Quillweave.exe" : "Quillweave",
     );
-    const flags = `-s -w -X main.production=true${target === "windows" ? " -H windowsgui" : ""}`;
+    const versionFlag = `-X quillweave/internal/core.ApplicationVersion=${metadata.version}`;
+    const flags = `-s -w -X main.production=true ${versionFlag}${target === "windows" ? " -H windowsgui" : ""}`;
     run(
       "go",
       [
@@ -168,17 +177,24 @@ function build() {
       ],
       nativeEnvironment(target, arch),
     );
+    const companion = path.join(temporary, companionFilename(target));
+    run("go", ["build", "-trimpath", "-ldflags", `-s -w ${versionFlag}`, "-o", companion, "./cmd/quillweave-cli"], {
+      ...nativeEnvironment(target, arch),
+      CGO_ENABLED: "0",
+    });
     const output = path.join(
       outputDirectory,
       target === "darwin"
         ? "Quillweave.app"
         : `Quillweave-${target}-${arch}${target === "windows" ? ".exe" : ""}`,
     );
-    if (target === "darwin") packageMac(binary, temporary, output);
+    if (target === "darwin") packageMac(binary, companion, temporary, output);
     else {
       fs.copyFileSync(binary, output);
       if (target !== "windows") fs.chmodSync(output, 0o755);
     }
+    fs.copyFileSync(companion, path.join(outputDirectory, `quillweave-cli-${target}-${arch}${target === "windows" ? ".exe" : ""}`));
+    fs.cpSync(path.join(root, "integrations", "skills"), path.join(outputDirectory, "agent-skills"), { recursive: true });
     console.log(`Built ${output}`);
   } finally {
     if (createdResource)

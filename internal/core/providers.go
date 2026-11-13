@@ -443,8 +443,13 @@ func modelRequest(config ProviderConfig, messages []Message) (map[string]any, ht
 		if config.Temperature != nil {
 			body["temperature"] = *config.Temperature
 		}
-		if effort != "" {
-			body["reasoning"] = map[string]string{"effort": effort}
+		metadata, _ := lookupModel(config.ProviderID, config.Model)
+		if effort != "" || len(metadata.ReasoningEfforts) > 0 {
+			reasoning := map[string]string{"summary": "auto"}
+			if effort != "" {
+				reasoning["effort"] = effort
+			}
+			body["reasoning"] = reasoning
 		}
 	case "anthropic":
 		_, turns := splitSystemMessages(messages)
@@ -542,6 +547,8 @@ func preservesProviderContext(config ProviderConfig) bool {
 		return false
 	}
 	switch config.ProviderID {
+	case "deepseek":
+		return true
 	case "moonshot":
 		return strings.HasPrefix(config.Model, "kimi-k3") || strings.HasPrefix(config.Model, "kimi-k2.7")
 	case "bailian":

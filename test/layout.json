@@ -3,6 +3,7 @@
     "core": "internal/core",
     "preview": "internal/preview",
     "platform": "internal/platform",
-    "search": "internal/search"
+    "search": "internal/search",
+    "mcpserver": "internal/mcpserver"
   }
 }

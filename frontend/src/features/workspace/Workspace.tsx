@@ -106,11 +106,10 @@ export function Workspace({
     /** Switch presentation without remounting the conversation or its running request. */
     function resize() {
       setNarrow(query.matches);
-      if (query.matches) onAssistantOpen(false);
     }
     query.addEventListener("change", resize);
     return () => query.removeEventListener("change", resize);
-  }, [onAssistantOpen]);
+  }, []);
 
   useEffect(() => {
     /** Observe CLI writes and pending candidates when this workspace is visible. */
@@ -158,6 +157,8 @@ export function Workspace({
     } else if (kind === "plan") {
       setFocus({ active_plan_id: id });
       onStep("plan");
+    } else if (kind === "wiki") {
+      onStep("world");
     } else if (["entity", "memory", "location", "route"].includes(kind)) {
       setFocus({ active_entity_id: id });
       onStep("world");
@@ -262,6 +263,7 @@ export function Workspace({
         modal={narrow}
         onClose={() => onAssistantOpen(false)}
         className={`workspace-assistant ${narrow ? "is-drawer" : "is-docked"}`}
+        initialFocus=".chat-input-wrap textarea"
       >
         {!narrow && (
           <ResizeHandle

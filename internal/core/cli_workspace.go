@@ -80,9 +80,9 @@ func runCLIWorkspace(engine *Engine, command string, opts cliOptions, stdout, st
 			result, err = engine.Dispatch(dispatch, rawMessage(args))
 		}
 	case "job":
-		dispatch := map[string]string{"list": "get_runs", "show": "get_job"}[operation]
+		dispatch := map[string]string{"list": "get_runs", "show": "get_job", "cancel": "cancel_ai"}[operation]
 		if dispatch == "" || operation != "list" && id == "" {
-			err = errors.New("Usage: quillweave job <list|show> [id]")
+			err = errors.New("Usage: quillweave job <list|show|cancel> [id]")
 		} else {
 			if operation != "list" {
 				_, err = engine.loadJob(id, project.ID)
@@ -104,12 +104,16 @@ func stageCLIChange(engine *Engine, project Project, opts cliOptions, stdout, st
 	if opts.inputPath == "" {
 		return writeCLIError(stderr, opts.jsonOutput, errors.New("Supply --input with a JSON file containing summary and operations"))
 	}
-	file, err := os.Open(opts.inputPath)
-	if err != nil {
-		return writeCLIError(stderr, opts.jsonOutput, err)
+	var reader io.Reader = os.Stdin
+	if opts.inputPath != "-" {
+		file, err := os.Open(opts.inputPath)
+		if err != nil {
+			return writeCLIError(stderr, opts.jsonOutput, err)
+		}
+		defer file.Close()
+		reader = file
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 2_000_001))
+	data, err := io.ReadAll(io.LimitReader(reader, 2_000_001))
 	if err != nil || len(data) > 2_000_000 {
 		return writeCLIError(stderr, opts.jsonOutput, errors.New("Unable to read a candidate JSON file within 2 MB"))
 	}

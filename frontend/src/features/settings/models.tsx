@@ -58,18 +58,26 @@ export function GlobalModelRoutes({
             ))}
         </Select>
       </label>
-      <div className="settings-divider" />
-      <ModelAssignments
-        settings={settings}
-        routes={settings.routes}
-        inheritLabel={t("Use default model")}
-        onChange={(routes) => onChange({ ...settings, routes })}
-      />
-      <p className="field-hint">
-        {t(
-          "Wiki extraction and memory compilation can use different models. Assign a usable profile to each task.",
-        )}
-      </p>
+      <details className="advanced-model-routing">
+        <summary>{t("Advanced background model routing")}</summary>
+        <p className="field-hint">
+          {t(
+            "Chat submissions use the conversation model selected in the composer. These routes remain available for older sessions and background defaults.",
+          )}
+        </p>
+        <div className="settings-divider" />
+        <ModelAssignments
+          settings={settings}
+          routes={settings.routes}
+          inheritLabel={t("Use default model")}
+          onChange={(routes) => onChange({ ...settings, routes })}
+        />
+        <p className="field-hint">
+          {t(
+            "Wiki extraction and memory compilation can use different models. Assign a usable profile to each task.",
+          )}
+        </p>
+      </details>
     </section>
   );
 }
@@ -83,6 +91,8 @@ export const modelTasks: Record<string, string> = {
   review: "Review consistency",
   wiki_extract: "Wiki evidence extraction",
   wiki_compile: "Wiki memory compilation",
+  writing_composition: "Writing composition stage",
+  writing_review: "Writing review stage",
 };
 
 /** Display model precedence consistently with the Go selector. */
@@ -211,17 +221,20 @@ export function ProjectModels({
         )}
       </p>
       {error && <ErrorBox>{error}</ErrorBox>}
-      {settings && (
-        <ModelAssignments
-          settings={settings}
-          routes={routes}
-          inheritLabel={t("Inherit global routing")}
-          onChange={(value) => {
-            setRoutes(value);
-            setSaved(false);
-          }}
-        />
-      )}
+      <details className="advanced-model-routing">
+        <summary>{t("Advanced background model routing")}</summary>
+        {settings && (
+          <ModelAssignments
+            settings={settings}
+            routes={routes}
+            inheritLabel={t("Inherit global routing")}
+            onChange={(value) => {
+              setRoutes(value);
+              setSaved(false);
+            }}
+          />
+        )}
+      </details>
     </section>
   );
 }

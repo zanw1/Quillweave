@@ -2,6 +2,7 @@ import { pageNames } from "./navigation";
 import { NewStoryDialog, WorkspaceExport } from "./WorkspaceControls";
 import { Select } from "../components/Select";
 import { clearProjectStorage } from "./storage";
+import { clearProjectDrafts } from "../features/writing/drafts";
 import { t, useLanguage, setLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -210,6 +211,7 @@ export function App() {
         setPage("home");
       }
       clearProjectStorage(deleteTarget.id);
+      clearProjectDrafts(deleteTarget.id);
       setToast(t("Deleted {0}", deleteTarget.title));
       setDeleteTarget(null);
     } catch (e) {
@@ -284,9 +286,10 @@ export function App() {
     setBusy(true);
     setError("");
     try {
-      enter(await restoreArchiveFile(file));
+      const restored = await restoreArchiveFile(file);
+      enter(restored);
       setImporting(false);
-      setToast("Backup restored as a separate project");
+      setToast(restored.import_warnings?.length ? "Backup restored; retired experimental data was skipped" : "Backup restored as a separate project");
     } catch (e) {
       setError(message(e));
     } finally {
@@ -462,7 +465,7 @@ export function App() {
               onSettings={() => setPage("settings")}
             />
           )}
-          {page === "settings" && <Settings project={project || undefined} />}
+          {page === "settings" && <Settings />}
         </main>
       </div>
       {toast && (

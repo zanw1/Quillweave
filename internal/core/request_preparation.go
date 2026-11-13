@@ -19,6 +19,12 @@ type preparedTask struct {
 // prepareTaskLocked shares the exact ordering of preview and submission; the caller holds engine.mu.
 func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (preparedTask, error) {
 	task := preparedTask{request: request}
+	if request.CommitPolicy == "" {
+		request.CommitPolicy = "review"
+	}
+	if !contains([]string{"review", "auto"}, request.CommitPolicy) {
+		return task, errors.New("Choose review or auto for the output save policy")
+	}
 	if err := engine.reconcileJobsLocked(); err != nil {
 		return task, err
 	}
@@ -54,8 +60,12 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 	if modelAction == "wiki" {
 		modelAction = "wiki_extract"
 	}
-	task.selected, err = engine.models.Select(&project, modelAction)
+	modelChosen := request.ModelSelection != nil || request.conversation != nil && request.conversation.ModelSelection != nil
+	task.selected, request.ModelSelection, err = engine.models.selectChatModel(&project, request, modelAction)
 	if err != nil {
+		if modelChosen {
+			return task, err
+		}
 		if len(preview) == 0 || !preview[0] {
 			return task, err
 		}
@@ -65,12 +75,23 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 	task.selected.Config.nativeTools = modelReady && request.Action == "agent" && !engine.nativeToolFallback[nativeCapabilityKey(task.selected)]
 	task.synthesis = task.selected
 	if request.Action == "wiki" {
-		task.synthesis, err = engine.models.Select(&project, "wiki_compile")
-		modelReady = modelReady && err == nil
-		if err != nil && (len(preview) == 0 || !preview[0]) {
-			return task, err
+		if request.ModelSelection == nil {
+			task.synthesis, err = engine.models.Select(&project, "wiki_compile")
+			modelReady = modelReady && err == nil
+			if err != nil && (len(preview) == 0 || !preview[0]) {
+				return task, err
+			}
 		}
 		task.prompt, err = wikiSourcePrompt(&project, request)
+		if err == nil {
+			source, _, _ := project.SourceText(task.prompt.SourceID)
+			var parts []string
+			parts, err = prepareWikiChunks(&project, source, task.selected.Config)
+			if err == nil {
+				task.prompt.Messages = extractionPrompt(parts[0], &project)
+				task.prompt.Chars = messageChars(task.prompt.Messages)
+			}
+		}
 	} else {
 		request, err = engine.restoreProviderHistory(request, task.selected.Config, task.selected.ProfileID)
 		if err != nil {
@@ -93,19 +114,50 @@ func (engine *Engine) prepareTaskLocked(request AIRequest, preview ...bool) (pre
 			request.IntentHint = "commit_extract"
 			request.Retrieved = append(request.Retrieved, ContextItem{ID: "J:" + selected.ID, Kind: "selected_response", Title: "Author-selected response", Text: selected.Text})
 		}
+		var skills []SkillDescriptor
+		request, skills, err = engine.prepareSkills(request, skillCatalogTokenBudget(task.selected.Config))
+		if err != nil {
+			return task, err
+		}
+		if request.SearchSelection != nil && request.SearchSelection.Mode == "profile" {
+			err = engine.validateRequestedSearch(request, task.selected.ProfileID)
+			if err != nil {
+				return task, err
+			}
+		}
 		toolChars := nativeToolChars(task.selected.Config)
 		budget := int(task.selected.Config.ContextChars) - toolChars
 		if budget <= 0 {
 			return task, errors.New("Native tool definitions exceed the model context budget")
 		}
-		task.prompt, err = prepareAI(&project, request, budget)
+		sourceBudget := budget
+		if request.Action == "agent" {
+			// Pack story sources after accounting for the actual protocol. Tool
+			// results are excerpted separately without truncating required author text.
+			sourceBudget -= charCount(agentToolProtocol(task.selected.Config.nativeTools)) + 160
+			if sourceBudget <= 0 {
+				return task, errors.New("Tool instructions exceed the model context budget")
+			}
+		}
+		task.prompt, err = prepareAI(&project, request, sourceBudget)
 		if err == nil && request.Action == "agent" {
 			if err = engine.refreshIntegrationsLocked(); err == nil {
-				task.prompt, err = prepareAgentPrompt(task.prompt, engine.agentSearchPolicyLocked(request, task.selected.ProfileID), budget)
+				task.prompt, err = prepareAgentPrompt(task.prompt, engine.agentSearchPolicyLocked(request, task.selected.ProfileID), budget, task.selected.Config.nativeTools)
 			}
 		}
 		task.prompt.ToolChars = toolChars
 		task.prompt.Chars += toolChars
+		task.prompt.Skills = skills
+		task.prompt.CarriedRecords = carriedContextRecords(&project, request, task.prompt)
+	}
+	task.prompt.ForceCompact = request.Compact
+	task.selected.Config = engine.withTokenUsageBaseline(task.selected.Config, request)
+	prepareTokenBudget(&task.prompt, &task.selected.Config, request.ModelSelection)
+	if request.Compact && len(task.prompt.HistoryGroups) == 0 {
+		return task, errors.New("This conversation has too few complete exchanges to compact")
+	}
+	if err == nil && task.prompt.Budget != nil && !task.prompt.Budget.CanSend && len(preview) == 0 {
+		return task, errors.New(task.prompt.Budget.Warning)
 	}
 	task.project, task.request = project, request
 	if !modelReady {
@@ -135,6 +187,9 @@ func (engine *Engine) resumeRequest(project *Project, request AIRequest) (AIRequ
 			steps = append(steps, fmt.Sprintf("Existing candidate %s (%s): %s. Continue its review before proposing the same changes again.", candidate.ID, candidate.Status, truncateSummary(candidate.Summary, 180)))
 		}
 		context := fmt.Sprintf("Resume task %s. Original goal: %s\nPrevious project revision: %d; current revision: %d. Reread changed story records. Completed tools are recoverable with get_task_step. Existing candidate proposals still require preview and confirmation.\n%s", previous.ID, previous.Instruction, previous.BaseRevision, project.Revision, strings.Join(steps, "\n"))
+		if previous.Writing != nil && previous.Writing.Mode != "changeset" {
+			request.writingResume = copyWritingRun(previous.Writing)
+		}
 		request.Retrieved = append(request.Retrieved, ContextItem{ID: "J:" + previous.ID, Kind: "selected_response", Title: "Interrupted task to resume", Text: context})
 		return request, "", nil
 	}
@@ -146,6 +201,22 @@ func (engine *Engine) resumeRequest(project *Project, request AIRequest) (AIRequ
 		if !ok || hashText(text) != previous.Prompt.SourceHash {
 			return request, "", errors.New("The source changed after interruption. Review the new version before continuing")
 		}
+	}
+	if previous.Writing != nil && previous.Writing.Mode != "changeset" {
+		request.writingResume = copyWritingRun(previous.Writing)
+		request.Retrieved = append([]ContextItem{}, previous.Prompt.Context...)
+		for i := range request.Retrieved {
+			request.Retrieved[i].Required = true
+		}
+		text := previous.Writing.Draft
+		if contains([]string{"drafting", "revising"}, previous.Writing.Phase) {
+			text = previous.Writing.Continuation
+			if text == "" && previous.Writing.Calls == 0 {
+				text = previous.Text
+				request.writingResume.Continuation = text
+			}
+		}
+		return request, text, nil
 	}
 	if strings.TrimSpace(previous.Text) == "" {
 		return request, "", errors.New("There is no partial response to continue")
@@ -160,6 +231,11 @@ func wikiSourcePrompt(project *Project, request AIRequest) (Prompt, error) {
 	id := request.SourceID
 	if id == "" {
 		id = request.ChapterID
+	}
+	for _, reference := range project.Sources {
+		if reference.ID == id && reference.Category == "craft" {
+			return Prompt{}, errors.New("Analyze writing references with /reference. Story Wiki compilation uses this work's prose and world sources")
+		}
 	}
 	source, _, ok := project.SourceText(id)
 	if !ok {

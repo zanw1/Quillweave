@@ -2,11 +2,15 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
 // normalizeChangeSet rewrites model field names into the records the author can confirm.
 func normalizeChangeSet(cs *ChangeSet) error {
+	if err := normalizeMemoryOperations(cs); err != nil {
+		return err
+	}
 	var setup, goals *ChangeOperation
 	for i := range cs.Operations {
 		op := &cs.Operations[i]
@@ -31,6 +35,48 @@ func normalizeChangeSet(cs *ChangeSet) error {
 		}
 	}
 	return foldStoryFields(setup, goals, cs)
+}
+
+// normalizeMemoryOperations canonicalizes raw memory payloads before staging or replaying an old preview.
+func normalizeMemoryOperations(cs *ChangeSet) error {
+	for i := range cs.Operations {
+		op := &cs.Operations[i]
+		if op.TargetKind != TargetMemory || op.OpType == OpDelete {
+			continue
+		}
+		fields, err := objectFields(op)
+		if err != nil {
+			return err
+		}
+		content, exists := fields["content"]
+		if exists {
+			if _, valid := content.(string); !valid {
+				return errors.New("Story memory content must be a string")
+			}
+		}
+		if alias, present := fields["text"]; present {
+			text, valid := alias.(string)
+			if !valid {
+				return errors.New("Story memory text must be a string")
+			}
+			canonical, _ := content.(string)
+			if strings.TrimSpace(canonical) != "" && strings.TrimSpace(text) != "" && canonical != text {
+				return errors.New("Story memory content and text conflict. Choose one value before confirming")
+			}
+			if strings.TrimSpace(canonical) == "" {
+				fields["content"] = text
+			}
+			delete(fields, "text")
+		}
+		text, _ := fields["content"].(string)
+		if strings.TrimSpace(text) == "" {
+			return errors.New("Story memory content is required. Use the content field")
+		}
+		if err := writeObject(op, fields); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // foldStoryFields moves setup aliases onto the goal record and keeps prose in the premise.
@@ -179,6 +225,88 @@ func canonicalPlanLevel(level string) string {
 	default:
 		return strings.TrimSpace(level)
 	}
+}
+
+// afterValueID reads the record id carried by an after_value and is empty when the caller omitted it.
+func afterValueID(raw json.RawMessage) string {
+	var head struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &head)
+	return strings.TrimSpace(head.ID)
+}
+
+// decodeOverStored decodes an after_value over a deep copy of the stored record so that fields the caller
+// omitted keep their stored values, while fields it supplied, including empty strings, replace them.
+// A nil stored record decodes onto the zero value, which is the behavior for a new record.
+func decodeOverStored[T any](raw json.RawMessage, stored *T) (T, error) {
+	var value T
+	if stored != nil {
+		encoded, err := json.Marshal(stored)
+		if err != nil {
+			return value, err
+		}
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			return value, err
+		}
+	}
+	err := json.Unmarshal(raw, &value)
+	return value, err
+}
+
+// keepClearedFields restores the fields a caller explicitly set to an empty value after a record was
+// re-encoded for replay. omitempty drops them, so replaying the candidate over the stored record would bring
+// the old values back and the confirmed result would differ from the preview. Null keeps meaning "omitted".
+func keepClearedFields(supplied, encoded json.RawMessage) json.RawMessage {
+	var input, fields map[string]json.RawMessage
+	if json.Unmarshal(supplied, &input) != nil || json.Unmarshal(encoded, &fields) != nil || fields == nil {
+		return encoded
+	}
+	restored := false
+	for key, value := range input {
+		if _, present := fields[key]; !present && isEmptyJSONValue(value) {
+			fields[key], restored = value, true
+		}
+	}
+	if !restored {
+		return encoded
+	}
+	return rawMessage(fields)
+}
+
+// isEmptyJSONValue reports the non-null zero values that omitempty removes from an encoded record.
+func isEmptyJSONValue(raw json.RawMessage) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed == ""
+	case float64:
+		return typed == 0
+	case bool:
+		return !typed
+	case []any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	}
+	return false
+}
+
+// entityRecord mirrors Entity without its strict whole-record decoder, so a partial after_value can be overlaid.
+type entityRecord struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	Aliases     []string `json:"aliases"`
+	Description string   `json:"description"`
+}
+
+// storedEntityRecord copies a stored entry into the shape used for overlaying partial updates.
+func storedEntityRecord(entity Entity) *entityRecord {
+	return &entityRecord{ID: entity.ID, Name: entity.Name, Kind: entity.Kind, Aliases: entity.Aliases, Description: entity.Description}
 }
 
 // canonicalStoryMode accepts only the story forms the studio can store.

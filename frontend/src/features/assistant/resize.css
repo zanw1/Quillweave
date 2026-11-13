@@ -5,8 +5,11 @@
   flex: 0 0 auto;
 }
 .panel-resize:focus-visible {
+  outline: none;
+}
+.panel-resize:focus-visible::after {
   outline: 2px solid var(--blue);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 .panel-resize::after {
   content: "";
@@ -37,10 +40,6 @@
   width: 4px;
   height: 48px;
 }
-.workspace-assistant.is-docked:has(.panel-resize-x:hover) .assistant-panel,
-.workspace-assistant.is-docked:has(.panel-resize-x[data-dragging="true"]) .assistant-panel {
-  border-left-color: var(--blue);
-}
 .assistant-panel > .panel-resize-y {
   position: relative;
   z-index: 3;
@@ -70,11 +69,4 @@
 }
 .assistant-panel .assistant-composer.is-resized > * {
   flex-shrink: 0;
-}
-.assistant-panel .assistant-composer.is-resized > textarea {
-  flex: 1 1 auto;
-  height: 0;
-  min-height: 64px;
-  max-height: none;
-  resize: none;
 }

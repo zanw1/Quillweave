@@ -15,6 +15,14 @@ const legacyPovLabels: Record<string, string> = {
   "\u7b2c\u4e00\u4eba\u79f0": "First person",
   "\u7b2c\u4e09\u4eba\u79f0\u6709\u9650\u89c6\u89d2": "Third-person limited",
   "\u5168\u77e5\u89c6\u89d2": "Omniscient",
+  first_person: "First person",
+  "first person": "First person",
+  third_limited: "Third-person limited",
+  third_person_limited: "Third-person limited",
+  "third-person limited": "Third-person limited",
+  omniscient: "Omniscient",
+  third_omniscient: "Omniscient",
+  third_person_omniscient: "Omniscient",
 };
 
 /** Edit revisable writing defaults inside a project using backend style presets. */
@@ -44,7 +52,7 @@ export function WritingParameters({
         <label>
           {t("Writing style")}
           <Select
-            value={value.writing_style}
+            value={selected?.id || "custom"}
             onChange={(e) => onChange({ writing_style: e.target.value })}
           >
             {!presets.length && (
@@ -62,6 +70,13 @@ export function WritingParameters({
                 "Style notes are editable creative choices.",
             )}
           </small>
+          {presets.length > 0 && !selected && value.writing_style && (
+            <small>
+              {t(
+                "Legacy style instructions will be retained in style notes when saved.",
+              )}
+            </small>
+          )}
         </label>
         <label>
           {t("Default chapter target characters")}
@@ -84,7 +99,10 @@ export function WritingParameters({
         <label>
           {t("Narrative viewpoint")}
           <Select
-            value={legacyPovLabels[value.narrative_pov] || value.narrative_pov}
+            value={
+              legacyPovLabels[value.narrative_pov.trim().toLowerCase()] ||
+              value.narrative_pov
+            }
             onChange={(e) => onChange({ narrative_pov: e.target.value })}
           >
             <option value="First person">{t("First person")}</option>

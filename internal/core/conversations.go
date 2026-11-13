@@ -17,6 +17,8 @@ type Conversation struct {
 	ParentID             string                  `json:"parent_id"`
 	ForkTurnID           string                  `json:"fork_turn_id"`
 	Draft                string                  `json:"draft"`
+	Archived             bool                    `json:"archived,omitempty"`
+	ModelSelection       *ChatModelSelection     `json:"model_selection,omitempty"`
 	Summary              string                  `json:"summary"`
 	CompactedSummary     string                  `json:"compacted_summary,omitempty"`
 	CompactedUpToOrdinal int                     `json:"compacted_up_to_ordinal,omitempty"`
@@ -193,7 +195,7 @@ func (store *Store) createConversation(projectID, chapterID, title string) (Conv
 }
 
 // updateConversation rejects stale renames or drafts rather than overwriting another window.
-func (store *Store) updateConversation(projectID, id string, revision uint64, title, draft *string) (Conversation, error) {
+func (store *Store) updateConversation(projectID, id string, revision uint64, title, draft *string, selection ...*ChatModelSelection) (Conversation, error) {
 	var session Conversation
 	err := store.withWriteTransaction(func(conn *sql.Conn) error {
 		var err error
@@ -215,6 +217,16 @@ func (store *Store) updateConversation(projectID, id string, revision uint64, ti
 				return errors.New("The draft exceeds the application context limit")
 			}
 			session.Draft = *draft
+		}
+		if len(selection) > 0 {
+			models, err := readModelSettings(conn)
+			if err != nil {
+				return err
+			}
+			if err := validateChatSelection(models, selection[0]); err != nil {
+				return err
+			}
+			session.ModelSelection = copyChatModelSelection(selection[0])
 		}
 		return saveConversationMetadata(conn, &session)
 	})
@@ -239,7 +251,7 @@ func (store *Store) forkConversation(projectID, id, turnID string) (Conversation
 		if position < 0 {
 			return errors.New("Select a user message to rewind or edit")
 		}
-		result = Conversation{ID: newID(), ProjectID: projectID, ChapterID: session.ChapterID, OriginChapterID: session.OriginChapterID, Title: session.Title + " · branch", ParentID: session.ID, ForkTurnID: turnID, Draft: session.Turns[position].Content, CreatedAt: now(), Turns: []ConversationTurn{}}
+		result = Conversation{ID: newID(), ProjectID: projectID, ChapterID: session.ChapterID, OriginChapterID: session.OriginChapterID, Title: session.Title + " · branch", ParentID: session.ID, ForkTurnID: turnID, Draft: session.Turns[position].Content, ModelSelection: copyChatModelSelection(session.ModelSelection), CreatedAt: now(), Turns: []ConversationTurn{}}
 		for _, turn := range session.Turns[:position] {
 			turn.ID = newID()
 			turn.RequestID = ""
@@ -248,6 +260,41 @@ func (store *Store) forkConversation(projectID, id, turnID string) (Conversation
 		return saveConversation(conn, &result)
 	})
 	return result, err
+}
+
+// truncateConversation removes one user turn and everything after it in place, so a retry
+// regenerates within the same conversation instead of forking a child session.
+func (store *Store) truncateConversation(projectID, id, turnID string) (Conversation, error) {
+	var result Conversation
+	err := store.withWriteTransaction(func(conn *sql.Conn) error {
+		session, err := readConversation(conn, projectID, id)
+		if err != nil {
+			return err
+		}
+		position := -1
+		for i, turn := range session.Turns {
+			if turn.ID == turnID && turn.Role == "user" {
+				position = i
+				break
+			}
+		}
+		if position < 0 {
+			return errors.New("Select a user message to rewind or edit")
+		}
+		if _, err := conn.ExecContext(background(), "DELETE FROM conversation_turns WHERE session_id=? AND ordinal>=?", session.ID, position); err != nil {
+			return err
+		}
+		session.Turns = append([]ConversationTurn{}, session.Turns[:position]...)
+		if err := saveConversation(conn, &session); err != nil {
+			return err
+		}
+		result = session
+		return nil
+	})
+	if err != nil {
+		return Conversation{}, err
+	}
+	return result, nil
 }
 
 // prepareConversation supplies server-owned history and detects retries of an accepted request.
@@ -279,6 +326,9 @@ func (store *Store) prepareConversation(request AIRequest) (AIRequest, string, e
 			continue
 		}
 		request.History = append(request.History, Message{Role: turn.Role, Content: turn.Content, SourceJobID: turn.JobID})
+	}
+	if session.Archived {
+		return request, "", errors.New("Restore this conversation before sending a new request")
 	}
 	return request, "", nil
 }
@@ -316,6 +366,9 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) (string, error)
 			return errors.New("This project already has a running task. Wait or cancel it")
 		}
 		if request.SessionID != "" {
+			if session.Archived {
+				return errors.New("Restore this conversation before sending a new request")
+			}
 			for _, turn := range session.Turns {
 				if turn.Status == "running" {
 					return errors.New("This conversation has an unfinished request")
@@ -323,6 +376,9 @@ func (store *Store) beginDurableJob(request AIRequest, job *Job) (string, error)
 			}
 			session.Turns = append(session.Turns, ConversationTurn{ID: newID(), Role: "user", Content: request.Instruction, JobID: job.ID, Action: request.Action, Status: "running", RequestID: request.RequestID, CreatedAt: now()})
 			session.Draft = ""
+			if request.ModelSelection != nil {
+				session.ModelSelection = copyChatModelSelection(request.ModelSelection)
+			}
 			if session.BibleBaseline == "" && job.Prompt.BibleCurrent != "" {
 				session.BibleBaseline = job.Prompt.BibleCurrent
 				session.LastBibleHash = hashText(job.Prompt.BibleCurrent)

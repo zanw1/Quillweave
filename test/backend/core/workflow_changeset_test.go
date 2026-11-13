@@ -16,6 +16,88 @@ import (
 	"time"
 )
 
+// TestLegacyMemoryTextCandidateRecoversOnPreview repairs an already-stored candidate without regenerating or applying it.
+func TestLegacyMemoryTextCandidateRecoversOnPreview(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	text := "【重构原则】让误会经过可见行为与转述。\n【收尾局面】第一单元结束时仍保留两笔人情债。"
+	title := "第一单元重构脊与收尾局面"
+	cs := ChangeSet{ID: newID(), ProjectID: project.ID, Source: "agent", Status: ChangeSetStaged, CommitPolicy: "review", CreatedAt: now(), UpdatedAt: now(), Operations: []ChangeOperation{{ID: "mem_u1_spine_c1", TargetKind: TargetMemory, OpType: OpUpsert, AfterValue: rawMessage(map[string]any{"kind": "setting", "text": text, "title": title})}}}
+	err := engine.store.withWriteTransaction(func(conn *sql.Conn) error { return persistStagedChangeSetsInDB(conn, project.ID, []ChangeSet{cs}) })
+	assert(t, err == nil, fmt.Sprint(err))
+	preview := invoke[struct {
+		Project   Project   `json:"project"`
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID})
+	var memory StoryMemory
+	assert(t, decodeJSON(preview.ChangeSet.Operations[0].AfterValue, &memory) == nil && memory.Content == text && memory.Title == title && memory.Kind == "setting", "Preview lost or silently reclassified the stored candidate")
+	assert(t, !strings.Contains(string(preview.ChangeSet.Operations[0].AfterValue), `"text":`) && len(preview.Project.Studio.Memories) == 0 && preview.ChangeSet.ReviewToken != "", "Preview failed to normalize the field or wrote the proposed memory")
+	applied := invoke[struct {
+		Project Project `json:"project"`
+	}](t, engine, "apply_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": preview.ChangeSet.PreviewRevision, "review_token": preview.ChangeSet.ReviewToken})
+	assert(t, len(applied.Project.Studio.Memories) == 1 && applied.Project.Studio.Memories[0].Content == text, "The normalized candidate could not be explicitly adopted")
+}
+
+// TestMemoryTextAliasesAreLossless rejects conflicting or malformed values rather than dropping author content.
+func TestMemoryTextAliasesAreLossless(t *testing.T) {
+	for _, item := range []struct {
+		name   string
+		fields map[string]any
+		want   string
+		valid  bool
+	}{
+		{"legacy", map[string]any{"kind": "setting", "text": "完整旧文本"}, "完整旧文本", true},
+		{"canonical", map[string]any{"kind": "setting", "content": "完整新文本"}, "完整新文本", true},
+		{"equal", map[string]any{"kind": "setting", "text": "同一文本", "content": "同一文本"}, "同一文本", true},
+		{"empty canonical", map[string]any{"kind": "plan", "text": "未来单元方案", "content": ""}, "未来单元方案", true},
+		{"conflict", map[string]any{"kind": "setting", "text": "另一段内容", "content": "原有内容"}, "", false},
+		{"numeric alias", map[string]any{"kind": "setting", "text": 12}, "", false},
+		{"numeric canonical", map[string]any{"kind": "setting", "content": 12}, "", false},
+		{"missing", map[string]any{"kind": "setting", "title": "只有标题"}, "", false},
+		{"blank", map[string]any{"kind": "setting", "text": "   "}, "", false},
+		{"null", map[string]any{"kind": "setting", "text": nil}, "", false},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			cs := ChangeSet{Operations: []ChangeOperation{{TargetKind: TargetMemory, OpType: OpUpsert, AfterValue: rawMessage(item.fields)}}}
+			err := normalizeChangeSet(&cs)
+			assert(t, (err == nil) == item.valid, fmt.Sprintf("Unexpected normalization result: %v", err))
+			if item.valid {
+				var memory StoryMemory
+				assert(t, decodeJSON(cs.Operations[0].AfterValue, &memory) == nil && memory.Content == item.want, "The normalized content differs from the candidate")
+				before := string(cs.Operations[0].AfterValue)
+				assert(t, normalizeChangeSet(&cs) == nil && string(cs.Operations[0].AfterValue) == before, "Normalizing again changed the candidate")
+			}
+		})
+	}
+}
+
+// TestPlannedMemoryKeepsFutureIdentity prevents an accepted outline from becoming a report of past events.
+func TestPlannedMemoryKeepsFutureIdentity(t *testing.T) {
+	project := testProject()
+	project.Studio.Memories = []StoryMemory{{ID: "future-unit", Kind: "plan", Status: "confirmed", Title: "第一单元方案", Content: "End with an unpaid obligation.", Chapter: 0}}
+	context := memoryContext(&project, 1, "obligation")
+	assert(t, len(context) == 1 && context[0].Kind == "plan" && strings.Contains(context[0].Text, "Future planning"), "Future narrative material lost its identity")
+	bible := buildStoryBibleLayer1(&project, 24000, nil)
+	assert(t, strings.Contains(bible, "Future planning"), "Cached story context promoted a future plan to fact")
+}
+
+// TestAgentMemoryTextIsNormalizedBeforeStaging returns field errors to the model before a broken candidate reaches the author.
+func TestAgentMemoryTextIsNormalizedBeforeStaging(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	response := `{"tool":"propose_changes","operations":[{"id":"future-memory","target_kind":"memory","op_type":"upsert","after_value":{"kind":"plan","title":"第一单元方案","text":"保留尚未兑现的人情债。"}}]}`
+	server, _ := sequenceModel(t, []string{response, `{"tool":"finish","text":"请预览方案。"}`})
+	config := defaultProvider()
+	config.BaseURL, config.Model, config.ContextChars = server.URL, "memory-alias", 64000
+	configureModel(t, engine, config)
+	job := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": project.ID, "chapter_id": "", "action": "agent", "instruction": "Prepare a future unit plan"}))
+	assert(t, job.Status == "done" && len(job.ChangeSets) == 1, job.Error)
+	var memory StoryMemory
+	assert(t, decodeJSON(job.ChangeSets[0].Operations[0].AfterValue, &memory) == nil && memory.Content == "保留尚未兑现的人情债。" && memory.Kind == "plan", "An Agent staged a noncanonical memory payload")
+}
+
 // TestEntityRenameUndoRestoresFactLinks restores both fact roles and aliases while preserving later-edit protection.
 func TestEntityRenameUndoRestoresFactLinks(t *testing.T) {
 	for _, laterEdit := range []bool{false, true} {
@@ -31,6 +113,9 @@ func TestEntityRenameUndoRestoresFactLinks(t *testing.T) {
 			entity.Aliases = []string{"Known alias"}
 			renamed := *entity
 			renamed.Name = "Renamed character"
+			project.Studio.Memories = []StoryMemory{{ID: "rename-memory", Kind: "setting", Title: "Identity", Content: "Lin Wu remains in the original passage.", Entity: original, KnownBy: []string{original, renamed.Name}, Status: "confirmed"}}
+			project.Studio.Plans = []StoryPlan{{ID: "rename-plan", Level: "chapter", Title: "A planned scene", StartChapter: 1, EndChapter: 1, Status: "confirmed", Characters: []string{original, renamed.Name}}}
+			originalMemories, originalPlans := jsonText(project.Studio.Memories), jsonText(project.Studio.Plans)
 			insertProject(t, engine, project)
 			cs := invoke[ChangeSet](t, engine, "stage_changeset", map[string]any{
 				"project_id": project.ID,
@@ -56,6 +141,7 @@ func TestEntityRenameUndoRestoresFactLinks(t *testing.T) {
 			}](t, engine, "undo_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": applied.Project.Revision})
 			assert(t, undone.Project.Facts[0].Entity == original && undone.Project.Facts[0].RelatedEntity == original, "Undo left renamed fact references")
 			assert(t, undone.Project.ResolveEntity("Known alias").Name == original, "Undo lost the entity alias")
+			assert(t, jsonText(undone.Project.Studio.Memories) == originalMemories && jsonText(undone.Project.Studio.Plans) == originalPlans, "Undo lost structured names or rewrote the original passage")
 			persisted := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
 			assert(t, persisted.Facts[0].Entity == original && persisted.Facts[0].RelatedEntity == original, "Restored references were not persisted")
 		})
@@ -224,6 +310,10 @@ func TestCLIWorkspaceAcrossProcesses(t *testing.T) {
 	p := testProject()
 	insertProject(t, engine, p)
 	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(string(readBodyForStudioTest(t, r)), "Summarize this fiction-author conversation") {
+			fmt.Fprint(w, streamPayload(`{"goal":"Continue the shared discussion","constraints":[],"rejected":[],"pending":[],"open_questions":[],"next_steps":[]}`))
+			return
+		}
 		fmt.Fprint(w, streamPayload(`{"tool":"finish","text":"The current discussion can continue."}`))
 	})
 	config := nativeConfig("openai")
@@ -444,7 +534,7 @@ func TestSaveIntentRequiresReview(t *testing.T) {
 		"action":        "agent",
 		"instruction":   "把这些写进创作目标里面",
 		"ui_language":   "zh-CN",
-		"commit_policy": "auto",
+		"commit_policy": "review",
 	}))
 	assert(t, job.Status == "done", job.Error)
 	assert(t, !strings.Contains(job.Text, `"tool"`) && !strings.Contains(job.Text, `"}json`), fmt.Sprintf("raw JSON leaked into job.Text: %s", job.Text))
@@ -500,8 +590,9 @@ func TestPrefixCacheStabilityAndBlockCompaction(t *testing.T) {
 	}, 24000)
 	assert(t, err == nil, fmt.Sprint(err))
 	assert(t, len(prompt.Messages) >= 2 && prompt.Messages[0].CacheControl != nil && prompt.Messages[0].CacheControl.Type == "ephemeral", "System prefix message missing ephemeral CacheControl")
-	assert(t, strings.Contains(prompt.Messages[0].Content, "Continuity:") && strings.Contains(prompt.Messages[0].Content, "Serial rhythm:") && strings.Contains(prompt.Messages[0].Content, "<story_bible>"), "System prefix missing built-in writing craft skills or the Story Bible")
+	assert(t, strings.Contains(prompt.Messages[0].Content, "Continuity") && strings.Contains(prompt.Messages[0].Content, "Serial rhythm") && !strings.Contains(prompt.Messages[0].Content, "<story_bible>"), "Stable system prefix is missing its craft index or contains dynamic story data")
 	lastMsg := prompt.Messages[len(prompt.Messages)-1].Content
+	assert(t, strings.Contains(lastMsg, "<story_bible>") && strings.Contains(lastMsg, "不可违背的因果律"), "Current story state was omitted from dynamic context")
 	assert(t, strings.Contains(lastMsg, "细纲拆解") && strings.Contains(lastMsg, "<workspace_context>"), "Layer 3 missing intent_hint or workspace_context")
 
 	// Verify 80% block compaction threshold
@@ -591,7 +682,7 @@ func TestMapChangesRoundTripAndDependencies(t *testing.T) {
 	invalid := invoke[ChangeSet](t, engine, "stage_changeset", map[string]any{"project_id": p.ID, "changeset": ChangeSet{Operations: []ChangeOperation{{TargetKind: TargetLocation, TargetID: "port", OpType: OpDelete}}}})
 	reject(t, engine, "preview_changeset", map[string]any{"project_id": p.ID, "changeset_id": invalid.ID})
 	archive := invoke[map[string]string](t, engine, "export", map[string]any{"project_id": p.ID, "format": "archive"})
-	assert(t, strings.Contains(archive["content"], "quillweave-2"), "map backup lacks a compatible format guard")
+	assert(t, strings.Contains(archive["content"], "quillweave-4"), "map backup lacks a compatible format guard")
 	restored := invoke[Project](t, engine, "import_archive", map[string]any{"content": archive["content"]})
 	assert(t, len(restored.Studio.Locations) == 3 && len(restored.Studio.Routes) == 1 && len(restored.Studio.ChangeSets) == 2, "backup lost map records or review history")
 	assert(t, restored.Studio.ChangeSets[0].ProjectID == restored.ID && restored.Studio.ChangeSets[0].Archived, "imported receipt retained live authority")

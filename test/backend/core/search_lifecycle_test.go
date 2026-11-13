@@ -40,8 +40,9 @@ func TestSearchAgentPromptUsesResolvedPermission(t *testing.T) {
 		budget    string
 	}{{websearch.Selection{Mode: "inherit"}, "false", "0"}, {websearch.Selection{Mode: "profile", ProfileID: profile.ID}, "true", "4"}, {websearch.Selection{Mode: "off"}, "false", "0"}} {
 		prompt := invoke[Prompt](t, engine, "prepare_ai", AIRequest{ProjectID: projectID, Action: "agent", History: []Message{}, Instruction: "Discuss the creative idea", SearchSelection: &c.selection})
-		text := prompt.Messages[0].Content
-		assert(t, strings.Contains(text, "Web research enabled: "+c.enabled) && strings.Contains(text, "and "+c.budget+" web queries"), "Agent prompt differs from resolved search permission")
+		text := prompt.Messages[len(prompt.Messages)-1].Content
+		assert(t, strings.Contains(text, "Web research enabled: "+c.enabled) && strings.Contains(text, "budget including fallback attempts: "+c.budget), "Agent prompt differs from resolved search permission")
+		assert(t, !strings.Contains(prompt.Messages[0].Content, "Web research enabled:"), "Per-turn search permissions rewrote the stable system prefix")
 	}
 }
 
@@ -119,7 +120,7 @@ func TestSearchReferencedCredentialInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	reject(t, peer, "start_search_run", searchStart{RequestID: newID(), Purpose: "test", Operation: "search", Query: "history", Selection: input.Selection})
+	assert(t, awaitSearchFixture(t, peer, invoke[searchRun](t, peer, "start_search_run", searchStart{RequestID: newID(), Purpose: "test", Operation: "search", Query: "history", Selection: input.Selection})).Status == "succeeded", "The peer could not restore the encrypted referenced credential")
 	view = invoke[searchSettingsView](t, engine, "get_search_settings", nil)
 	invoke[searchSettingsView](t, engine, "mutate_search_settings", searchMutation{Operation: "set_binding", ExpectedRevision: view.Revision, ModelRevision: view.ModelRevision, ModelProfileID: "writer", Binding: websearch.Selection{Mode: "off"}})
 	reject(t, engine, "start_search_run", searchStart{RequestID: newID(), Purpose: "test", Operation: "search", Query: "history", ModelProfileID: "writer"})
@@ -347,7 +348,7 @@ func TestSearchNativeCallsReachParentHistory(t *testing.T) {
 		if err := decodeJSON(readBodyForStudioTest(t, r), &body); err != nil {
 			t.Error(err)
 		}
-		if body["tools"] != nil && !strings.Contains(jsonText(body["tools"]), nativeAgentFunction) {
+		if body["tools"] != nil && !strings.Contains(jsonText(body["tools"]), "quillweave_") {
 			native.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"choices":[{"message":{"content":"Cited research","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.org/a","content":"source"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)

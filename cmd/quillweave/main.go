@@ -10,6 +10,7 @@ import (
 	"quillweave/frontend"
 	"quillweave/internal/core"
 	"quillweave/internal/desktop"
+	"quillweave/internal/headless"
 	"quillweave/internal/platform"
 )
 
@@ -45,8 +46,8 @@ func run() error {
 
 // main reports startup failures using credential-free diagnostics.
 func main() {
-	if len(os.Args) > 1 && core.IsCLICommand(os.Args[1]) {
-		os.Exit(core.RunCLI(os.Args[1:], os.Stdout, os.Stderr))
+	if len(os.Args) > 1 && headless.IsCommand(os.Args[1]) {
+		os.Exit(headless.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

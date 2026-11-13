@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var Tasks = []string{"ask", "continue", "rewrite", "architecture", "outline", "review", "wiki_extract", "wiki_compile"}
+var Tasks = []string{"ask", "continue", "rewrite", "architecture", "outline", "review", "wiki_extract", "wiki_compile", "writing_composition", "writing_review"}
 
 type SecretUpdate struct {
 	Action string `json:"action"`
@@ -184,7 +184,7 @@ func (models ModelSettings) Select(project *Project, task string) (SelectedModel
 	return SelectedModel{ProfileID: profile.ID, ProfileName: profile.Name, Config: profile.Config}, nil
 }
 
-// keyFor retains a process-local key only for the same profile ID, protocol, and endpoint.
+// keyFor reuses a loaded credential only for the same profile ID, protocol, and endpoint.
 func (models ModelSettings) keyFor(profile ModelProfile) string {
 	for _, old := range models.Profiles {
 		if old.ID == profile.ID && old.Config.Protocol == profile.Config.Protocol && strings.TrimRight(old.Config.BaseURL, "/") == strings.TrimRight(profile.Config.BaseURL, "/") {

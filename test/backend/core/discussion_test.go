@@ -60,7 +60,7 @@ func TestPlanningConversationUsesOutlineHistory(t *testing.T) {
 			assert(t, len(requests) == 3 && strings.Contains(jsonText(requests[1]), first.Text) && strings.Contains(jsonText(requests[2]), "The letter arrives"), "Planning discussion or outline was missing from the request")
 			assert(t, strings.Contains(jsonText(requests[1]), "PRIVATE_PLAN_0") == shared && strings.Contains(jsonText(requests[2]), "PRIVATE_PLAN_1") == shared, "Private planning history crossed profile boundaries or was lost")
 			runs := invoke[[]json.RawMessage](t, engine, "get_runs", map[string]any{"project_id": project.ID})
-			assert(t, !strings.Contains(jsonText(runs), "PRIVATE_PLAN_"), "Public planning history exposed private context")
+			assert(t, strings.Contains(jsonText(runs), "PRIVATE_PLAN_") && !strings.Contains(jsonText(runs), `"reasoning_content"`), "Provider thought text was missing or private replay fields leaked into history")
 		})
 	}
 }

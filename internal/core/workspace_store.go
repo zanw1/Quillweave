@@ -13,7 +13,7 @@ func (store *Store) migrateWorkspaceStore() error {
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version == 4 {
+	if version >= 4 {
 		return nil
 	}
 	if version != 3 {

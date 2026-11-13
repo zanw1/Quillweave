@@ -4,12 +4,110 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+// TestProjectCardsKeepCountsAcrossEditsAndLegacyMetadata exercises the summary API contract.
+func TestProjectCardsKeepCountsAcrossEditsAndLegacyMetadata(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	project.Chapters[0].Body = "中文\t a\n😀\u3000b"
+	insertProject(t, engine, project)
+	for _, legacy := range []bool{false, true} {
+		if legacy {
+			_, err := engine.store.db.Exec("UPDATE projects SET document=json_remove(document,'$._list_counts') WHERE id=?", project.ID)
+			assert(t, err == nil, "Cannot construct a legacy metadata record")
+		}
+		cards := invoke[[]projectCard](t, engine, "list_projects", nil)
+		assert(t, len(cards) == 1 && cards[0].ChapterCount == 1 && cards[0].WordCount == 5, "Project counts differ across cached and legacy metadata")
+	}
+	chapter := project.Chapters[0]
+	project = invoke[Project](t, engine, "save_chapter", map[string]any{"project_id": project.ID, "revision": project.Revision, "chapter_id": chapter.ID, "title": chapter.Title, "body": "updated", "synopsis": "", "status": "draft", "target_words": nil})
+	cards := invoke[[]projectCard](t, engine, "list_projects", nil)
+	assert(t, cards[0].WordCount == 7 && cards[0].ChapterCount == 1, "Saving a chapter did not refresh the summary")
+	var metadata string
+	assert(t, engine.store.db.QueryRow("SELECT document FROM projects WHERE id=?", project.ID).Scan(&metadata) == nil && strings.Contains(metadata, "_list_counts"), "A normal save did not rebuild the summary cache")
+	loaded := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, loaded.Chapters[0].Body == "updated", "The compact summary changed the full-project API")
+}
+
+// TestChapterDeletionRoundTrip exercises the public review path and exact source restoration.
+func TestChapterDeletionRoundTrip(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty=%t", empty), func(t *testing.T) {
+			engine := testEngine(t)
+			project := testProject()
+			chapter := &project.Chapters[0]
+			if empty {
+				chapter.Body, chapter.Versions = "", []Version{}
+			} else {
+				chapter.SetContent("Revised", "A sword rests by the door.", "A quiet scene", "draft", nil)
+			}
+			id := chapter.ID
+			project.Chapters = append(project.Chapters, NewChapter(3, "Keep chapter three"))
+			project.Facts = []Fact{{ID: "source-fact", SourceID: id, SourceHash: hashText(chapter.Body), Kind: "event", Entity: "Lin Wu", Quote: chapter.Body, Claim: "A source event", Status: "pending"}}
+			project.Compilations = []WikiCompilation{{ID: "compiled", SourceID: id, SourceHash: hashText(chapter.Body), Status: "pending", Sections: []MemorySection{}}}
+			project.Studio.Memories = []StoryMemory{{ID: "old-memory", Kind: "fact", Title: "Old observation", Content: "An old observation", Status: "superseded", SourceID: id}, {ID: "new-memory", Kind: "setting", Title: "Later observation", Content: "A later observation", Status: "confirmed", Supersedes: "old-memory"}}
+			project.Studio.Locations = []WorldLocation{{ID: "yard", Name: "Yard", Kind: "place", EntityIDs: []string{}, PlanIDs: []string{}, ChapterIDs: []string{id}}}
+			original := cloneProject(project)
+			insertProject(t, engine, project)
+			cs := invoke[ChangeSet](t, engine, "stage_changeset", map[string]any{"project_id": project.ID, "changeset": ChangeSet{Source: "author", Summary: "Delete one chapter", Operations: []ChangeOperation{{TargetKind: TargetChapter, TargetID: id, OpType: OpDelete, AfterValue: json.RawMessage("null")}}}})
+			preview := invoke[struct {
+				ChangeSet ChangeSet `json:"changeset"`
+			}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "ui_language": "zh-CN"}).ChangeSet
+			assert(t, len(preview.Impacts) >= 3, "The deletion preview omitted derived records")
+			assert(t, strings.Contains(preview.Impacts[0].Title, "个历史版本") || strings.Contains(preview.Impacts[0].Title, "条来源证据"), "The deletion preview ignored the current interface language")
+			args := map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": preview.PreviewRevision, "review_token": preview.ReviewToken}
+			deleted := invoke[struct {
+				Project Project `json:"project"`
+			}](t, engine, "apply_changeset", args).Project
+			assert(t, len(deleted.Chapters) == 1 && deleted.Chapters[0].Number == 3, "Deletion renumbered another chapter")
+			assert(t, len(deleted.Facts) == 0 && len(deleted.Compilations) == 0 && len(deleted.Studio.Memories) == 1 && deleted.Studio.Memories[0].Supersedes == "", "Deletion retained invalid source references")
+			assert(t, len(deleted.Studio.Locations[0].ChapterIDs) == 0, "The deleted chapter remained linked on the map")
+			engine.jobs["retry-writer"] = &Job{ID: "retry-writer", ProjectID: project.ID, Status: "running"}
+			repeated := invoke[struct {
+				Project Project `json:"project"`
+			}](t, engine, "apply_changeset", args).Project
+			assert(t, repeated.Revision == deleted.Revision, "A completed deletion retry lost its idempotent receipt")
+			engine.jobs["retry-writer"].Status = "done"
+			var indexed int
+			assert(t, engine.store.db.QueryRow("SELECT count(*) FROM story_fts WHERE project_id=? AND part_id=?", project.ID, "chapter:"+id).Scan(&indexed) == nil && indexed == 0, "Deleted text remains searchable")
+			restored := invoke[struct {
+				Project Project `json:"project"`
+			}](t, engine, "undo_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": deleted.Revision}).Project
+			assert(t, jsonText(restored.Chapters) == jsonText(original.Chapters) && jsonText(restored.Facts) == jsonText(original.Facts) && jsonText(restored.Compilations) == jsonText(original.Compilations), "Undo lost manuscript history or evidence ordering")
+			assert(t, jsonText(restored.Studio.Memories) == jsonText(original.Studio.Memories) && jsonText(restored.Studio.Locations) == jsonText(original.Studio.Locations), "Undo lost memory links or map references")
+		})
+	}
+}
+
+// TestChapterDeletionRejectsStaleAndActiveWrites protects current prose while review is open.
+func TestChapterDeletionRejectsStaleAndActiveWrites(t *testing.T) {
+	engine := testEngine(t)
+	project := testProject()
+	insertProject(t, engine, project)
+	cs := invoke[ChangeSet](t, engine, "stage_changeset", map[string]any{"project_id": project.ID, "changeset": ChangeSet{Source: "author", Operations: []ChangeOperation{{TargetKind: TargetChapter, TargetID: project.Chapters[0].ID, OpType: OpDelete}}}})
+	preview := invoke[struct {
+		ChangeSet ChangeSet `json:"changeset"`
+	}](t, engine, "preview_changeset", map[string]any{"project_id": project.ID, "changeset_id": cs.ID}).ChangeSet
+	args := map[string]any{"project_id": project.ID, "changeset_id": cs.ID, "revision": project.Revision, "review_token": preview.ReviewToken}
+	job := &Job{ID: "active-writer", ProjectID: project.ID, Status: "running"}
+	engine.jobs[job.ID] = job
+	assert(t, engine.store.SaveRun(job.ID, project.ID, storedJob(job)) == nil, "Cannot persist the active task")
+	reject(t, engine, "apply_changeset", args)
+	job.Status = "done"
+	assert(t, engine.store.SaveRun(job.ID, project.ID, storedJob(job)) == nil, "Cannot finish the task")
+	project = invoke[Project](t, engine, "new_chapter", map[string]any{"project_id": project.ID, "revision": project.Revision, "title": "A later edit"})
+	reject(t, engine, "apply_changeset", args)
+	loaded := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
+	assert(t, len(loaded.Chapters) == 2, "A rejected deletion changed the story")
+}
 
 // TestPersistenceAndConflictingSave checks disk persistence, version history, and stale revision rejection.
 func TestPersistenceAndConflictingSave(t *testing.T) {

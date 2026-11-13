@@ -12,15 +12,17 @@ import (
 type ChangeTargetKind string
 
 const (
-	TargetProjectMeta ChangeTargetKind = "project_meta"
-	TargetStudioGoal  ChangeTargetKind = "studio_goal"
-	TargetDecision    ChangeTargetKind = "decision"
-	TargetEntity      ChangeTargetKind = "entity"
-	TargetMemory      ChangeTargetKind = "memory"
-	TargetPlan        ChangeTargetKind = "plan"
-	TargetChapter     ChangeTargetKind = "chapter"
-	TargetLocation    ChangeTargetKind = "location"
-	TargetRoute       ChangeTargetKind = "route"
+	TargetProjectMeta    ChangeTargetKind = "project_meta"
+	TargetStudioGoal     ChangeTargetKind = "studio_goal"
+	TargetDecision       ChangeTargetKind = "decision"
+	TargetEntity         ChangeTargetKind = "entity"
+	TargetMemory         ChangeTargetKind = "memory"
+	TargetPlan           ChangeTargetKind = "plan"
+	TargetChapter        ChangeTargetKind = "chapter"
+	TargetLocation       ChangeTargetKind = "location"
+	TargetRoute          ChangeTargetKind = "route"
+	TargetImportMetadata ChangeTargetKind = "import_metadata"
+	TargetWiki           ChangeTargetKind = "wiki"
 )
 
 type ChangeOpType string
@@ -56,28 +58,35 @@ type ChangeOperation struct {
 }
 
 type ChangeSet struct {
-	ID                   string                  `json:"id"`
-	ProjectID            string                  `json:"project_id"`
-	SessionID            string                  `json:"session_id,omitempty"`
-	TurnID               string                  `json:"turn_id,omitempty"`
-	JobID                string                  `json:"job_id,omitempty"`
-	ProposalLinksVersion int                     `json:"proposal_links_version,omitempty"`
-	Source               string                  `json:"source"`
-	CommitPolicy         string                  `json:"commit_policy"`
-	Status               ChangeSetStatus         `json:"status"`
-	BaseRevision         uint64                  `json:"base_revision"`
-	AppliedRevision      uint64                  `json:"applied_revision,omitempty"`
-	PreviewRevision      uint64                  `json:"preview_revision"`
-	ReviewToken          string                  `json:"review_token,omitempty"`
-	BeforeStage          string                  `json:"before_stage,omitempty"`
-	BeforeFactReferences []FactReferenceSnapshot `json:"before_fact_references"`
-	Skipped              []ChangeOperation       `json:"skipped_operations,omitempty"`
-	Impacts              []ChangeImpact          `json:"impacts,omitempty"`
-	Archived             bool                    `json:"archived,omitempty"`
-	Summary              string                  `json:"summary"`
-	Operations           []ChangeOperation       `json:"operations"`
-	CreatedAt            string                  `json:"created_at"`
-	UpdatedAt            string                  `json:"updated_at"`
+	ID                     string                    `json:"id"`
+	ProjectID              string                    `json:"project_id"`
+	SessionID              string                    `json:"session_id,omitempty"`
+	TurnID                 string                    `json:"turn_id,omitempty"`
+	JobID                  string                    `json:"job_id,omitempty"`
+	ProposalLinksVersion   int                       `json:"proposal_links_version,omitempty"`
+	Provenance             *ExternalProvenance       `json:"provenance,omitempty"`
+	RevertsChangeSetID     string                    `json:"reverts_changeset_id,omitempty"`
+	RestoreEffects         []ChangeEffect            `json:"restore_effects,omitempty"`
+	Effects                []ChangeEffect            `json:"effects,omitempty"`
+	RevertConflicts        []RevertConflict          `json:"revert_conflicts,omitempty"`
+	Source                 string                    `json:"source"`
+	CommitPolicy           string                    `json:"commit_policy"`
+	Status                 ChangeSetStatus           `json:"status"`
+	BaseRevision           uint64                    `json:"base_revision"`
+	AppliedRevision        uint64                    `json:"applied_revision,omitempty"`
+	PreviewRevision        uint64                    `json:"preview_revision"`
+	ReviewToken            string                    `json:"review_token,omitempty"`
+	BeforeStage            string                    `json:"before_stage,omitempty"`
+	BeforeFactReferences   []FactReferenceSnapshot   `json:"before_fact_references"`
+	BeforeMemoryReferences []MemoryReferenceSnapshot `json:"before_memory_references,omitempty"`
+	BeforePlanReferences   []PlanReferenceSnapshot   `json:"before_plan_references,omitempty"`
+	Skipped                []ChangeOperation         `json:"skipped_operations,omitempty"`
+	Impacts                []ChangeImpact            `json:"impacts,omitempty"`
+	Archived               bool                      `json:"archived,omitempty"`
+	Summary                string                    `json:"summary"`
+	Operations             []ChangeOperation         `json:"operations"`
+	CreatedAt              string                    `json:"created_at"`
+	UpdatedAt              string                    `json:"updated_at"`
 }
 
 // FactReferenceSnapshot retains original names only for facts touched by an entity rename.
@@ -85,6 +94,19 @@ type FactReferenceSnapshot struct {
 	FactID        string `json:"fact_id"`
 	Entity        string `json:"entity"`
 	RelatedEntity string `json:"related_entity"`
+}
+
+// MemoryReferenceSnapshot preserves structured identities across a reversible rename.
+type MemoryReferenceSnapshot struct {
+	MemoryID string   `json:"memory_id"`
+	Entity   string   `json:"entity"`
+	KnownBy  []string `json:"known_by"`
+}
+
+// PlanReferenceSnapshot retains the original cast names of a renamed entity's plans.
+type PlanReferenceSnapshot struct {
+	PlanID     string   `json:"plan_id"`
+	Characters []string `json:"characters"`
 }
 
 type ChangeImpact struct {
@@ -152,13 +174,15 @@ func validateChangeSet(cs *ChangeSet) error {
 	if cs.Source == "" {
 		cs.Source = "agent"
 	}
-	if !contains([]string{"agent", "extract", "cli", "author"}, cs.Source) {
+	if !contains([]string{"agent", "extract", "cli", "author", "external"}, cs.Source) {
 		return errors.New("Invalid changeset source")
 	}
 	if !contains([]string{"", "review", "auto"}, cs.CommitPolicy) {
 		return errors.New("Invalid changeset commit policy")
 	}
-	cs.CommitPolicy = "review"
+	if cs.CommitPolicy == "" {
+		cs.CommitPolicy = "review"
+	}
 	if cs.Status == "" {
 		cs.Status = ChangeSetStaged
 	}
@@ -178,16 +202,22 @@ func validateChangeSet(cs *ChangeSet) error {
 			return errors.New("Changeset operation IDs must be unique")
 		}
 		ids[op.ID] = true
-		if !contains([]string{"project_meta", "studio_goal", "decision", "entity", "memory", "plan", "chapter", "location", "route"}, string(op.TargetKind)) {
+		if !contains([]string{"project_meta", "studio_goal", "decision", "entity", "memory", "plan", "chapter", "location", "route", "import_metadata", "wiki"}, string(op.TargetKind)) {
 			return fmt.Errorf("Invalid changeset target kind: %s", op.TargetKind)
 		}
-		if !contains([]string{"upsert", "delete", "append_prose", "replace_prose"}, string(op.OpType)) {
+		if op.TargetKind == TargetWiki && op.OpType != OpUpsert {
+			return errors.New("Wiki candidates use a source-scoped upsert operation")
+		}
+		if op.TargetKind == TargetImportMetadata && (cs.Source != "author" || op.OpType != OpUpsert) {
+			return errors.New("Imported metadata repairs require an author-reviewed operation")
+		}
+		if !contains([]string{"upsert", "delete", "append_prose", "replace_prose", "restore"}, string(op.OpType)) {
 			return fmt.Errorf("Invalid changeset operation type: %s", op.OpType)
 		}
 		if (len(op.AfterValue) == 0 || string(op.AfterValue) == "null") && op.OpType != OpDelete {
 			return errors.New("Changeset operation requires after_value")
 		}
-		if op.OpType == OpDelete && !contains([]string{"entity", "memory", "plan", "decision", "location", "route"}, string(op.TargetKind)) {
+		if op.OpType == OpDelete && !contains([]string{"entity", "memory", "plan", "decision", "location", "route", "chapter"}, string(op.TargetKind)) {
 			return errors.New("This record type does not support deletion")
 		}
 		if contains([]string{"append_prose", "replace_prose"}, string(op.OpType)) && op.TargetKind != TargetChapter {

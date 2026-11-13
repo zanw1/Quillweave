@@ -43,8 +43,8 @@ export const zhSearch: Record<string, string> = {
   "Inherit default search profile": "继承默认搜索配置",
   "Inherit model and default search": "继承模型关联与默认搜索配置",
   "International API platform": "国际 API 平台",
-  "Keys remain in this app process. Restarting requires entering them again.":
-    "密钥仅保存在当前应用进程中，重启后需重新填写。",
+  "API keys are encrypted in the local database and restored after restart.":
+    "API 密钥加密保存在本地数据库中，重启后自动恢复。",
   "Kimi API regions and Kimi Code use separate credentials. Choose the endpoint matching your API account.":
     "Kimi 各 API 区域与 Kimi Code 使用独立密钥，请选择与 API 账户匹配的地址。",
   "Loading search settings…": "正在加载搜索配置…",
@@ -167,8 +167,8 @@ export const zhSearch: Record<string, string> = {
     "模型连接已发生变化，请重新加载后保存；当前编辑已保留。",
   "Enter the API key for this search service before running":
     "请先填写此搜索服务的 API 密钥。",
-  "Enter the search API key for this process before running":
-    "请先填写当前应用进程使用的搜索 API 密钥。",
+  "Enter the search API key before running":
+    "请先填写搜索 API 密钥。",
   "Enable web search before searching or testing a connection":
     "请先启用联网搜索，再搜索或测试连接。",
   "This task or model explicitly disables web search":

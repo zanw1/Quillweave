@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
-import type { Prompt, WorkspaceContext } from "../../domain/types";
+import type {
+  ChatModelSelection,
+  Prompt,
+  WorkspaceContext,
+} from "../../domain/types";
 import { omissionFields, type TurnOmissions } from "./turnContext";
 
-/** Measure the prompt that would be sent, without starting a model call. */
+/** Prepare the same selected model, skills and evidence as submission, discarding stale measurements. */
 export function useTurnMeasure(input: {
   enabled: boolean;
   projectId: string;
@@ -15,9 +19,15 @@ export function useTurnMeasure(input: {
   sessionId: string;
   context?: WorkspaceContext;
   omissions: TurnOmissions;
+  selection?: ChatModelSelection;
+  skills: string[];
+  searchSelection?: { mode: string; profile_id?: string };
+  commitPolicy: "review" | "auto";
 }) {
-  const [chars, setChars] = useState<number | null>(null);
+  const [prompt, setPrompt] = useState<Prompt | null>(null);
+  const identity = JSON.stringify(input);
   useEffect(() => {
+    setPrompt(null);
     if (!input.enabled) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
@@ -34,29 +44,22 @@ export function useTurnMeasure(input: {
           ...omissionFields(input.omissions),
         },
         session_id: input.sessionId,
+        model_selection: input.selection,
+        skill_ids: input.skills,
+        search_selection: input.searchSelection,
+        commit_policy: input.commitPolicy,
       })
-        .then((prompt) => {
-          if (!cancelled) setChars(prompt.chars);
+        .then((value) => {
+          if (!cancelled) setPrompt(value);
         })
         .catch(() => {
-          if (!cancelled) setChars(null);
+          if (!cancelled) setPrompt(null);
         });
-    }, 600);
+    }, 450);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    input.action,
-    input.chapterId,
-    input.context,
-    input.enabled,
-    input.instruction,
-    input.intent,
-    input.omissions,
-    input.projectId,
-    input.sessionId,
-    input.sourceId,
-  ]);
-  return chars;
+  }, [identity]);
+  return prompt;
 }

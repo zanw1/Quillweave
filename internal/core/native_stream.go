@@ -353,14 +353,19 @@ func (state *nativeStreamState) complete(protocol, text, reasoning, encrypted st
 			call.ID = "call-" + newID()
 		}
 		var arguments map[string]any
-		if call.ID == "" || seen[call.ID] || call.Name == "" || decodeJSON([]byte(call.Arguments), &arguments) != nil || arguments == nil {
+		if call.ID == "" || seen[call.ID] || call.Name == "" {
 			return nil, nil, errors.New("The model returned an incomplete or invalid native tool call")
+		}
+		if decodeJSON([]byte(call.Arguments), &arguments) != nil || arguments == nil {
+			call.argumentError = "Function arguments must be one complete JSON object. Correct the JSON and required fields before retrying."
+		} else if err := validateNativeToolArguments(call.Name, call.Arguments); err != nil {
+			call.argumentError = err.Error()
 		}
 		seen[call.ID] = true
 		calls = append(calls, *call)
 		if protocol == "anthropic" || protocol == "gemini" {
 			for index, block := range state.blocks {
-				if textField(block, "id") == call.ID {
+				if textField(block, "id") == call.ID && arguments != nil {
 					field := "input"
 					if protocol == "gemini" {
 						field = "arguments"

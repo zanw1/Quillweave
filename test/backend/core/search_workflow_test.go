@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// configureSearchFixture writes a real configuration and process-local key through public commands.
+// configureSearchFixture writes a real configuration and encrypted key through public commands.
 func configureSearchFixture(t *testing.T, engine *Engine, family, address string) websearch.Profile {
 	t.Helper()
 	view := invoke[searchSettingsView](t, engine, "get_search_settings", nil)

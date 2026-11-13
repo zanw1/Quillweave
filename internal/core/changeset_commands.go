@@ -80,7 +80,7 @@ func findChangeSet(project *Project, id string) *ChangeSet {
 }
 
 // applyChangeSetToProject applies all operations in a ChangeSet to project and records before_value snapshots.
-func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
+func applyChangeSetOperations(project *Project, cs *ChangeSet) error {
 	if err := validateChangeSet(cs); err != nil {
 		return err
 	}
@@ -92,11 +92,21 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 	}
 	cs.BeforeStage = project.Studio.Stage
 	cs.BeforeFactReferences = []FactReferenceSnapshot{}
+	cs.BeforeMemoryReferences = nil
+	cs.BeforePlanReferences = nil
 	capturedFacts := map[string]bool{}
 	idMap := map[string]string{}
 	for i := range cs.Operations {
 		op := &cs.Operations[i]
 		switch op.TargetKind {
+		case TargetWiki:
+			if err := applyWikiChange(project, op); err != nil {
+				return err
+			}
+		case TargetImportMetadata:
+			if err := applyImportedMetadataRepair(project, op); err != nil {
+				return err
+			}
 		case TargetLocation, TargetRoute:
 			if err := applyWorldMapOperation(project, op); err != nil {
 				return err
@@ -137,17 +147,12 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 			if patch.Outline != nil {
 				project.Outline = *patch.Outline
 			}
-			if patch.WritingStyle != nil {
-				project.WritingStyle = *patch.WritingStyle
+			var writingFields map[string]json.RawMessage
+			if err := decodeJSON(op.AfterValue, &writingFields); err != nil {
+				return err
 			}
-			if patch.DefaultChapterWords != nil {
-				if err := validateTarget(*patch.DefaultChapterWords); err != nil {
-					return err
-				}
-				project.DefaultChapterWords = *patch.DefaultChapterWords
-			}
-			if patch.NarrativePov != nil {
-				project.NarrativePov = *patch.NarrativePov
+			if err := applyWritingSettings(project, &arguments{fields: writingFields}); err != nil {
+				return err
 			}
 
 		case TargetStudioGoal:
@@ -251,37 +256,43 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 				project.Entities = kept
 				continue
 			}
-			var rawEnt struct {
-				ID          string   `json:"id"`
-				Name        string   `json:"name"`
-				Kind        string   `json:"kind"`
-				Aliases     []string `json:"aliases"`
-				Description string   `json:"description"`
+			// Match the stored entry by id (after_value.id, then target_id) or by name, then overlay the
+			// supplied fields so an update that omits kind, aliases or description keeps them.
+			var head struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
 			}
-			if err := json.Unmarshal(op.AfterValue, &rawEnt); err != nil {
+			if err := json.Unmarshal(op.AfterValue, &head); err != nil {
 				return err
 			}
-			if rawEnt.Aliases == nil {
-				rawEnt.Aliases = []string{}
+			if head.ID == "" {
+				head.ID = op.TargetID
 			}
-			if rawEnt.Kind == "" {
-				rawEnt.Kind = "character"
-			}
-			entity := Entity{
-				ID:          rawEnt.ID,
-				Name:        rawEnt.Name,
-				Kind:        rawEnt.Kind,
-				Aliases:     rawEnt.Aliases,
-				Description: rawEnt.Description,
-			}
-			for _, existing := range project.Entities {
-				if (entity.ID != "" && existing.ID == entity.ID) || strings.EqualFold(existing.Name, entity.Name) {
-					entity.ID = existing.ID
-					op.BeforeValue = rawMessage(existing)
-					if existing.Name != strings.TrimSpace(entity.Name) {
-						captureRenamedFactReferences(project, cs, existing.Name, capturedFacts)
-					}
+			var stored *entityRecord
+			storedAt := -1
+			for i := range project.Entities {
+				if (head.ID != "" && project.Entities[i].ID == head.ID) || strings.EqualFold(project.Entities[i].Name, head.Name) {
+					stored, storedAt = storedEntityRecord(project.Entities[i]), i
 					break
+				}
+			}
+			record, err := decodeOverStored(op.AfterValue, stored)
+			if err != nil {
+				return err
+			}
+			if record.Aliases == nil {
+				record.Aliases = []string{}
+			}
+			if record.Kind == "" {
+				record.Kind = "character"
+			}
+			entity := Entity{ID: record.ID, Name: record.Name, Kind: record.Kind, Aliases: record.Aliases, Description: record.Description}
+			if storedAt >= 0 {
+				existing := project.Entities[storedAt]
+				entity.ID = existing.ID
+				op.BeforeValue = rawMessage(existing)
+				if existing.Name != strings.TrimSpace(entity.Name) {
+					captureRenamedFactReferences(project, cs, existing.Name, capturedFacts)
 				}
 			}
 			if err := saveEntity(project, rawMessage(entity)); err != nil {
@@ -305,26 +316,59 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 				}
 				continue
 			}
-			var memory StoryMemory
-			if err := json.Unmarshal(op.AfterValue, &memory); err != nil {
+			// Match the stored memory by after_value.id, then target_id, and overlay the supplied fields so
+			// an edit that omits state, chapter range or known_by keeps them.
+			memoryID := afterValueID(op.AfterValue)
+			if memoryID == "" {
+				memoryID = op.TargetID
+			}
+			var storedMemory *StoryMemory
+			if idx := memoryIndex(project, memoryID); idx >= 0 {
+				storedMemory = &project.Studio.Memories[idx]
+			}
+			memory, err := decodeOverStored(op.AfterValue, storedMemory)
+			if err != nil {
 				return err
 			}
 			memory.Status = "confirmed"
 			if memory.Kind == "" {
 				memory.Kind = "setting"
 			}
+			// Automatic extraction is an index into prose, not author confirmation.
+			// Preserve accepted state when the model targets an existing record.
+			if cs.CommitPolicy == "auto" && (memory.SourceID != "" || !contains([]string{"rule", "setting", "plan"}, memory.Kind)) {
+				memory.Status, memory.Epistemic = "proposed", "inferred"
+				op.BeforeValue = nil
+				if idx := memoryIndex(project, memory.ID); idx >= 0 && project.Studio.Memories[idx].Status == "confirmed" {
+					memory.Supersedes, memory.ID = memory.ID, "auto-"+op.ID
+				}
+			}
 			if idx := memoryIndex(project, memory.ID); idx >= 0 {
 				op.BeforeValue = rawMessage(project.Studio.Memories[idx])
-			} else if memory.Supersedes != "" {
+			} else if memory.Supersedes != "" && memory.Status == "confirmed" {
 				if idx := memoryIndex(project, memory.Supersedes); idx >= 0 {
 					op.BeforeValue = rawMessage(project.Studio.Memories[idx])
 				}
 			}
+			memoriesBefore := len(project.Studio.Memories)
 			if err := upsertMemory(project, memory); err != nil {
 				return err
 			}
+			// Retire the memory this one replaces, so two confirmed versions of the same
+			// fact can never be retrieved together.
+			if memory.Supersedes != "" && memory.Status == "confirmed" {
+				if idx := memoryIndex(project, memory.Supersedes); idx >= 0 && project.Studio.Memories[idx].Status == "confirmed" {
+					retired := project.Studio.Memories[idx]
+					retired.Status = "superseded"
+					if err := upsertMemory(project, retired); err != nil {
+						return err
+					}
+				}
+			}
 			saved := project.Studio.Memories[len(project.Studio.Memories)-1]
-			if idx := memoryIndex(project, memory.ID); idx >= 0 && project.Studio.Memories[idx].Status == "confirmed" {
+			// A changed confirmed memory is saved as a new appended version under a new id, so only an
+			// in-place update is read back through the id the caller supplied.
+			if idx := memoryIndex(project, memory.ID); idx >= 0 && len(project.Studio.Memories) == memoriesBefore {
 				saved = project.Studio.Memories[idx]
 			}
 			op.TargetID = saved.ID
@@ -343,9 +387,29 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 				project.Studio.Plans = kept
 				continue
 			}
-			var plan StoryPlan
-			if err := json.Unmarshal(op.AfterValue, &plan); err != nil {
+			// Identify the plan by after_value.id, falling back to target_id, and overlay the supplied
+			// fields on the stored plan so an update that omits goal, theme or characters keeps them.
+			explicitID := afterValueID(op.AfterValue)
+			planID := explicitID
+			if planID == "" {
+				planID = op.TargetID
+			}
+			var stored *StoryPlan
+			for i := range project.Studio.Plans {
+				if planID != "" && project.Studio.Plans[i].ID == planID {
+					stored = &project.Studio.Plans[i]
+					break
+				}
+			}
+			if stored == nil && explicitID == "" && op.TargetID != "" && !strings.HasPrefix(op.TargetID, "pending-") {
+				return errors.New("target_id " + op.TargetID + " matches no stored plan. Use the id of an existing plan, or omit target_id to create one")
+			}
+			plan, err := decodeOverStored(op.AfterValue, stored)
+			if err != nil {
 				return err
+			}
+			if plan.ID == "" {
+				plan.ID = planID
 			}
 			oldID := plan.ID
 			if mapped, ok := idMap[plan.ParentID]; ok {
@@ -372,9 +436,15 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 				idMap[oldID] = plan.ID
 			}
 			op.TargetID = plan.ID
-			op.AfterValue = rawMessage(plan)
+			op.AfterValue = keepClearedFields(op.AfterValue, rawMessage(plan))
 
 		case TargetChapter:
+			if op.OpType == OpDelete {
+				if err := deleteChapter(project, op); err != nil {
+					return err
+				}
+				continue
+			}
 			var patch chapterProsePatch
 			if err := decodeJSON(op.AfterValue, &patch); err != nil {
 				return err
@@ -452,7 +522,11 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 	for i := range cs.Operations {
 		op := &cs.Operations[i]
 		if op.OpType != OpDelete && contains([]string{"plan", "location", "route"}, string(op.TargetKind)) {
-			op.AfterValue = changeTargetValue(project, *op)
+			value := changeTargetValue(project, *op)
+			if op.TargetKind == TargetPlan {
+				value = keepClearedFields(op.AfterValue, value)
+			}
+			op.AfterValue = value
 		}
 	}
 	if err := validateProject(project); err != nil {
@@ -465,6 +539,7 @@ func applyChangeSetToProject(project *Project, cs *ChangeSet) error {
 
 // captureRenamedFactReferences records each affected fact once across a compound change.
 func captureRenamedFactReferences(project *Project, cs *ChangeSet, name string, captured map[string]bool) {
+	captureRenamedStoryReferences(project, cs, name)
 	for _, fact := range project.Facts {
 		if !captured[fact.ID] && (fact.Entity == name || fact.RelatedEntity == name) {
 			cs.BeforeFactReferences = append(cs.BeforeFactReferences, FactReferenceSnapshot{FactID: fact.ID, Entity: fact.Entity, RelatedEntity: fact.RelatedEntity})
@@ -502,7 +577,7 @@ func validateLegacyEntityUndo(project *Project, cs *ChangeSet) error {
 }
 
 // undoChangeSetOnProject restores operations and the exact fact references captured before the change.
-func undoChangeSetOnProject(project *Project, cs *ChangeSet) error {
+func undoChangeSetOperations(project *Project, cs *ChangeSet) error {
 	if cs.Status != ChangeSetApplied {
 		return errors.New("Only applied changesets can be undone")
 	}
@@ -512,6 +587,14 @@ func undoChangeSetOnProject(project *Project, cs *ChangeSet) error {
 	for i := len(cs.Operations) - 1; i >= 0; i-- {
 		op := cs.Operations[i]
 		switch op.TargetKind {
+		case TargetWiki:
+			if err := undoWikiChange(project, op); err != nil {
+				return err
+			}
+		case TargetImportMetadata:
+			if err := undoImportedMetadataRepair(project, op); err != nil {
+				return err
+			}
 		case TargetLocation, TargetRoute:
 			if err := undoWorldMapOperation(project, op); err != nil {
 				return err
@@ -706,6 +789,12 @@ func undoChangeSetOnProject(project *Project, cs *ChangeSet) error {
 			}
 
 		case TargetChapter:
+			if op.OpType == OpDelete {
+				if err := restoreDeletedChapter(project, op); err != nil {
+					return err
+				}
+				continue
+			}
 			if len(op.BeforeValue) == 0 {
 				kept := []Chapter{}
 				for _, chapter := range project.Chapters {
@@ -745,6 +834,7 @@ func undoChangeSetOnProject(project *Project, cs *ChangeSet) error {
 			project.Facts[i].RelatedEntity = reference.RelatedEntity
 		}
 	}
+	restoreRenamedStoryReferences(project, cs)
 	if err := validateProject(project); err != nil {
 		return err
 	}
@@ -846,6 +936,9 @@ func (engine *Engine) handleChangeSetCommand(command string, projectID string, a
 		}
 		cs.UpdatedAt = now()
 		if err := validateChangeSet(&cs); err != nil {
+			return nil, err
+		}
+		if err := normalizeMemoryOperations(&cs); err != nil {
 			return nil, err
 		}
 		if err := engine.store.withWriteTransaction(func(conn *sql.Conn) error {

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { goEnv } from "./build.mjs";
+import { goEnv, companionFilename } from "./build.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -48,6 +48,9 @@ function release() {
     fs.mkdirSync(staging);
     const binary = target === "darwin" ? "Quillweave.app" : `Quillweave-windows-${arch}.exe`;
     fs.cpSync(path.join(root, "build", "bin", binary), path.join(staging, target === "darwin" ? binary : "Quillweave.exe"), { recursive: true });
+    if (target === "windows")
+      fs.copyFileSync(path.join(root, "build", "bin", `quillweave-cli-windows-${arch}.exe`), path.join(staging, companionFilename(target)));
+    fs.cpSync(path.join(root, "integrations", "skills"), path.join(staging, "agent-skills"), { recursive: true });
     for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.txt"])
       fs.copyFileSync(path.join(root, file), path.join(staging, file));
     const archive = path.join(temporary, `${name}.zip`);
@@ -73,6 +76,7 @@ function release() {
       publishFile(diskImage, path.join(outputDirectory, `${name}.dmg`));
     } else {
       publishFile(path.join(staging, "Quillweave.exe"), path.join(outputDirectory, `${name}.exe`));
+      publishFile(path.join(staging, companionFilename(target)), path.join(outputDirectory, `${name}-cli.exe`));
     }
     publishFile(archive, path.join(outputDirectory, `${name}.zip`));
     publishFile(path.join(root, "LICENSE"), path.join(outputDirectory, "LICENSE.txt"));

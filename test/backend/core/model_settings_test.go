@@ -14,8 +14,8 @@ import (
 	"testing"
 )
 
-// TestModelRefreshPreservesOnlyLocalMatchingSecrets checks metadata refresh while keys remain scoped to the local matching endpoint.
-func TestModelRefreshPreservesOnlyLocalMatchingSecrets(t *testing.T) {
+// TestModelRefreshPreservesMatchingEncryptedSecrets checks shared credential refresh while keys remain scoped to a matching endpoint.
+func TestModelRefreshPreservesMatchingEncryptedSecrets(t *testing.T) {
 	first, second, project, settings := sharedModelEngines(t)
 	var oldCalls, newCalls atomic.Int32
 	oldServer := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
@@ -24,8 +24,8 @@ func TestModelRefreshPreservesOnlyLocalMatchingSecrets(t *testing.T) {
 	})
 	newServer := modelServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		newCalls.Add(1)
-		if request.Header.Get("Authorization") != "" {
-			t.Error("A stale endpoint key or another process's key was sent")
+		if request.Header.Get("Authorization") != "Bearer new-first-process-key" {
+			t.Error("The current endpoint did not receive its saved key")
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -34,10 +34,10 @@ func TestModelRefreshPreservesOnlyLocalMatchingSecrets(t *testing.T) {
 	settings.Profiles[0].Config.BaseURL = oldServer.URL + "/v1"
 	saved := invoke[settingsResponse](t, first, "save_model_settings", map[string]any{"settings": settings, "key_updates": map[string]SecretUpdate{"writer": {Action: "replace", Value: "first-process-key"}}})
 	view := invoke[settingsResponse](t, second, "get_model_settings", map[string]any{})
-	assert(t, !view.KeyStatus["writer"], "Persistent metadata exposed another process's key")
+	assert(t, view.KeyStatus["writer"] && view.Settings.Profiles[0].Config.APIKey == "", "The shared encrypted key was missing or exposed through the API")
 	saved = invoke[settingsResponse](t, second, "save_model_settings", map[string]any{"settings": saved.Settings, "key_updates": map[string]SecretUpdate{"writer": {Action: "replace", Value: "second-process-key"}}})
 	firstView := invoke[settingsResponse](t, first, "get_model_settings", map[string]any{})
-	assert(t, firstView.KeyStatus["writer"] && first.models.Profiles[0].Config.APIKey == "first-process-key", "Refreshing the same endpoint lost or mixed a process-local key")
+	assert(t, firstView.KeyStatus["writer"] && first.models.Profiles[0].Config.APIKey == "second-process-key", "Refreshing the same endpoint did not load the current encrypted key")
 	saved.Settings.Profiles[0].Config.BaseURL = newServer.URL + "/v1"
 	saved.Settings.Profiles[0].Config.ContextChars = 4000
 	updated := invoke[settingsResponse](t, first, "save_model_settings", map[string]any{"settings": saved.Settings, "key_updates": map[string]SecretUpdate{"writer": {Action: "replace", Value: "new-first-process-key"}}})
@@ -56,7 +56,7 @@ func TestModelRefreshPreservesOnlyLocalMatchingSecrets(t *testing.T) {
 	reject(t, second, "start_ai", map[string]any{"project_id": project.ID, "chapter_id": project.Chapters[0].ID, "action": "ask", "instruction": "Use a disabled profile"})
 }
 
-// TestCredentialsAreNotPersistedOrReturned checks that API and SQLite views omit process-local credentials.
+// TestCredentialsAreNotPersistedOrReturned checks that public API and model metadata omit plaintext credentials.
 func TestCredentialsAreNotPersistedOrReturned(t *testing.T) {
 	engine := testEngine(t)
 	config := defaultProvider()
@@ -191,6 +191,9 @@ func TestActualRequestsUseEachAssignedModel(t *testing.T) {
 			}
 			mutex.Unlock()
 			text := "She followed the shore toward the lighthouse."
+			if stage == "writer" && strings.Contains(jsonText(body.Messages), "[Writing composition stage]") {
+				text = writingCompositionFixture()
+			}
 			if stage == "extract" {
 				text = jsonText(map[string]any{"facts": []Candidate{{Entity: "Lin Wu", Kind: "event", Claim: "Decides to visit the lighthouse", Quote: chapter.Body, Epistemic: "explicit"}}})
 			}
@@ -229,7 +232,7 @@ func TestActualRequestsUseEachAssignedModel(t *testing.T) {
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
-	assert(t, calls["writer"] == 1 && calls["extract"] == 1 && calls["compile"] == 1, "The assigned endpoints were not used")
+	assert(t, calls["writer"] == 3 && calls["extract"] == 1 && calls["compile"] == 1, "Composition, writing and review did not use the same assigned model")
 	assert(t, strings.Contains(writerPrompt, "2100") && strings.Contains(writerPrompt, "Mystery"), "Writing parameters were absent from the request")
 	view := invoke[settingsResponse](t, engine, "get_model_settings", map[string]any{})
 	assert(t, !strings.Contains(jsonText(view), "test-key"), "An API key was returned to the UI")

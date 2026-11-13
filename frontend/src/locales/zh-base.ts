@@ -238,6 +238,9 @@ export const zhBase: Record<string, string> = {
   "Develop characters and setting": "完善人物与设定",
   "Compile this source into the Wiki": "将这份资料编入 Wiki",
   "Track this chapter's characters and clues": "追踪本章人物与线索",
+  "Humanize chapter": "润色本章语言",
+  "Wiki analysis stages pending evidence for review. Humanize keeps the plot and character voices.":
+    "Wiki 分析会先整理待审阅的证据；语言润色保留情节与人物声音。",
   "Create a chapter outline": "生成章节大纲",
   "Analyze the complete source and organize character trajectories and clues.":
     "分析完整原文，整理人物轨迹与线索。",
@@ -317,11 +320,10 @@ export const zhBase: Record<string, string> = {
   "Chapter target": "本章目标",
   "Chapter target characters": "本章目标字数",
   "Inherit {0}": "沿用全书设置：{0}",
-  "Collapse scene plan": "收起场景计划",
-  "Scene plan": "场景计划",
-  "What changes in this chapter?": "这一章发生了什么变化？",
-  "Character goals, obstacles, choices, consequences…":
-    "人物目标、阻碍、选择、后果…",
+  "Collapse chapter notes": "收起章节备注",
+  "Chapter notes": "章节备注",
+  "Additional author requirements for this chapter": "作者对本章的补充要求",
+  "Extra instructions or details to preserve…": "补充要求、想保留的细节……",
   "Chapter text": "章节正文",
   "Write your story here…": "在这里写下你的故事…",
   "— The story continues —": "— 故事还在继续 —",
@@ -418,7 +420,7 @@ export const zhBase: Record<string, string> = {
   "Save source": "保存资料",
   "Library / Source details": "资料库 / 资料详情",
   "Open original source": "打开原始链接",
-  "Compile this source with AI": "使用 AI 编纂此资料",
+  "Ask about this source": "就这份资料提问",
   "The complete source is analyzed in chunks. Proposed facts enter the Wiki review queue.":
     "系统会分块分析完整资料，提取的事实进入 Wiki 待审队列。",
   "Collapse source analysis": "收起资料分析",
@@ -511,8 +513,22 @@ export const zhBase: Record<string, string> = {
   "Enter / Replace key": "输入 / 替换密钥",
   "Clear current key": "清除当前密钥",
   "New API key": "新 API 密钥",
-  "Keys are held in this app process's memory. Local models can use an empty key.":
-    "密钥保存在当前应用进程的内存中，本地模型可以留空。",
+  "API keys are encrypted in the local database and restored after restart. Local models can use an empty key.":
+    "API 密钥加密保存在本地数据库中，重启后自动恢复，本地模型可以留空。",
+  "The credential master key file is missing. Restore it to unlock saved API keys":
+    "凭据主密钥文件缺失，请恢复该文件以读取已保存的 API 密钥。",
+  "Cannot create the credential master key file. Check the data directory permissions":
+    "无法创建凭据主密钥文件，请检查数据目录的写入权限。",
+  "Cannot read the credential master key file. Restore it to unlock saved API keys":
+    "无法读取凭据主密钥文件，请恢复该文件以读取已保存的 API 密钥。",
+  "The credential master key file is invalid. Restore the original file":
+    "凭据主密钥文件无效，请恢复原文件。",
+  "Cannot restrict access to the credential master key file":
+    "无法设置凭据主密钥文件的访问权限。",
+  "Unsupported encrypted credential version": "不支持此加密凭据版本。",
+  "Saved API keys could not be decrypted. Restore the matching master key file and database":
+    "已保存的 API 密钥解密失败，请恢复配套的主密钥文件和数据库。",
+  "Credential revision is out of range": "凭据版本号超出支持范围。",
   "Generation parameters": "生成参数",
   "Thinking mode": "思考模式",
   "Model default": "模型默认",

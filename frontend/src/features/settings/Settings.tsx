@@ -1,5 +1,4 @@
 import { Select } from "../../components/Select";
-import { AdvancedLabSection } from "./AdvancedLabSection";
 import {
   protocolNames,
   effortNames,
@@ -37,11 +36,10 @@ import type {
   ModelSettingsResponse,
   ProviderCatalog,
   SecretUpdate,
-  Project,
 } from "../../domain/types";
 
 /** Edit independent model profiles and task routing with direct, masked key entry. */
-export function Settings({ project }: { project?: Project }) {
+export function Settings() {
   const [data, setData] = useState<ModelSettingsResponse | null>(null);
   const [selected, setSelected] = useState("");
   const [tab, setTab] = useState("profiles");
@@ -657,7 +655,7 @@ export function Settings({ project }: { project?: Project }) {
                 />
                 <p className="field-hint">
                   {t(
-                    "Keys are held in this app process's memory. Local models can use an empty key.",
+                    "API keys are encrypted in the local database and restored after restart. Local models can use an empty key.",
                   )}
                 </p>
                 <ModelSearchBinding
@@ -916,7 +914,6 @@ export function Settings({ project }: { project?: Project }) {
         />
       )}
       {tab === "search" && <SearchSettings />}
-      <AdvancedLabSection project={project} />
     </fieldset>
   );
 }

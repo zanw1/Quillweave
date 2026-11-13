@@ -60,6 +60,7 @@ export interface Fact {
   created_at: string;
 }
 export interface Project {
+  import_warnings?: string[];
   id: string;
   title: string;
   genre: string;
@@ -237,16 +238,53 @@ export interface ContextItem {
   text: string;
   score: number;
   reason?: string;
+  required?: boolean;
+  source_id?: string;
+  source_hash?: string;
 }
 export interface Message {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   source_job_id?: string;
-  tool_calls?: { id: string; name: string; arguments: string; provider_call_id?: string }[];
+  tool_calls?: {
+    id: string;
+    name: string;
+    arguments: string;
+    provider_call_id?: string;
+  }[];
   tool_call_id?: string;
   tool_name?: string;
 }
+export interface ChatModelSelection {
+  profile_id: string;
+  reasoning_effort?: string;
+  output_mode: "auto" | "custom";
+  max_tokens?: number;
+}
+export interface TokenBudget {
+  context_window_tokens: number;
+  input_tokens_estimate: number;
+  output_tokens: number;
+  max_output_tokens: number;
+  can_send: boolean;
+  needs_compaction: boolean;
+  estimated: boolean;
+  warning?: string;
+}
+export interface ChatSkill {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  version: string;
+  source: string;
+}
 export interface Prompt {
+  skills?: ChatSkill[];
+  checkpoint?: { summary: string; through_turn_id: string; created_at: string };
+  model_selection?: ChatModelSelection;
+  budget?: TokenBudget;
+  carried_records?: { id: string; label: string }[];
   warning?: string;
   messages: Message[];
   context: ContextItem[];
@@ -255,7 +293,61 @@ export interface Prompt {
   chars: number;
   tool_chars?: number;
 }
+export interface WritingFollowup {
+  action: string;
+  instruction: string;
+  intentHint?: string;
+}
 export interface Job {
+  activity?: {
+    id: string;
+    kind: "text" | "reasoning" | "tool";
+    text?: string;
+    purpose?: string;
+    step_id?: string;
+    status: string;
+  }[];
+  writing?: {
+    phase: string;
+    review_status?: string;
+    mode: string;
+    brief: string;
+    draft: string;
+    candidate_body?: string;
+    continuation?: string;
+    revisions?: number;
+    calls?: number;
+    metrics?: ModelCallMetric[];
+    composition?: {
+      intent: string;
+      approach: string;
+      scene_cards?: import("./studio").WritingScene[];
+      scene_notes?: string[];
+      evidence_ids?: string[];
+      evidence_requests?: string[];
+      reveal_notes?: string[];
+      open_questions?: string[];
+      sample?: string;
+    };
+    candidate_hash: string;
+    stages: { name: string; prompt: Prompt }[];
+    review?: {
+      summary: string;
+      issues: {
+        kind: string;
+        scope?: string;
+        evidence_ids?: string[];
+        quote: string;
+        explanation: string;
+        suggestion: string;
+      }[];
+      needs_revision: boolean;
+      structured: boolean;
+      warning?: string;
+    };
+  };
+  model_selection?: ChatModelSelection;
+  skill_ids?: string[];
   id: string;
   project_id: string;
   chapter_id: string;
@@ -283,6 +375,7 @@ export interface Job {
 export interface ModelCallMetric {
   purpose: string;
   model: string;
+  reasoning_effort?: string;
   protocol: string;
   usage: {
     input_tokens?: number;

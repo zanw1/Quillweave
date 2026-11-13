@@ -86,7 +86,13 @@ export function ProposalCards({
                 {t(
                   metric.purpose === "compaction"
                     ? "Conversation summary"
-                    : "Model request",
+                    : metric.purpose === "writing_composition"
+                      ? "Composing the scene"
+                      : metric.purpose === "writing_draft"
+                        ? "Writing prose"
+                        : metric.purpose === "writing_review"
+                          ? "Reviewing the candidate"
+                          : "Model request",
                 )}
               </strong>
               <span>
@@ -122,7 +128,9 @@ export function ProposalCards({
                     <dt>{t("Request comparison")}</dt>
                     <dd>
                       {t(metric.change_reason)}
-                      {metric.request_change_path && <code> · {metric.request_change_path}</code>}
+                      {metric.request_change_path && (
+                        <code> · {metric.request_change_path}</code>
+                      )}
                     </dd>
                   </>
                 )}
@@ -143,7 +151,7 @@ export function ProposalCards({
           ))}
         </details>
       )}
-      {!!job.steps?.length && (
+      {!!job.steps?.length && !job.activity?.length && (
         <details className="agent-trace" open={job.status === "running"}>
           <summary>
             {t("Task steps")} · {t("Model calls")} {job.calls || 0}

@@ -21,7 +21,24 @@ export interface WorldRoute {
   description: string;
 }
 
+export interface WritingScene {
+  pov: string;
+  location: string;
+  goal: string;
+  obstacle: string;
+  choice: string;
+  action: string;
+  cost: string;
+  outcome: string;
+  knowledge: string;
+  handoff: string;
+  characters: { name: string; want: string; knowledge: string; response: string }[];
+}
+
 export interface StoryPlan {
+  scene_cards?: WritingScene[];
+  flexibility?: "" | "fixed" | "flexible";
+  open_questions?: string[];
   id: string;
   parent_id: string;
   level: string;
@@ -90,14 +107,17 @@ export type ChangeTargetKind =
   | "entity"
   | "memory"
   | "plan"
-  | "chapter";
+  | "chapter"
+  | "wiki"
+  | "import_metadata";
 export type MapTargetKind = "location" | "route";
 
 export type ChangeOpType =
   | "upsert"
   | "delete"
   | "append_prose"
-  | "replace_prose";
+  | "replace_prose"
+  | "restore";
 
 export type ChangeSetStatus =
   | "staged"
@@ -120,6 +140,18 @@ export interface ChangeOperation {
 }
 
 export interface ChangeSet {
+  provenance?: {
+    client: string;
+    transport: string;
+    writing_session_id?: string;
+    wiki_session_id?: string;
+    draft_hash?: string;
+    evidence_version?: string;
+    revisions?: number;
+    review?: { summary: string; needs_revision: boolean; issues: { kind: string; scope?: string; quote: string; explanation: string; suggestion: string }[] };
+  };
+  reverts_changeset_id?: string;
+  revert_conflicts?: { kind: string; id: string; current: unknown; expected: unknown; restore: unknown; resolution?: string }[];
   impacts?: { kind: string; id: string; title: string }[];
   id: string;
   project_id: string;
@@ -127,11 +159,13 @@ export interface ChangeSet {
   turn_id?: string;
   job_id?: string;
   proposal_links_version?: number;
-  before_fact_references?: {
-    fact_id: string;
-    entity: string;
-    related_entity: string;
-  }[] | null;
+  before_fact_references?:
+    | {
+        fact_id: string;
+        entity: string;
+        related_entity: string;
+      }[]
+    | null;
   source: string;
   commit_policy: string;
   status: ChangeSetStatus;
@@ -145,6 +179,14 @@ export interface ChangeSet {
   operations: ChangeOperation[];
   created_at: string;
   updated_at: string;
+}
+
+export interface ChangeEffect {
+  kind: string;
+  id: string;
+  before: unknown;
+  after: unknown;
+  resolution?: string;
 }
 
 export interface WorkspaceContext {
@@ -194,6 +236,8 @@ export interface ConversationTurn {
   created_at: string;
 }
 export interface Conversation {
+  archived?: boolean;
+  model_selection?: import("./types").ChatModelSelection;
   id: string;
   project_id: string;
   chapter_id: string;
@@ -208,6 +252,9 @@ export interface Conversation {
   turns: ConversationTurn[];
 }
 export interface AgentStep {
+  input?: string;
+  started_at?: string;
+  finished_at?: string;
   id: string;
   tool: string;
   status: string;
@@ -262,43 +309,4 @@ export interface WritingSkill {
   source: string;
   version: string;
   modes: string[];
-}
-export interface PolicyExperiment {
-  id: string;
-  title: string;
-  created_at: string;
-  cost_penalty: number;
-  min_gain: number;
-  policies: {
-    id: string;
-    order: string;
-    max_calls: number;
-    max_depth: number;
-  }[];
-  cases: {
-    id: string;
-    split: string;
-    nodes: {
-      id: string;
-      parent_id: string;
-      score: number;
-      cost: number;
-      text: string;
-      reviewed: boolean;
-    }[];
-  }[];
-}
-export interface PolicyEvaluation {
-  scores: {
-    policy_id: string;
-    split: string;
-    cases: number;
-    quality: number;
-    cost: number;
-    calls: number;
-    reward: number;
-  }[];
-  candidate: string;
-  promotable: boolean;
-  reason: string;
 }

@@ -34,10 +34,12 @@ func resolveBuiltinSkills(mode, stage string) []WritingSkill {
 
 // agentCraftGuidance keeps craft instructions stable while the current story determines their applicability.
 func agentCraftGuidance() string {
-	lines := []string{"Use the built-in craft approaches when they fit the current goal and story form. Discuss vague ideas before proposing a full outline. Treat author-approved settings, future plans, source-supported events, rejected alternatives and inference as separate. Current story updates supersede older snapshots. Preserve character knowledge and story time, and reread original evidence when a summary is insufficient. Match the author's naming preferences, forbidden names, length targets and pace. Use serial rhythm for serial or hybrid fiction and gradual expansion for traditional or hybrid fiction. The author chooses when to move between planning and prose."}
+	lines := []string{"Choose craft approaches for the current author goal and story form; their names below are an index, not a mandatory sequence. Writing stages supply detailed methods. Build actions from independent character wants, knowledge, feasible choices and continuing consequences, including quiet relationship scenes. Distinguish accepted settings, future plans, source events, rejected alternatives and inference. Current story updates supersede earlier snapshots. Preserve story time and knowledge boundaries; reread original evidence when summaries are insufficient. Follow author preferences and the current save policy."}
+	names := []string{}
 	for _, skill := range writingSkills() {
-		lines = append(lines, skill.Name+": "+skill.Description)
+		names = append(names, skill.Name)
 	}
+	lines = append(lines, "Available approaches: "+strings.Join(names, ", "))
 	return strings.Join(lines, "\n")
 }
 
@@ -52,8 +54,46 @@ func omittedIDs(ids []string) map[string]bool {
 	return skipped
 }
 
+// narrativeEmphasis avoids repeating the entire premise when an imported focus is an exact copy.
+func narrativeEmphasis(project *Project) string {
+	focus := strings.TrimSpace(project.Studio.NarrativeFocus)
+	if focus != "" && focus == strings.TrimSpace(project.Premise) {
+		return "Use the story premise supplied above."
+	}
+	return project.Studio.NarrativeFocus
+}
+
+// distinctAuthorPreferences keeps ordered author notes while omitting identical fields already supplied.
+func distinctAuthorPreferences(project *Project) []string {
+	seen := map[string]bool{strings.TrimSpace(project.Premise): true, strings.TrimSpace(project.Style): true, strings.TrimSpace(project.Studio.NarrativeFocus): true}
+	result := []string{}
+	for _, preference := range project.Studio.Preferences {
+		key := strings.TrimSpace(preference)
+		if key != "" && !seen[key] {
+			result = append(result, preference)
+			seen[key] = true
+		}
+	}
+	return result
+}
+
 // buildStoryBibleLayer1 constructs a deterministic ID-sorted Story Bible snapshot for Layer 1 prefix caching.
-func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) string {
+func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext, chapterScope ...uint32) string {
+	through := ^uint32(0)
+	if ctx != nil {
+		if chapter := findChapter(project, ctx.ActiveChapterID); chapter != nil {
+			through = chapter.Number
+		}
+	}
+	if len(chapterScope) > 0 {
+		through = chapterScope[0]
+	}
+	if through == ^uint32(0) {
+		through = 0
+		for _, chapter := range project.Chapters {
+			through = max(through, chapter.Number)
+		}
+	}
 	s := project.Studio
 	mode := s.Mode
 	if mode == "" {
@@ -65,6 +105,7 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 	}
 	lines := []string{
 		"<story_bible>",
+		fmt.Sprintf("Story time boundary: chapter %d. Future plans describe intended events only.", through),
 		fmt.Sprintf("Project ID: %s", project.ID),
 		fmt.Sprintf("Title: %s | Genre: %s | Form: %s | Stage: %s", project.Title, project.Genre, mode, stage),
 	}
@@ -74,8 +115,20 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 	if strings.TrimSpace(project.Style) != "" {
 		lines = append(lines, "Style notes: "+strings.TrimSpace(project.Style))
 	}
-	if strings.TrimSpace(project.Outline) != "" {
-		outline := []rune(strings.TrimSpace(project.Outline))
+	var scopeChapter *Chapter
+	if ctx != nil {
+		scopeChapter = findChapter(project, ctx.ActiveChapterID)
+	}
+	if scopeChapter == nil && len(chapterScope) > 0 && chapterScope[0] != ^uint32(0) {
+		for i := range project.Chapters {
+			if project.Chapters[i].Number == chapterScope[0] {
+				scopeChapter = &project.Chapters[i]
+				break
+			}
+		}
+	}
+	if summary := scopedOutlineContext(project, scopeChapter, ctx); strings.TrimSpace(summary) != "" {
+		outline := []rune(strings.TrimSpace(summary))
 		if len(outline) > 1200 {
 			outline = outline[:1200]
 		}
@@ -84,8 +137,8 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 	if mode != "undecided" && (s.TargetCharacters > 0 || s.TargetChapters > 0 || s.TargetVolumes > 0) {
 		lines = append(lines, fmt.Sprintf("Targets: %d characters, %d chapters, %d volumes.", s.TargetCharacters, s.TargetChapters, s.TargetVolumes))
 	}
-	lines = append(lines, fmt.Sprintf("Audience: %s | Pace: %s | Narrative emphasis: %s", s.Audience, s.Pacing, s.NarrativeFocus))
-	lines = append(lines, "Naming preference: "+s.NamingStyle+" | Forbidden names: "+strings.Join(s.ForbiddenNames, ", ")+" | Author preferences: "+strings.Join(s.Preferences, "; "))
+	lines = append(lines, fmt.Sprintf("Audience: %s | Pace: %s | Narrative emphasis: %s", s.Audience, s.Pacing, narrativeEmphasis(project)))
+	lines = append(lines, "Naming preference: "+s.NamingStyle+" | Forbidden names: "+strings.Join(s.ForbiddenNames, ", ")+" | Author preferences: "+strings.Join(distinctAuthorPreferences(project), "; "))
 	decisions := append([]StoryDecision{}, s.Decisions...)
 	sort.Slice(decisions, func(i, j int) bool { return decisions[i].ID < decisions[j].ID })
 	for _, decision := range decisions {
@@ -124,8 +177,9 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 	}
 
 	memories := []StoryMemory{}
+	successors := memorySuccessors(s.Memories)
 	for _, m := range s.Memories {
-		if m.Status == "confirmed" && memoryCurrent(project, m) && !skipMemories[m.ID] {
+		if memoryVisibleAt(m, through, successors) && memoryCurrent(project, m) && !skipMemories[m.ID] {
 			memories = append(memories, m)
 		}
 	}
@@ -139,6 +193,9 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 		limit := min(24, len(memories))
 		lines = append(lines, "Confirmed story memory & rules (sorted by ID):")
 		for _, m := range memories[:limit] {
+			if m.Kind == "plan" {
+				lines = append(lines, "Future planning: the following memory is an author-approved proposal, not an observed event.")
+			}
 			content := []rune(strings.TrimSpace(m.Content))
 			if len(content) > 180 {
 				content = content[:180]
@@ -153,16 +210,21 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 			plans = append(plans, p)
 		}
 	}
-	sort.Slice(plans, func(i, j int) bool { return plans[i].ID < plans[j].ID })
+	sort.SliceStable(plans, func(i, j int) bool {
+		if plans[i].StartChapter != plans[j].StartChapter {
+			return plans[i].StartChapter < plans[j].StartChapter
+		}
+		return plans[i].ID < plans[j].ID
+	})
 	if len(plans) > 0 {
 		limit := min(16, len(plans))
-		lines = append(lines, "Confirmed plans (sorted by ID):")
+		lines = append(lines, "Confirmed plan index (narrative order; complete focused plans are supplied separately):")
 		for _, p := range plans[:limit] {
 			goal := []rune(strings.TrimSpace(p.Goal))
 			if len(goal) > 160 {
 				goal = goal[:160]
 			}
-			lines = append(lines, fmt.Sprintf("- [P:%s] (%s %d-%d) %s: %s", p.ID, p.Level, p.StartChapter, p.EndChapter, p.Title, string(goal)))
+			lines = append(lines, fmt.Sprintf("- [P:%s] (%s %d-%d) %s: %s. Choice: %s", p.ID, p.Level, p.StartChapter, p.EndChapter, p.Title, string(goal), truncateSummary(p.Choice, 160)))
 		}
 	}
 
@@ -178,6 +240,14 @@ func buildStoryBibleLayer1(project *Project, budget int, ctx *WorkspaceContext) 
 // buildIntentHintDirective translates a one-shot quick intent chip into a turn-scoped directive without locking mode.
 func buildIntentHintDirective(project *Project, hint string) string {
 	switch strings.TrimSpace(hint) {
+	case "writing_trial":
+		return localText(project,
+			"[Turn Intent: Trial Scene] Write a short original trial of the requested scene now, preserving the supplied voices, facts and knowledge boundaries. Briefly explain the chosen approach. Keep this trial unaccepted and revise only when the author asks.",
+			"【本轮意图】直接完成所请求场景的简短原创试写，沿用已有声音、事实和人物知情边界，再简要说明写法取舍。试写保持草案身份。")
+	case "writing_recompose":
+		return localText(project,
+			"[Turn Intent: Recompose Candidate] Reconsider the supplied unaccepted candidate's actions and scene choices before drafting a fresh version. Respect locked author decisions.",
+			"【本轮意图】先重新考虑所给未采纳候选中的人物行动与场景安排，再写出新版本，遵守作者锁定的决定。")
 	case "brainstorm":
 		return localText(project,
 			"[Turn Intent: Brainstorm Directions] Propose 2–3 distinct creative directions with clear trade-offs, core conflict, and protagonist agency.",
@@ -206,8 +276,10 @@ func buildIntentHintDirective(project *Project, hint string) string {
 	return ""
 }
 
-// buildWorkspaceContextBlock formats the active UI step, entity/plan focus, and selected text for Layer 3.
-func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter *Chapter) string {
+// buildWorkspaceContextBlock formats the active UI step and explicit source context.
+// Model-aware submissions retain full selected prose; legacy callers keep their established excerpt limits.
+func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter *Chapter, fullText ...bool) string {
+	includeFullText := len(fullText) > 0 && fullText[0]
 	if ctx == nil && chapter == nil {
 		return ""
 	}
@@ -242,14 +314,14 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 		if ctx.ActivePlanID != "" && !omittedIDs(ctx.OmitPlanIDs)[ctx.ActivePlanID] {
 			for _, p := range project.Studio.Plans {
 				if p.ID == ctx.ActivePlanID {
-					parts = append(parts, fmt.Sprintf("Focused plan [%s]: %s (%s, chapters %d–%d) — Goal: %s", p.ID, p.Title, p.Level, p.StartChapter, p.EndChapter, p.Goal))
+					parts = append(parts, fmt.Sprintf("Focused plan [%s] (future planning):\n%s", p.ID, jsonText(p)))
 					break
 				}
 			}
 		}
 		if strings.TrimSpace(ctx.SelectedText) != "" && !ctx.OmitSelectedText {
 			sel := []rune(strings.TrimSpace(ctx.SelectedText))
-			if len(sel) > 2000 {
+			if !includeFullText && len(sel) > 2000 {
 				sel = sel[:2000]
 			}
 			parts = append(parts, "Selected text excerpt:\n"+string(sel))
@@ -258,7 +330,12 @@ func buildWorkspaceContextBlock(project *Project, ctx *WorkspaceContext, chapter
 	if chapter != nil && (ctx == nil || !ctx.OmitChapter) {
 		runes := []rune(chapter.Body)
 		tail := string(runes[max(0, len(runes)-1500):])
-		parts = append(parts, fmt.Sprintf("Active chapter [C:%s]: Chapter %d — %s\nSynopsis: %s\nRecent prose excerpt:\n%s", chapter.ID, chapter.Number, chapter.Title, chapter.Synopsis, tail))
+		proseLabel := "Recent prose excerpt:"
+		if includeFullText {
+			tail = chapter.Body
+			proseLabel = "Current chapter prose:"
+		}
+		parts = append(parts, fmt.Sprintf("Active chapter [C:%s]: Chapter %d — %s\nAuthor chapter notes: %s\n%s\n%s", chapter.ID, chapter.Number, chapter.Title, chapterPlanningNotes(project, chapter), proseLabel, tail))
 	}
 	parts = append(parts, "</workspace_context>")
 	if len(parts) == 2 {

@@ -113,22 +113,3 @@ func TestAgentToolsStageChangesAndRespectCallBounds(t *testing.T) {
 	current := invoke[Project](t, engine, "get_project", map[string]any{"project_id": project.ID})
 	assert(t, len(current.Studio.Decisions) == 0 && current.Revision == project.Revision, "The agent applied a proposal without the author")
 }
-
-// TestPolicyReplayRequiresReviewedDisjointCases rejects unverifiable gains and replay look-ahead.
-func TestPolicyReplayRequiresReviewedDisjointCases(t *testing.T) {
-	experiment := PolicyExperiment{Policies: []ExplorationPolicy{{ID: "baseline", Order: "breadth", MaxCalls: 2, MaxDepth: 3}, {ID: "candidate", Order: "best_parent", MaxCalls: 2, MaxDepth: 3}}, MinGain: .02}
-	for _, split := range []string{"train", "holdout"} {
-		for i := 0; i < 5; i++ {
-			experiment.Cases = append(experiment.Cases, DiscoveryCase{ID: fmt.Sprintf("%s-%d", split, i), Split: split, Nodes: []DiscoveryNode{{ID: "a", Score: .5, Cost: 1, Reviewed: true}, {ID: "b", Score: .2, Cost: 1, Reviewed: true}, {ID: "c", ParentID: "a", Score: 1, Cost: 1, Reviewed: true}}})
-		}
-	}
-	result, err := evaluatePolicies(experiment)
-	assert(t, err == nil && result.Candidate == "candidate" && result.Promotable, "Reviewed held-out evidence did not support a genuinely better exploration order")
-	experiment.Cases[0].Nodes[0].Reviewed = false
-	_, err = evaluatePolicies(experiment)
-	assert(t, err != nil, "Unreviewed model scores were treated as evidence")
-	experiment.Cases[0].Nodes[0].Reviewed = true
-	experiment.Cases[1].ID = experiment.Cases[0].ID
-	_, err = evaluatePolicies(experiment)
-	assert(t, err != nil, "Duplicate case IDs could leak across evaluation splits")
-}

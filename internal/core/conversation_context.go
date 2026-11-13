@@ -69,11 +69,13 @@ func replayContext(selected SelectedModel, output modelOutput, messages []Messag
 }
 
 // retainAgentReplay preserves each original tool-call/result pair and the final provider response.
+// Ephemeral protocol notes (for example the final-call budget hint) are stripped so they never
+// leak as stale instructions into replayed later turns.
 func (engine *Engine) retainAgentReplay(jobID string, selected SelectedModel, output modelOutput, messages []Message) {
 	engine.jobsMu.Lock()
 	defer engine.jobsMu.Unlock()
 	if job := engine.jobs[jobID]; job != nil {
-		job.providerContext = replayContext(selected, output, messages)
+		job.providerContext = replayContext(selected, output, stripProtocolNotes(messages))
 		job.providerContext.LastRequestBody = compressRequestBody(job.lastRequestBody)
 	}
 }
@@ -206,18 +208,18 @@ func (engine *Engine) compactJobConversation(job Job, selected SelectedModel) (J
 	groups := job.Prompt.HistoryGroups
 	messages := append([]Message{}, job.Prompt.Messages...)
 	budget := int(selected.Config.ContextChars) - job.Prompt.ToolChars
-	if job.SessionID == "" || len(groups) < 2 || messageChars(messages) <= budget*4/5 {
+	if job.SessionID == "" || len(groups) == 0 || !job.Prompt.ForceCompact && messageChars(messages) <= budget*4/5 {
 		if messageChars(messages) > budget {
 			return job, errors.New("The current request and recent exchange exceed the context budget. Increase the model context budget")
 		}
 		return job, nil
 	}
 	summaryBudget := min(6000, max(800, (budget-promptFixedChars(job.Prompt))/3))
-	if messageChars(messages) <= budget && messageChars(messages)-promptFixedChars(job.Prompt) <= summaryBudget {
+	if !job.Prompt.ForceCompact && messageChars(messages) <= budget && messageChars(messages)-promptFixedChars(job.Prompt) <= summaryBudget {
 		return job, nil
 	}
 	folded := 0
-	for folded < len(groups)-1 {
+	for folded < len(groups) {
 		folded++
 		remaining := messageChars(messages[groups[folded-1].End:]) + messageChars(messages[:1]) + summaryBudget
 		if remaining <= budget*4/5 {
@@ -240,8 +242,8 @@ func (engine *Engine) compactJobConversation(job Job, selected SelectedModel) (J
 		start = group.End
 	}
 	parts := chunks(strings.Join(blocks, "\n\n"), max(500, budget-summaryBudget-2000), 0)
-	if len(parts) > agentModelCallLimit-1 {
-		return job, errors.New("The conversation summary would exhaust the task call budget. Increase the context budget before continuing")
+	if len(parts) > 12 {
+		return job, errors.New("The conversation summary needs too many steps. Increase the context budget before continuing")
 	}
 	engine.setProgress(job.ID, "Saving a conversation checkpoint…")
 	config := selected.Config
@@ -270,9 +272,21 @@ func (engine *Engine) compactJobConversation(job Job, selected SelectedModel) (J
 	compacted := append([]Message{messages[0], {Role: "user", Content: previous}}, messages[boundary.End:]...)
 	job.Prompt.Messages, job.Prompt.Checkpoint = compacted, checkpoint
 	job.Prompt.Chars = messageChars(compacted) + job.Prompt.ToolChars
+	job.Prompt.ForceCompact = false
 	job.Prompt.HistoryGroups = append([]HistoryGroup{}, groups[folded:]...)
 	for i := range job.Prompt.HistoryGroups {
 		job.Prompt.HistoryGroups[i].End += 2 - boundary.End
+	}
+	prepareTokenBudget(&job.Prompt, &selected.Config, job.ModelSelection)
+	if job.Prompt.Budget != nil && !job.Prompt.Budget.CanSend {
+		return job, errors.New(job.Prompt.Budget.Warning)
+	}
+	adjusted, err := applyRequestTokenBudget(selected.Config, compacted)
+	if err != nil {
+		return job, err
+	}
+	if job.Prompt.Budget != nil {
+		job.Prompt.Budget.OutputTokens = adjusted.MaxTokens
 	}
 	if err := engine.persistConversationCheckpoint(job); err != nil {
 		return job, err
@@ -350,6 +364,34 @@ func condenseAgentToolResults(messages []Message, start, budget int) []Message {
 		message.Content = string([]rune(message.Content)[:600]) + "\n[Older tool excerpt. Read get_task_step at the source above.]\n</tool_result>"
 		if messageChars(result) <= budget*4/5 {
 			break
+		}
+	}
+	// Keep the newest result addressable when it alone crosses the remaining input budget.
+	last := len(result) - 1
+	if last > start && messageChars(result) > budget {
+		message := &result[last]
+		if (message.Role == "user" || message.Role == "tool") && strings.HasPrefix(message.Content, "<tool_result ") {
+			available := budget - messageChars(result[:last]) - 32
+			note := "\n[Excerpt; read get_task_step with offset_chars and limit_chars.]\n</tool_result>"
+			limit := available - charCount(note)
+			prefixEnd := strings.IndexByte(message.Content, '\n')
+			if prefixEnd >= 0 && limit > charCount(message.Content[:prefixEnd])+32 && charCount(message.Content) > limit {
+				message.Content = string([]rune(message.Content)[:limit]) + note
+			}
+		}
+	}
+	// When several small calls fill the remaining room, reduce older previews to
+	// their original address. Required author text and native call pairs stay intact.
+	for i := start + 1; i < last && messageChars(result) > budget; i++ {
+		message := &result[i]
+		if (message.Role != "user" && message.Role != "tool") || !strings.HasPrefix(message.Content, "<tool_result ") {
+			continue
+		}
+		if end := strings.IndexByte(message.Content, '\n'); end >= 0 {
+			excerpt := message.Content[:end+1] + "[Original in get_task_step.]\n</tool_result>"
+			if charCount(excerpt) < charCount(message.Content) {
+				message.Content = excerpt
+			}
 		}
 	}
 	return result

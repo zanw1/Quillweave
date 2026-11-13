@@ -599,7 +599,7 @@ export function SearchEditor({
               </a>{" "}
               ·{" "}
               {t(
-                "Keys remain in this app process. Restarting requires entering them again.",
+                "API keys are encrypted in the local database and restored after restart.",
               )}
             </small>
           </fieldset>

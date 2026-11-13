@@ -13,7 +13,7 @@ export function memorySuccessors(memories: StoryMemory[]) {
   return result;
 }
 
-/** Apply the same narrative interval rules as the backend when browsing a historical chapter. */
+/** Match backend history rules while excluding interpretations revoked by a legacy rebuild. */
 export function memoryVisibleAt(
   memory: StoryMemory,
   chapter: number,
@@ -26,6 +26,8 @@ export function memoryVisibleAt(
     return false;
   if (memory.status === "confirmed") return true;
   if (memory.status !== "superseded") return false;
+  if ((memory.state || "").trim().toLowerCase().startsWith("superseded_by_"))
+    return false;
   const replacement = successors.get(memory.id);
   return replacement === undefined
     ? memory.through_chapter > 0

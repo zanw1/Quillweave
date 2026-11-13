@@ -17,6 +17,49 @@ import (
 	"time"
 )
 
+// TestLatestToolPreviewFitsInputBudget preserves the immutable result source while retaining full readback elsewhere.
+func TestLatestToolPreviewFitsInputBudget(t *testing.T) {
+	for _, fixed := range []int{2000, 2900} {
+		result := toolResultExcerpt(strings.Repeat("source evidence ", 180), "job", "latest", 6500)
+		messages := []Message{{Role: "system", Content: strings.Repeat("s", fixed)}, {Role: "user", Content: "Current author goal"}, {Role: "assistant", Content: `{"tool":"recall"}`}, {Role: "tool", Content: result}}
+		compacted := condenseAgentToolResults(messages, 1, 3600)
+		assert(t, messageChars(compacted) <= 3600 && strings.Contains(compacted[3].Content, "J:job:latest") && strings.Contains(compacted[3].Content, "get_task_step"), "A fresh result exhausted the input budget or lost its source pointer")
+		assert(t, messages[3].Content == result, "Condensing a preview mutated its original record")
+	}
+}
+
+// TestOversizedRecentExchangeCanBeCheckpointed preserves the current task when even the newest completed exchange must be folded.
+func TestOversizedRecentExchangeCanBeCheckpointed(t *testing.T) {
+	engine := testEngine(t)
+	p := testProject()
+	insertProject(t, engine, p)
+	var calls atomic.Int32
+	server := modelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body := string(readBodyForStudioTest(t, r))
+		index := calls.Add(1)
+		if strings.Contains(body, "Summarize this fiction-author conversation") {
+			fmt.Fprint(w, streamPayload(`{"goal":"Preserve LATEST_AUTHOR_CORRECTION","constraints":["Use the saved chapter"],"rejected":[],"pending":[],"open_questions":[],"next_steps":["CURRENT_AUTHOR_TASK"]}`))
+			return
+		}
+		if index == 1 {
+			fmt.Fprint(w, streamPayload(strings.Repeat("Older working notes. ", 1100)))
+			return
+		}
+		fmt.Fprint(w, streamPayload("Continue with the current author task."))
+	})
+	config := defaultProvider()
+	config.BaseURL, config.Model, config.ContextChars = server.URL, "recent-checkpoint-fixture", 24000
+	configureModel(t, engine, config)
+	session := invoke[Conversation](t, engine, "create_conversation", map[string]any{"project_id": p.ID})
+	first := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": "", "session_id": session.ID, "action": "ask", "instruction": "LATEST_AUTHOR_CORRECTION"}))
+	assert(t, first.Status == "done", first.Error)
+	second := finishJob(t, engine, invoke[Job](t, engine, "start_ai", map[string]any{"project_id": p.ID, "chapter_id": "", "session_id": session.ID, "action": "agent", "instruction": "CURRENT_AUTHOR_TASK"}))
+	assert(t, second.Status == "done" && second.Prompt.Checkpoint != nil && len(second.Prompt.HistoryGroups) == 0, "A large most-recent exchange made the conversation unrecoverable: "+second.Error)
+	assert(t, strings.Contains(second.Prompt.Messages[len(second.Prompt.Messages)-1].Content, "CURRENT_AUTHOR_TASK") && strings.Contains(second.Prompt.Checkpoint.Summary, "LATEST_AUTHOR_CORRECTION"), "Checkpointing discarded the current request or correction")
+	stored := invoke[Conversation](t, engine, "get_conversation", map[string]any{"project_id": p.ID, "session_id": session.ID})
+	assert(t, len(stored.Turns) == 4 && strings.Contains(stored.Turns[1].Content, "Older working notes."), "Checkpointing removed the original discussion")
+}
+
 // TestConversationWritesStayIncremental bounds real message writes while exercising metadata edits, retries and forks.
 func TestConversationWritesStayIncremental(t *testing.T) {
 	engine := testEngine(t)

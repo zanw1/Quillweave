@@ -18,13 +18,13 @@ func rulesHash(project *Project) string {
 	return hashText(CompilerVersion + "|" + project.WikiPurpose + "|" + strings.Join(FactKinds, ","))
 }
 
-// compilationFingerprint binds source revision, tracking rules, endpoint, model, and provider options.
+// compilationFingerprint binds source revision, extraction contract, tracking rules and selected provider.
 func compilationFingerprint(project *Project, sourceID string, config ProviderConfig) (string, error) {
 	source, _, ok := project.SourceText(sourceID)
 	if !ok {
 		return "", errors.New("Compilation source not found")
 	}
-	parts := []string{sourceID, hashText(source), rulesHash(project), config.Protocol, config.BaseURL, config.Model}
+	parts := []string{sourceID, hashText(source), rulesHash(project), hashText(extractionSystem), config.Protocol, config.BaseURL, config.Model}
 	if responseLanguage(project, "") != "en" {
 		parts = append(parts, responseLanguage(project, ""))
 	}
@@ -67,12 +67,12 @@ func latestCompilations(project *Project) []*WikiCompilation {
 // factCurrent checks the complete source hash and verbatim quote.
 func factCurrent(project *Project, fact *Fact) bool {
 	source, _, ok := project.SourceText(fact.SourceID)
-	return ok && hashText(source) == fact.SourceHash && strings.Contains(source, fact.Quote)
+	return ok && fact.SourceHash != "" && strings.TrimSpace(fact.Quote) != "" && hashText(source) == fact.SourceHash && strings.Contains(source, fact.Quote)
 }
 
 // compilationCurrent requires current sources, rules, and resolvable unrejected evidence.
 func compilationCurrent(project *Project, memory *WikiCompilation) bool {
-	if memory.RulesHash != rulesHash(project) || memory.CompilerVersion != CompilerVersion {
+	if len(memory.Sections) == 0 || memory.RulesHash != rulesHash(project) || memory.CompilerVersion != CompilerVersion {
 		return false
 	}
 	text, _, ok := project.SourceText(memory.SourceID)
@@ -94,6 +94,58 @@ func compilationCurrent(project *Project, memory *WikiCompilation) bool {
 		}
 	}
 	return true
+}
+
+// compilationApproved admits compiled memory only while every cited fact remains author-confirmed.
+func compilationApproved(project *Project, memory *WikiCompilation) bool {
+	if memory.Status != "confirmed" || !compilationCurrent(project, memory) {
+		return false
+	}
+	approved := map[string]bool{}
+	for _, fact := range project.Facts {
+		approved[fact.ID] = fact.Status == "confirmed"
+	}
+	for _, section := range memory.Sections {
+		for _, id := range section.EvidenceIDs {
+			if !approved[id] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// renameEntityReferences keeps structured name references together without rewriting source passages.
+func renameEntityReferences(project *Project, oldName, newName string) {
+	if oldName == newName {
+		return
+	}
+	for i := range project.Facts {
+		if project.Facts[i].Entity == oldName {
+			project.Facts[i].Entity = newName
+		}
+		if project.Facts[i].RelatedEntity == oldName {
+			project.Facts[i].RelatedEntity = newName
+		}
+	}
+	for i := range project.Studio.Memories {
+		memory := &project.Studio.Memories[i]
+		if memory.Entity == oldName {
+			memory.Entity = newName
+		}
+		for j, name := range memory.KnownBy {
+			if name == oldName {
+				memory.KnownBy[j] = newName
+			}
+		}
+	}
+	for i := range project.Studio.Plans {
+		for j, name := range project.Studio.Plans[i].Characters {
+			if name == oldName {
+				project.Studio.Plans[i].Characters[j] = newName
+			}
+		}
+	}
 }
 
 // cachedCompilation reuses memory only while all source and evidence dependencies remain valid.
@@ -160,8 +212,10 @@ func chunks(text string, size, overlap int) []string {
 	return result
 }
 
-// parseCandidates validates structured facts and verbatim quotes before accepting the whole batch.
-func parseCandidates(response, source string) ([]Candidate, error) {
+// parseCandidates validates each structured fact and its verbatim quote separately so one
+// malformed record no longer discards the whole batch. Only a structurally unusable response
+// is fatal; per-candidate problems are returned as skip reasons for the author to review.
+func parseCandidates(response, source string) ([]Candidate, []string, error) {
 	text := strings.TrimSpace(response)
 	if strings.HasPrefix(text, "```") {
 		if index := strings.IndexByte(text, '\n'); index >= 0 {
@@ -177,23 +231,21 @@ func parseCandidates(response, source string) ([]Candidate, error) {
 		Facts []Candidate `json:"facts"`
 	}
 	if err := decodeRecord([]byte(text), &extraction, "facts"); err != nil {
-		return nil, errors.New("Wiki analysis returned invalid JSON. Try again or select a model that supports JSON output.")
+		return nil, nil, errors.New("Wiki analysis returned invalid JSON. Try again or select a model that supports JSON output.")
 	}
 	if len(extraction.Facts) > 100 {
-		return nil, errors.New("The analysis returned too many facts to save.")
+		return nil, nil, errors.New("The analysis returned too many facts to save.")
 	}
+	accepted := []Candidate{}
+	skipped := []string{}
 	for _, fact := range extraction.Facts {
-		if strings.TrimSpace(fact.Entity) == "" || charCount(fact.Entity) > 80 || strings.TrimSpace(fact.Claim) == "" || charCount(fact.Claim) > 2000 {
-			return nil, errors.New("Wiki analysis contains an empty entity name or invalid claim.")
-		}
-		if !contains(FactKinds, fact.Kind) || !contains([]string{"explicit", "inferred"}, fact.Epistemic) {
-			return nil, errors.New("Wiki analysis contains an unsupported fact type.")
-		}
-		if charCount(strings.TrimSpace(fact.Quote)) < 4 || !strings.Contains(source, fact.Quote) {
-			return nil, fmt.Errorf("The quote for \"%s\" cannot be located in this source.", fact.Entity)
+		if err := validateWikiCandidate(fact, source); err != nil {
+			skipped = append(skipped, err.Error())
+		} else {
+			accepted = append(accepted, fact)
 		}
 	}
-	return extraction.Facts, nil
+	return accepted, skipped, nil
 }
 
 // ingest deduplicates pending evidence by source revision and claim while retaining author review.
@@ -204,6 +256,11 @@ func ingest(project *Project, sourceID, expectedHash string, candidates []Candid
 	}
 	if hashText(source) != expectedHash {
 		return 0, errors.New("The source changed during analysis. The result is retained in the task. Analyze the new version.")
+	}
+	for _, candidate := range candidates {
+		if candidate.EntityKind != "" && !contains(EntityKinds, candidate.EntityKind) {
+			return 0, errors.New("The analysis contains an unsupported entity type")
+		}
 	}
 	added := 0
 	for _, candidate := range candidates {
@@ -227,13 +284,12 @@ func ingest(project *Project, sourceID, expectedHash string, candidates []Candid
 			}
 		}
 		if !found {
-			kind := "character"
-			if candidate.Kind == "world" {
-				kind = "world"
-			} else if candidate.Kind == "knowledge" {
+			kind, description := candidate.EntityKind, ""
+			if kind == "" {
 				kind = "concept"
+				description = localText(project, "Entry type awaits author review.", "条目类型待作者确认。")
 			}
-			project.Entities = append(project.Entities, Entity{ID: newID(), Name: name, Kind: kind, Aliases: []string{}})
+			project.Entities = append(project.Entities, Entity{ID: newID(), Name: name, Kind: kind, Aliases: []string{}, Description: description})
 		}
 		project.Facts = append(project.Facts, Fact{ID: fingerprint, Entity: name, Kind: candidate.Kind, Claim: candidate.Claim, SourceID: sourceID, SourceHash: expectedHash, Quote: candidate.Quote, Chapter: chapter, StoryTime: candidate.StoryTime, Location: candidate.Location, RelatedEntity: project.CanonicalName(candidate.RelatedEntity), Epistemic: candidate.Epistemic, Status: "pending", Model: model, CreatedAt: now()})
 		added++
@@ -351,19 +407,18 @@ func terms(query string) map[string]bool {
 
 // retrieve retrieves current evidence, sources, and approved memories within chapter scope.
 func retrieve(project *Project, query string, through uint32, limit int) []ContextItem {
-	queryTerms := terms(query)
-	items := []ContextItem{}
-	for _, fact := range project.Facts {
-		if fact.Status == "confirmed" && fact.Chapter <= through && factCurrent(project, &fact) {
-			items = append(items, ContextItem{ID: "W:" + fact.ID, Title: fmt.Sprintf("%s · Chapter %d", fact.Entity, fact.Chapter), Kind: "wiki", Text: fmt.Sprintf("%s: %s\nRelated entity: %s. Time: %s. Location: %s\nQuote: %s\nEvidence type: %s", fact.Entity, fact.Claim, fact.RelatedEntity, fact.StoryTime, fact.Location, fact.Quote, fact.Epistemic), Reason: "Source evidence"})
-		}
+	if limit <= 0 {
+		return []ContextItem{}
 	}
+	items := []ContextItem{}
 	for _, source := range project.Sources {
 		if source.Category == "legacy" {
 			continue
 		}
 		for index, text := range chunks(source.Content, 900, 100) {
-			items = append(items, ContextItem{ID: fmt.Sprintf("S:%s:%d", source.ID, index+1), Title: source.Title, Kind: source.Category, Text: text, Reason: "Source keyword match"})
+			if score := knowledgeMatchScore(source.Title+" "+text, query); score > 0 {
+				items = append(items, ContextItem{ID: fmt.Sprintf("S:%s:%d", source.ID, index+1), Title: source.Title, Kind: source.Category, Text: text, Score: score, SourceID: source.ID, SourceHash: hashText(source.Content), Reason: "Source keyword match"})
+			}
 		}
 	}
 	for _, chapter := range project.Chapters {
@@ -371,135 +426,24 @@ func retrieve(project *Project, query string, through uint32, limit int) []Conte
 			continue
 		}
 		for index, text := range chunks(chapter.Body, 900, 100) {
-			items = append(items, ContextItem{ID: fmt.Sprintf("C:%s:%d", chapter.ID, index+1), Title: fmt.Sprintf("Chapter %d — %s", chapter.Number, chapter.Title), Kind: "chapter", Text: text, Reason: "Chapter keyword match"})
+			if score := knowledgeMatchScore(chapter.Title+" "+text, query); score > 0 {
+				items = append(items, ContextItem{ID: fmt.Sprintf("C:%s:%d", chapter.ID, index+1), Title: fmt.Sprintf("Chapter %d — %s", chapter.Number, chapter.Title), Kind: "chapter", Text: text, Score: score, SourceID: chapter.ID, SourceHash: hashText(chapter.Body), Reason: "Chapter keyword match"})
+			}
 		}
 	}
 	for _, memory := range latestCompilations(project) {
 		_, number, exists := project.SourceText(memory.SourceID)
-		if memory.Status != "confirmed" || !compilationCurrent(project, memory) || !exists || number > through {
-			continue
-		}
-		approved := true
-		for _, section := range memory.Sections {
-			for _, id := range section.EvidenceIDs {
-				found := false
-				for _, fact := range project.Facts {
-					if fact.ID == id && fact.Status == "confirmed" {
-						found = true
-						break
-					}
-				}
-				approved = approved && found
-			}
-		}
-		if !approved {
+		if !compilationApproved(project, memory) || !exists || number > through {
 			continue
 		}
 		for index, section := range memory.Sections {
-			refs := []string{}
-			for _, id := range section.EvidenceIDs {
-				refs = append(refs, "[W:"+id+"]")
-			}
-			items = append(items, ContextItem{ID: fmt.Sprintf("M:%s:%d", memory.ID, index+1), Title: "Story memory · " + sourceTitle(project, memory.SourceID), Kind: "memory", Text: section.Summary + "\nCited evidence: " + strings.Join(refs, " "), Reason: "Author-confirmed story memory"})
-		}
-	}
-	for i := range items {
-		body, title := lowerText(items[i].Text), lowerText(items[i].Title)
-		for term := range queryTerms {
-			if strings.Contains(body, term) {
-				items[i].Score++
-			}
-			if strings.Contains(title, term) {
-				items[i].Score += 3
+			score := knowledgeMatchScore(section.Summary+" "+sourceTitle(project, memory.SourceID), query)
+			if score > 0 {
+				items = append(items, ContextItem{ID: fmt.Sprintf("M:%s:%d", memory.ID, index+1), Title: "Story memory · " + sourceTitle(project, memory.SourceID), Kind: "memory", Text: section.Summary + "\nCited evidence: " + strings.Join(section.EvidenceIDs, ", "), Score: score, SourceID: memory.SourceID, SourceHash: memory.SourceHash, Reason: "Author-confirmed story memory"})
 			}
 		}
 	}
-	expandContext(project, through, items)
-	result := []ContextItem{}
-	for _, item := range items {
-		if item.Score > 0 {
-			result = append(result, item)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Score == result[j].Score {
-			return result[i].ID < result[j].ID
-		}
-		return result[i].Score > result[j].Score
-	})
-	return result[:min(len(result), max(0, min(limit, 30)))]
-}
-
-// expandContext expands reviewed relationships up to two hops within the current chapter scope.
-func expandContext(project *Project, through uint32, items []ContextItem) {
-	valid := []*Fact{}
-	for i := range project.Facts {
-		fact := &project.Facts[i]
-		if fact.Status == "confirmed" && fact.Chapter <= through && factCurrent(project, fact) {
-			valid = append(valid, fact)
-		}
-	}
-	ranked := []ContextItem{}
-	for _, item := range items {
-		if item.Kind == "wiki" && item.Score > 0 {
-			ranked = append(ranked, item)
-		}
-	}
-	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-	seeds := map[string]bool{}
-	for _, item := range ranked[:min(4, len(ranked))] {
-		seeds[strings.TrimPrefix(item.ID, "W:")] = true
-	}
-	distances := map[string]int{}
-	sources := map[string]bool{}
-	for _, fact := range valid {
-		if seeds[fact.ID] {
-			distances[project.CanonicalName(fact.Entity)] = 0
-			sources[fact.SourceID] = true
-		}
-	}
-	for hop := 0; hop < 2; hop++ {
-		additions := []string{}
-		for _, fact := range valid {
-			if fact.RelatedEntity == "" {
-				continue
-			}
-			from, to := project.CanonicalName(fact.Entity), project.CanonicalName(fact.RelatedEntity)
-			if distance, ok := distances[from]; ok && distance == hop {
-				additions = append(additions, to)
-			}
-			if distance, ok := distances[to]; ok && distance == hop {
-				additions = append(additions, from)
-			}
-		}
-		for _, name := range additions {
-			if _, ok := distances[name]; !ok {
-				distances[name] = hop + 1
-			}
-		}
-	}
-	for i := range items {
-		item := &items[i]
-		if item.Kind != "wiki" || item.Score != 0 {
-			continue
-		}
-		for _, fact := range valid {
-			if item.ID != "W:"+fact.ID {
-				continue
-			}
-			if distance, ok := distances[project.CanonicalName(fact.Entity)]; ok {
-				item.Score = max(0, 4-distance)
-				item.Reason = "Character relationship"
-				if distance == 0 {
-					item.Reason = "Confirmed changes for this character"
-				}
-			} else if sources[fact.SourceID] {
-				item.Score = 1
-				item.Reason = "Evidence from the same chapter"
-			}
-			break
-		}
-	}
+	return mergeKnowledgeContext(project, query, through, items, min(limit, 30))
 }
 
 // sourceTitle uses complete chapter titles independently of canvas abbreviations.
@@ -577,4 +521,19 @@ func renderWiki(project *Project) string {
 		output += fmt.Sprintf("- %s · %s · %s · %d source chunks\n", memory.CreatedAt, sourceTitle(project, memory.SourceID), memory.Status, memory.Chunks)
 	}
 	return output
+}
+
+// validateWikiCandidate shares structural and verbatim-evidence checks across internal and external Wiki paths.
+func validateWikiCandidate(fact Candidate, source string) error {
+	switch {
+	case strings.TrimSpace(fact.Entity) == "" || charCount(fact.Entity) > 80 || strings.TrimSpace(fact.Claim) == "" || charCount(fact.Claim) > 2000:
+		return fmt.Errorf("invalid entity name or claim (%s)", truncateSummary(fact.Entity, 40))
+	case !contains(FactKinds, fact.Kind) || !contains([]string{"explicit", "inferred"}, fact.Epistemic):
+		return fmt.Errorf("unsupported fact kind or evidence type for %q", fact.Entity)
+	case fact.EntityKind != "" && !contains(EntityKinds, fact.EntityKind):
+		return fmt.Errorf("unsupported entity type for %q", fact.Entity)
+	case charCount(strings.TrimSpace(fact.Quote)) < 4 || !strings.Contains(source, fact.Quote):
+		return fmt.Errorf("quote not found in source for %q", fact.Entity)
+	}
+	return nil
 }

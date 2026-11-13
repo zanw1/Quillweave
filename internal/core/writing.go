@@ -13,18 +13,29 @@ type StylePreset struct {
 	Guidance    string `json:"guidance"`
 }
 
-// narrativePovLabel displays saved legacy viewpoint values in English.
+// narrativePovLabel canonicalizes supported labels and legacy enum values without guessing unknown viewpoints.
 func narrativePovLabel(value string) string {
-	switch value {
-	case "\u7b2c\u4e00\u4eba\u79f0":
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "第一人称", "first person", "first_person":
 		return "First person"
-	case "\u7b2c\u4e09\u4eba\u79f0\u6709\u9650\u89c6\u89d2":
+	case "第三人称有限视角", "third-person limited", "third_limited", "third_person_limited":
 		return "Third-person limited"
-	case "\u5168\u77e5\u89c6\u89d2":
+	case "全知视角", "omniscient", "third_omniscient", "third_person_omniscient":
 		return "Omniscient"
 	default:
-		return value
+		return strings.TrimSpace(value)
 	}
+}
+
+// findWritingPreset shares preset validation and preserves the established custom fallback for old records.
+func findWritingPreset(id string) (StylePreset, bool) {
+	presets := writingPresets()
+	for _, preset := range presets {
+		if preset.ID == id {
+			return preset, true
+		}
+	}
+	return presets[0], false
 }
 
 // writingPresets returns the nine writing styles and their complete guidance.
@@ -60,21 +71,17 @@ func chapterTarget(project *Project, chapter *Chapter) uint32 {
 
 // fictionProseGuidance adapts Humanizer's editing principles to fiction without flattening author voice.
 func fictionProseGuidance() string {
-	return "Fiction prose: The author's style notes and established character voices take priority over generic editing rules. Match the existing prose's rhythm, vocabulary, and viewpoint. Let actions, specific details, and dialogue carry emotion and subtext; avoid explaining a feeling the scene already conveys. Reduce repeated sentence openings, stock comparisons, empty intensifiers, forced contrasts or three-part lists, and paragraph endings that summarize or inflate the scene. Keep deliberate repetition, imagery, punctuation, and genre conventions when they serve the author's voice. Return only the requested fiction, without chatbot greetings, editing commentary, decorative headings, or an explanatory moral. Before responding, reread for these habits and for continuity of names, plot facts, relationships, character knowledge, and planted clues."
+	return "Fiction prose: The author's style notes and established character voices take priority over generic editing rules. Match the existing prose's rhythm, vocabulary, and viewpoint. Let actions, specific details, dialogue and the viewpoint character's own thoughts carry emotion and subtext; avoid explaining a feeling the scene already conveys. Reduce repeated sentence openings, stock comparisons, empty intensifiers, forced contrasts or three-part lists, and paragraph endings that summarize or inflate the scene. Keep deliberate repetition, imagery, punctuation, and genre conventions when they serve the author's voice. Return only the requested fiction, without chatbot greetings, editing commentary, decorative headings, or an explanatory moral. Before responding, reread for these habits and for continuity of names, plot facts, relationships, character knowledge, and planted clues."
 }
 
 // promptGuidance defers writing constraints while exploring and applies them to concrete writing tasks.
 func promptGuidance(project *Project, chapter *Chapter, action string) string {
-	if contains([]string{"ask","agent","naming","research"},action) && chapter == nil && len(project.Chapters) == 0 && strings.TrimSpace(project.Premise) == "" && strings.TrimSpace(project.Outline) == "" && (project.Studio.Mode=="undecided" || project.Studio.Mode=="") {
+	if contains([]string{"ask", "agent", "naming", "research"}, action) && chapter == nil && len(project.Chapters) == 0 && strings.TrimSpace(project.Premise) == "" && strings.TrimSpace(project.Outline) == "" && (project.Studio.Mode == "undecided" || project.Studio.Mode == "") {
 		return "The author is exploring an undecided story. Genre, title, plot, length, and viewpoint are not prerequisites. Help discover interests through one or two easy questions at a time. Use preferences the author actually expresses, offer possibilities as proposals, and do not treat application writing defaults as confirmed creative choices. Do not require a complete setup or rush into a full outline."
 	}
-	styles := writingPresets()
-	preset := styles[0]
-	for _, item := range styles {
-		if item.ID == project.WritingStyle {
-			preset = item
-			break
-		}
+	preset, known := findWritingPreset(project.WritingStyle)
+	if !known && strings.TrimSpace(project.WritingStyle) != "" {
+		preset.Guidance += "\n" + project.WritingStyle
 	}
 	target := chapterTarget(project, chapter)
 	actual := 0

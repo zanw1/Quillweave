@@ -36,23 +36,16 @@ type arguments struct {
 	err    error
 }
 
-// NewEngine shares the domain service between desktop and loopback HTTP with process-local keys.
+// NewEngine shares the domain service and restores encrypted credentials for desktop and loopback HTTP.
 func NewEngine(path string) (*Engine, error) {
 	store, err := OpenStore(path)
 	if err != nil {
 		return nil, err
 	}
-	models, err := store.ModelSettings()
+	models, err := store.runtimeModels()
 	if err != nil {
 		store.Close()
 		return nil, err
-	}
-	models = models.WithoutSecrets()
-	for i := range models.Profiles {
-		if models.Profiles[i].ID == models.DefaultProfile {
-			models.Profiles[i].Config.APIKey = os.Getenv("QUILLWEAVE_API_KEY")
-			break
-		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	integrations, err := store.IntegrationSettings()
@@ -103,15 +96,11 @@ func (engine *Engine) Close() error {
 	return errors.Join(recoveryErr, runtimeErr, transferErr, engine.store.Close())
 }
 
-// refreshModelsLocked refreshes persistent metadata under engine.mu and merges matching process-local keys.
+// refreshModelsLocked reloads metadata and matching encrypted keys under engine.mu.
 func (engine *Engine) refreshModelsLocked() error {
-	latest, err := engine.store.ModelSettings()
+	latest, err := engine.store.runtimeModels()
 	if err != nil {
 		return err
-	}
-	latest = latest.WithoutSecrets()
-	for i := range latest.Profiles {
-		latest.Profiles[i].Config.APIKey = engine.models.keyFor(latest.Profiles[i])
 	}
 	engine.models = latest
 	return nil
@@ -184,19 +173,26 @@ func optionalTarget(args *arguments, key string, previous *uint32) (*uint32, err
 
 // applyWritingSettings updates only the writing parameters explicitly supplied by a request.
 func applyWritingSettings(project *Project, args *arguments) error {
+	next := *project
 	if raw, exists := args.fields["writing_style"]; exists {
 		var style string
 		if string(raw) == "null" || decodeJSON(raw, &style) != nil {
 			return errors.New("Select a valid writing style")
 		}
-		valid := false
-		for _, preset := range writingPresets() {
-			valid = valid || preset.ID == style
-		}
-		if !valid {
+		_, valid := findWritingPreset(style)
+		if !valid && style != project.WritingStyle {
 			return errors.New("Unknown writing style")
 		}
-		project.WritingStyle = style
+		if _, oldKnown := findWritingPreset(project.WritingStyle); !oldKnown {
+			legacy := strings.TrimSpace(project.WritingStyle)
+			if legacy != "" && !strings.Contains(next.Style, legacy) {
+				next.Style = strings.TrimSpace(next.Style + "\n\n" + legacy)
+			}
+		}
+		if !valid {
+			style = "custom"
+		}
+		next.WritingStyle = style
 	}
 	if _, exists := args.fields["default_chapter_words"]; exists {
 		target, err := optionalTarget(args, "default_chapter_words", nil)
@@ -206,18 +202,24 @@ func applyWritingSettings(project *Project, args *arguments) error {
 		if target == nil {
 			return errors.New("Default chapter length is required")
 		}
-		project.DefaultChapterWords = *target
+		next.DefaultChapterWords = *target
 	}
 	if raw, exists := args.fields["narrative_pov"]; exists {
 		var pov string
 		if string(raw) == "null" || decodeJSON(raw, &pov) != nil {
 			return errors.New("Invalid narrative viewpoint format")
 		}
-		if !contains([]string{"First person", "Third-person limited", "Omniscient"}, narrativePovLabel(pov)) {
+		label := narrativePovLabel(pov)
+		if !contains([]string{"First person", "Third-person limited", "Omniscient"}, label) {
 			return errors.New("Select a valid narrative viewpoint")
 		}
-		project.NarrativePov = pov
+		// Preserve previously supported Chinese labels while canonicalizing newly accepted enum aliases.
+		if contains([]string{"第一人称", "第三人称有限视角", "全知视角"}, pov) {
+			label = pov
+		}
+		next.NarrativePov = label
 	}
+	*project = next
 	return nil
 }
 
@@ -287,12 +289,30 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		return engine.dispatchSearch(command, raw, args)
 	}
 	switch command {
+	case "prepare_revert":
+		service := &ExternalService{engine: engine, options: ExternalOptions{Author: true, Client: "author", Transport: "desktop"}}
+		value, err := service.PrepareRevert(engine.ctx, CandidateMutation{ProjectID: args.text("project_id"), CandidateID: args.text("changeset_id"), RequestID: args.text("request_id")})
+		if err != nil {
+			return nil, err
+		}
+		project, err := engine.store.Get(args.text("project_id"))
+		return map[string]any{"project": project, "changeset": value}, err
 	case "preview_changeset", "reject_changeset":
 		return engine.studioCommand(command, args, raw)
 	case "begin_archive_export", "read_archive_chunk", "begin_archive_import", "write_archive_chunk", "complete_archive_import", "finish_archive_transfer", "import_archive":
 		return engine.archiveCommand(command, args)
-	case "studio", "get_flow_readiness", "stage_changeset", "apply_changeset", "undo_changeset", "extract_changeset", "list_changesets", "save_studio", "save_plan", "delete_plan", "create_planned_chapters", "save_memory", "save_decision", "review_proposal", "list_conversations", "create_conversation", "update_conversation", "fork_conversation", "get_conversation", "get_integrations", "save_integrations", "search_web", "test_search", "retain_external", "recall_external", "reflect_external", "evaluate_policy", "list_experiments", "record_experiment", "writing_skills":
+	case "studio", "get_flow_readiness", "stage_changeset", "apply_changeset", "undo_changeset", "extract_changeset", "list_changesets", "save_studio", "save_plan", "delete_plan", "create_planned_chapters", "save_memory", "save_decision", "review_proposal", "list_conversations", "create_conversation", "update_conversation", "archive_conversation", "fork_conversation", "truncate_conversation", "get_conversation", "get_integrations", "save_integrations", "search_web", "test_search", "retain_external", "recall_external", "reflect_external", "writing_skills":
 		return engine.studioCommand(command, args, raw)
+	case "list_skills":
+		return engine.listSkills()
+	case "load_skill":
+		return engine.loadSkillResource(args.text("skill_id"), args.optionalString("resource_path"))
+	case "set_skill_roots":
+		var roots []string
+		if data, exists := args.fields["roots"]; !exists || decodeJSON(data, &roots) != nil {
+			return nil, errors.New("Choose the skill directories")
+		}
+		return engine.setSkillRoots(roots)
 	case "start_ai":
 		var request AIRequest
 		if decodeJSON(raw, &request) != nil {
@@ -336,14 +356,7 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 		return engine.loadStoredJob(id)
 	case "cancel_ai":
 		id := args.text("job_id")
-		engine.jobsMu.Lock()
-		job := engine.jobs[id]
-		accepted := job != nil && job.Status == "running" && !job.committing
-		if accepted {
-			job.cancel()
-		}
-		engine.jobsMu.Unlock()
-		return map[string]bool{"cancelled": accepted}, nil
+		return engine.requestJobCancellation(id)
 	}
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -352,17 +365,13 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 	}
 	switch command {
 	case "list_projects":
-		projects, err := engine.store.List()
+		cards, err := engine.store.listProjectCards()
 		if err != nil {
 			return nil, err
 		}
 		result := []map[string]any{}
-		for _, project := range projects {
-			words := 0
-			for _, chapter := range project.Chapters {
-				words += wordCount(chapter.Body)
-			}
-			result = append(result, map[string]any{"id": project.ID, "title": project.Title, "genre": project.Genre, "premise": project.Premise, "updated_at": project.UpdatedAt, "chapter_count": len(project.Chapters), "word_count": words})
+		for _, card := range cards {
+			result = append(result, map[string]any{"id": card.ID, "title": card.Title, "genre": card.Genre, "premise": card.Premise, "updated_at": card.UpdatedAt, "chapter_count": card.ChapterCount, "word_count": card.WordCount})
 		}
 		return result, nil
 	case "get_project":
@@ -419,6 +428,31 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 			records = append(records, map[string]any{"record": record, "current": compilationCurrent(&project, record), "source_title": sourceTitle(&project, record.SourceID)})
 		}
 		return map[string]any{"findings": lintWiki(&project), "compilations": records, "compiler_version": CompilerVersion}, nil
+	case "story_knowledge", "preview_memory_maintenance":
+		project, err := engine.store.Get(args.text("project_id"))
+		if err != nil {
+			return nil, err
+		}
+		if command == "preview_memory_maintenance" {
+			return knowledgeMaintenancePreview(&project), nil
+		}
+		through := uint32(math.MaxUint32)
+		if raw, exists := args.fields["through_chapter"]; exists {
+			number, ok := unsigned(raw)
+			if !ok || number > math.MaxUint32 {
+				return nil, errors.New("Chapter number must be a nonnegative integer")
+			}
+			through = uint32(number)
+		}
+		return storyKnowledgeView(&project, through, args.optionalString("query"), args.flag("include_candidates")), nil
+	case "apply_memory_maintenance":
+		return engine.mutateLocked(args, func(project *Project) error {
+			return applyKnowledgeMaintenance(project, args.text("digest"))
+		})
+	case "undo_memory_maintenance":
+		return engine.mutateLocked(args, func(project *Project) error {
+			return undoKnowledgeMaintenance(project, args.text("receipt_id"))
+		})
 	case "create_project":
 		title, err := validateName(args.text("title"))
 		if err != nil {
@@ -527,6 +561,16 @@ func (engine *Engine) Dispatch(command string, raw json.RawMessage) (result any,
 			title, err := validateName(args.text("title"))
 			if err != nil {
 				return err
+			}
+			// An optional source_id replaces that source in place and keeps its id, so existing citations still resolve.
+			if sourceID := args.optionalString("source_id"); sourceID != "" {
+				for i := range project.Sources {
+					if project.Sources[i].ID == sourceID {
+						project.Sources[i].Title, project.Sources[i].Category, project.Sources[i].URL, project.Sources[i].Content = title, category, args.text("url"), content
+						return nil
+					}
+				}
+				return errors.New("Source not found")
 			}
 			project.Sources = append(project.Sources, Source{ID: newID(), Title: title, Category: category, URL: args.text("url"), Content: content, CreatedAt: now()})
 			return nil
@@ -776,14 +820,7 @@ func saveEntity(project *Project, raw json.RawMessage) error {
 	}
 	for i, existing := range project.Entities {
 		if existing.ID == entity.ID {
-			for j := range project.Facts {
-				if project.Facts[j].Entity == existing.Name {
-					project.Facts[j].Entity = entity.Name
-				}
-				if project.Facts[j].RelatedEntity == existing.Name {
-					project.Facts[j].RelatedEntity = entity.Name
-				}
-			}
+			renameEntityReferences(project, existing.Name, entity.Name)
 			project.Entities[i] = entity
 			return nil
 		}

@@ -148,18 +148,58 @@ export function RequiredLabel({ children }: { children: ReactNode }) {
 }
 
 /** Share native focus containment and dismiss only a complete click on the actual backdrop. */
-function useDialog(onClose: () => void, open = true, modal = true) {
+function useDialog(onClose: () => void, open = true, modal = true, initialFocus?: string) {
   const ref = useRef<HTMLDialogElement>(null);
   const backdropPress = useRef(false);
+  const previousModal = useRef(modal);
+  const retainedFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const dialog = ref.current;
-    if (dialog?.open) dialog.close();
-    if (open && dialog) {
+    const modeChanged = previousModal.current !== modal;
+    previousModal.current = modal;
+    if (!modeChanged) retainedFocus.current = null;
+    if (!dialog) return;
+    let deferPromotion = modeChanged && modal;
+
+    /** Keep existing overlays above a docked panel while it becomes a modal drawer on resize. */
+    function syncDialog() {
+      if (!dialog || !open) return;
+      const anotherModal = [...document.querySelectorAll<HTMLDialogElement>("dialog[open]")]
+        .some((candidate) => candidate !== dialog && candidate.matches(":modal"));
+      if (deferPromotion && anotherModal) {
+        const focused = document.activeElement;
+        if (!dialog.open) dialog.show();
+        if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
+        return;
+      }
+      deferPromotion = false;
+      if (dialog.open && dialog.matches(":modal") === modal) return;
+      const focused = document.activeElement instanceof HTMLElement && dialog.contains(document.activeElement)
+        ? document.activeElement : retainedFocus.current;
+      retainedFocus.current = null;
+      document.removeEventListener("close", syncDialog, true);
+      if (dialog.open) dialog.close();
       if (modal) dialog.showModal();
       else dialog.show();
+      const target = focused?.isConnected && focused.getClientRects().length > 0 && !focused.matches(":disabled")
+        ? focused
+        : initialFocus
+          ? dialog.querySelector<HTMLElement>(`${initialFocus}:not(:disabled)`) ?? dialog.querySelector<HTMLElement>("button:not(:disabled)")
+          : null;
+      target?.focus({ preventScroll: true });
     }
-    return () => dialog?.close();
-  }, [open, modal]);
+    if (open) {
+      document.addEventListener("close", syncDialog, true);
+      syncDialog();
+    }
+    return () => {
+      document.removeEventListener("close", syncDialog, true);
+      if (document.activeElement instanceof HTMLElement && dialog.contains(document.activeElement)) {
+        retainedFocus.current = document.activeElement;
+      }
+      dialog.close();
+    };
+  }, [open, modal, initialFocus]);
   /** Separate a backdrop from the dialog's own blank content and scrollbar. */
   function outside(
     event: MouseEvent<HTMLDialogElement> | PointerEvent<HTMLDialogElement>,
@@ -176,6 +216,8 @@ function useDialog(onClose: () => void, open = true, modal = true) {
     ref,
     onCancel: (event: React.SyntheticEvent<HTMLDialogElement>) => {
       event.preventDefault();
+      event.stopPropagation();
+      if (event.target !== event.currentTarget) return;
       onClose();
     },
     onPointerDown: (event: PointerEvent<HTMLDialogElement>) => {
@@ -202,6 +244,7 @@ export function DockablePanel({
   onClose,
   children,
   className,
+  initialFocus,
 }: {
   title: string;
   open: boolean;
@@ -209,8 +252,9 @@ export function DockablePanel({
   onClose: () => void;
   children: ReactNode;
   className: string;
+  initialFocus?: string;
 }) {
-  const dialog = useDialog(onClose, open, modal);
+  const dialog = useDialog(onClose, open, modal, initialFocus);
   return (
     <dialog {...dialog} aria-label={title} className={className}>
       {children}
@@ -244,11 +288,13 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  footer,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  footer?: ReactNode;
 }) {
   const dialog = useDialog(onClose);
   const titleId = useId();
@@ -271,6 +317,7 @@ export function Modal({
         </button>
       </header>
       <div className="modal-body">{children}</div>
+      {footer && <footer className="modal-actions">{footer}</footer>}
     </dialog>
   );
 }

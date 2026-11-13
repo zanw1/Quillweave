@@ -3,7 +3,7 @@ import { api } from "../../lib/api";
 import type { Conversation, ConversationTurn } from "../../domain/studio";
 import type { Job } from "../../domain/types";
 
-/** Read optional local draft storage without making blocked storage a conversation failure. */
+/** Read optional local storage while keeping conversation drafts usable when storage is blocked. */
 export function localDraft(key: string, fallback = "") {
   try {
     return localStorage.getItem(key) ?? fallback;
@@ -12,16 +12,16 @@ export function localDraft(key: string, fallback = "") {
   }
 }
 
-/** Retain an unsent draft independently from task completion and remote draft synchronization. */
+/** Persist an unsent draft independently of asynchronous task completion. */
 export function saveLocalDraft(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
   } catch {
-    /* The editor remains usable when storage is unavailable. */
+    /* Keep the in-memory draft. */
   }
 }
 
-/** Pair durable turns for the existing Markdown task renderer without discarding older history. */
+/** Pair all durable terminal states, preserving partial answers and recoverable failed turns. */
 export function conversationJobs(
   session: Conversation | null,
   runs: Job[],
@@ -34,8 +34,10 @@ export function conversationJobs(
       user = turn;
       continue;
     }
-    if (!user || turn.status !== "done") continue;
-    const run = runs.find((value) => value.id === turn.job_id);
+    if (!user) continue;
+    const run = runs.find(
+      (value) => value.id === turn.job_id && value.session_id === session.id,
+    );
     result.push(
       run || {
         id: turn.job_id || user.id,
@@ -63,7 +65,7 @@ export function conversationJobs(
   return result;
 }
 
-/** Manage story-owned sessions, safe selection, durable drafts and non-destructive rewind branches. */
+/** Manage authoritative session selection separately from paged search results and pending operations. */
 export function useConversations(
   projectId: string,
   chapterId: string,
@@ -74,185 +76,261 @@ export function useConversations(
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const nextOffset = useRef(0);
+  const [manageVersion, setManageVersion] = useState(0);
   const current = useRef<Conversation | null>(null);
   const restoreRef = useRef(restore);
   restoreRef.current = restore;
   const sequence = useRef(0);
-  const creation = useRef<Promise<Conversation> | null>(null);
-  const selectionKey = `quillweave-session-${projectId}-${chapterId || "plan"}`;
-  const draftKey = `quillweave-chat-draft-${projectId}-${chapterId || "plan"}-${session?.id || "new"}`;
+  const listSequence = useRef(0);
+  const scope = `${projectId}-${chapterId || "plan"}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const filters = useRef({ query: "", archived: false, offset: 0 });
+  const selectionKey = `quillweave-session-${scope}`;
+  const draftKey = `quillweave-chat-draft-${scope}-${session?.id || "new"}`;
 
-  /** Load session metadata and retain the current selection when a task finishes. */
-  async function reload(selectId?: string) {
-    const version = ++sequence.current;
-    setLoadingMore(false);
-    const list = await api<Conversation[]>("list_conversations", {
-      project_id: projectId,
-      chapter_id: chapterId,
-    });
-    if (version !== sequence.current) return;
-    const selected =
-      selectId ?? current.current?.id ?? localDraft(selectionKey);
-    let next = list.find((item) => item.id === selected) || null;
-    if (selected && !next) {
-      try {
-        const older = await api<Conversation>("get_conversation", {
-          project_id: projectId,
-          session_id: selected,
-        });
-        if (older.project_id === projectId && older.chapter_id === chapterId)
-          next = older;
-      } catch {
-        /* Fall back to an available session if the remembered one was removed. */
-      }
-    }
-    if (version !== sequence.current) return;
-    nextOffset.current = list.length;
-    setHasMore(list.length === 100);
-    if (!next) next = list[0] || null;
-    setSessions(
-      next && !list.some((item) => item.id === next.id)
-        ? [next, ...list]
-        : list,
-    );
-    const changed = next?.id !== current.current?.id;
-    current.current = next;
-    setSession(next);
-    setLoading(false);
-    if (next) saveLocalDraft(selectionKey, next.id);
-    if (changed && next) await restoreSession(next, version);
-  }
-
-  /** Page through older sessions while preserving a selected conversation outside the first page. */
-  async function loadMore() {
-    if (loadingMore || !hasMore) return;
-    const version = sequence.current;
-    const offset = nextOffset.current;
-    setLoadingMore(true);
-    try {
-      const list = await api<Conversation[]>("list_conversations", {
-        project_id: projectId,
-        chapter_id: chapterId,
-        offset,
-      });
-      if (version !== sequence.current) return;
-      setSessions((current) => [
-        ...new Map(
-          [...current, ...list].map((item) => [item.id, item]),
-        ).values(),
-      ]);
-      const end = offset + list.length;
-      if (end >= nextOffset.current) setHasMore(list.length === 100);
-      nextOffset.current = Math.max(nextOffset.current, end);
-    } finally {
-      if (version === sequence.current) setLoadingMore(false);
-    }
-  }
-
-  /** Restore a selected draft and its latest task while ignoring stale asynchronous responses. */
-  async function restoreSession(next: Conversation, version: number) {
-    const key = `quillweave-chat-draft-${projectId}-${chapterId || "plan"}-${next.id}`;
-    const draft = localDraft(key, next.draft);
-    restoreRef.current(draft, null);
-    const latest = [...next.turns].reverse().find((turn) => turn.job_id);
-    if (!latest) return;
+  /** Restore a draft immediately and hydrate its latest task only if selection remains unchanged. */
+  async function restoreSession(next: Conversation | null, version: number) {
+    const key = `quillweave-chat-draft-${scope}-${next?.id || "new"}`;
+    restoreRef.current(localDraft(key, next?.draft || ""), null);
+    const latest = [...(next?.turns || [])]
+      .reverse()
+      .find((turn) => turn.job_id);
+    if (!next || !latest) return;
     try {
       const job = await api<Job>("get_job", { job_id: latest.job_id });
       if (version === sequence.current && current.current?.id === next.id)
         restoreRef.current(localDraft(key, next.draft), job, false);
     } catch {
-      /* Archived turns remain visible even when a task record is unavailable. */
+      /* Durable turns remain available when an execution record is missing. */
     }
+  }
+
+  /** Select the complete owning session, including sessions outside the current search page. */
+  async function select(id: string) {
+    const version = ++sequence.current;
+    const capturedScope = scope;
+    setLoading(true);
+    try {
+      const next = await api<Conversation>("get_conversation", {
+        project_id: projectId,
+        session_id: id,
+      });
+      if (version !== sequence.current || capturedScope !== scopeRef.current)
+        return null;
+      current.current = next;
+      setSession(next);
+      saveLocalDraft(selectionKey, next.id);
+      await restoreSession(next, version);
+      return next;
+    } finally {
+      if (version === sequence.current) setLoading(false);
+    }
+  }
+
+  /** Query every stored page on the server without changing the conversation being viewed. */
+  async function search(query = "", archived = false, append = false) {
+    const version = ++listSequence.current;
+    const capturedScope = scope;
+    const offset = append ? filters.current.offset : 0;
+    filters.current = { query, archived, offset };
+    setLoadingMore(true);
+    try {
+      const list = await api<Conversation[]>("list_conversations", {
+        project_id: projectId,
+        chapter_id: chapterId,
+        query,
+        archived,
+        offset,
+      });
+      if (
+        version !== listSequence.current ||
+        capturedScope !== scopeRef.current
+      )
+        return;
+      setSessions((previous) =>
+        append
+          ? [
+              ...new Map(
+                [...previous, ...list].map((item) => [item.id, item]),
+              ).values(),
+            ]
+          : list,
+      );
+      filters.current.offset = offset + list.length;
+      setHasMore(list.length === 100);
+    } finally {
+      if (version === listSequence.current) setLoadingMore(false);
+    }
+  }
+
+  /** Refresh metadata while retaining the selected session identity and the unsent draft. */
+  async function reload(selectId?: string) {
+    const version = sequence.current;
+    const capturedScope = scope;
+    const selected =
+      selectId ?? current.current?.id ?? localDraft(selectionKey);
+    await search(filters.current.query, filters.current.archived);
+    if (version !== sequence.current || capturedScope !== scopeRef.current)
+      return;
+    if (selected) {
+      try {
+        const next = await api<Conversation>("get_conversation", {
+          project_id: projectId,
+          session_id: selected,
+        });
+        if (version !== sequence.current || capturedScope !== scopeRef.current)
+          return;
+        if (!next.archived) {
+          const changed = current.current?.id !== next.id;
+          current.current = next;
+          setSession(next);
+          saveLocalDraft(selectionKey, next.id);
+          if (changed) await restoreSession(next, version);
+          return;
+        }
+      } catch {
+        /* A deleted or archived remembered selection opens a fresh draft. */
+      }
+    }
+    current.current = null;
+    setSession(null);
+    await restoreSession(null, version);
   }
 
   useEffect(() => {
     current.current = null;
     setSession(null);
+    filters.current = { query: "", archived: false, offset: 0 };
     setLoading(true);
-    void reload().catch(() => setLoading(false));
+    const version = ++sequence.current;
+    void reload()
+      .catch(() => {})
+      .finally(() => {
+        if (version === sequence.current) setLoading(false);
+      });
     return () => {
       sequence.current++;
+      listSequence.current++;
     };
   }, [projectId, chapterId]);
 
-  /** Start a fresh branch scope only when explicitly requested or when the first message is sent. */
+  /** Create a new session only if no later user selection has superseded this operation. */
   async function create(restoreDraft = true) {
-    if (!creation.current)
-      creation.current = api<Conversation>("create_conversation", {
-        project_id: projectId,
-        chapter_id: chapterId,
-      });
-    try {
-      const next = await creation.current;
-      current.current = next;
-      setSession(next);
-      setSessions((list) => [next, ...list]);
-      saveLocalDraft(selectionKey, next.id);
-      sequence.current++;
-      if (restoreDraft)
-        restoreRef.current(
-          localDraft(
-            `quillweave-chat-draft-${projectId}-${chapterId || "plan"}-${next.id}`,
-          ),
-          null,
-        );
-      return next;
-    } finally {
-      creation.current = null;
-    }
-  }
-
-  /** Provide a stable session identity before submitting a request. */
-  async function ensure() {
-    return current.current || create(false);
-  }
-
-  /** Switch conversation without deleting any history or already accepted work. */
-  async function select(id: string) {
-    const next = sessions.find((item) => item.id === id);
-    if (!next) return;
     const version = ++sequence.current;
+    const capturedScope = scope;
+    const next = await api<Conversation>("create_conversation", {
+      project_id: projectId,
+      chapter_id: chapterId,
+    });
+    if (capturedScope !== scopeRef.current || version !== sequence.current)
+      throw new Error(
+        "Conversation changed while creating a new session. Your draft is kept.",
+      );
     current.current = next;
     setSession(next);
-    saveLocalDraft(selectionKey, id);
-    await restoreSession(next, version);
+    setSessions((list) => [
+      next,
+      ...list.filter((item) => item.id !== next.id),
+    ]);
+    saveLocalDraft(selectionKey, next.id);
+    if (restoreDraft) await restoreSession(next, version);
+    return next;
   }
 
-  /** Branch before a chosen user turn, restoring its text for edits or regeneration. */
+  /** Supply the current nonarchived session before a request is admitted. */
+  async function ensure() {
+    return current.current && !current.current.archived
+      ? current.current
+      : create(false);
+  }
+
+  /** Branch within the selected owner and ignore responses superseded by a later selection. */
   async function fork(turnId: string) {
     if (!current.current) throw new Error("Conversation not found");
+    const owner = current.current.id;
+    const version = ++sequence.current;
     const next = await api<Conversation>("fork_conversation", {
       project_id: projectId,
-      session_id: current.current.id,
+      session_id: owner,
       turn_id: turnId,
     });
+    if (version !== sequence.current || current.current?.id !== owner)
+      throw new Error(
+        "Conversation changed while creating a branch. Your draft is kept.",
+      );
     current.current = next;
     setSession(next);
     setSessions((list) => [next, ...list]);
     saveLocalDraft(selectionKey, next.id);
-    sequence.current++;
-    restoreRef.current(next.draft, null);
+    await restoreSession(next, version);
     return next;
   }
 
-  /** Rename only the selected session using its latest server revision. */
-  async function rename(title: string) {
-    if (!current.current) return;
-    const next = await api<Conversation>("update_conversation", {
+  /** Remove one user turn and everything after it in place, so a retry regenerates here. */
+  async function truncate(turnId: string) {
+    if (!current.current) throw new Error("Conversation not found");
+    const owner = current.current.id;
+    const version = ++sequence.current;
+    const next = await api<Conversation>("truncate_conversation", {
       project_id: projectId,
-      session_id: current.current.id,
-      revision: current.current.revision,
-      title,
+      session_id: owner,
+      turn_id: turnId,
     });
+    if (version !== sequence.current || current.current?.id !== owner)
+      throw new Error(
+        "Conversation changed while retrying. Your draft is kept.",
+      );
     current.current = next;
     setSession(next);
     setSessions((list) =>
       list.map((item) => (item.id === next.id ? next : item)),
     );
+    return next;
   }
 
-  /** Synchronize a draft after reading the latest revision, keeping local edits on conflicts. */
+  /** Rename the captured session without replacing a newer selected session. */
+  async function rename(title: string) {
+    const owner = current.current;
+    if (!owner) return;
+    const next = await api<Conversation>("update_conversation", {
+      project_id: projectId,
+      session_id: owner.id,
+      revision: owner.revision,
+      title,
+    });
+    setSessions((list) =>
+      list.map((item) => (item.id === next.id ? next : item)),
+    );
+    if (current.current?.id === owner.id) {
+      current.current = next;
+      setSession(next);
+    }
+  }
+
+  /** Archive or restore a captured session using the latest server revision. */
+  async function archive(id: string, archived: boolean) {
+    const fresh = await api<Conversation>("get_conversation", {
+      project_id: projectId,
+      session_id: id,
+    });
+    await api<Conversation>("archive_conversation", {
+      project_id: projectId,
+      session_id: id,
+      revision: fresh.revision,
+      archived,
+    });
+    if (archived && current.current?.id === id) {
+      const version = ++sequence.current;
+      current.current = null;
+      setSession(null);
+      saveLocalDraft(selectionKey, "");
+      await restoreSession(null, version);
+    }
+    await search(filters.current.query, filters.current.archived);
+  }
+
+  /** Persist a captured draft only while it still belongs to the selected session. */
   async function persistDraft(value: string, expectedId: string) {
     if (!expectedId || current.current?.id !== expectedId) return;
     const fresh = await api<Conversation>("get_conversation", {
@@ -261,9 +339,7 @@ export function useConversations(
     });
     if (
       current.current?.id !== expectedId ||
-      localDraft(
-        `quillweave-chat-draft-${projectId}-${chapterId || "plan"}-${expectedId}`,
-      ) !== value
+      localDraft(`quillweave-chat-draft-${scope}-${expectedId}`) !== value
     )
       return;
     const next = await api<Conversation>("update_conversation", {
@@ -279,19 +355,26 @@ export function useConversations(
   }
 
   return {
+    selected: () => current.current,
     sessions,
     session,
     loading,
     hasMore,
     loadingMore,
-    loadMore,
     draftKey,
+    manageVersion,
+    open: () => setManageVersion((value) => value + 1),
+    search,
+    loadMore: () =>
+      search(filters.current.query, filters.current.archived, true),
     reload,
     create,
     ensure,
     select,
     fork,
+    truncate,
     rename,
+    archive,
     persistDraft,
   };
 }

@@ -81,7 +81,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
         messages = body.get("messages", [])
         self.server.requests.append({"path": self.path, "body": body})
-        native_search = any(tool.get("function", {}).get("name") != "quillweave_step" for tool in body.get("tools", []))
+        native_search = any(
+            tool.get("type") in {"web_search", "web_search_preview", "openrouter:web_search", "openrouter:web_fetch"}
+            for tool in body.get("tools", [])
+        )
         if self.path.endswith(("/tools/search", "/tools/search_pro", "/tools/fetch")) or native_search:
             if body.get("query") == "需要备用":
                 self.send_response(503)
@@ -116,9 +119,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":{"message":"deterministic agent interruption"}}')
             return
-        if "Summarize this fiction-author conversation" in system:
+        if "[Writing composition stage]" in system or "[Writing composition stage]" in current:
+            text = json.dumps({"intent": "保持写作流程验收中的相处与职业判断", "approach": "岑月与林舟先核对旧信，各自提出顾虑，再约定下一步。", "scene_cards": [{"pov": "岑月", "location": "旧驿站", "goal": "查清信件来历", "obstacle": "日期不齐", "choice": "先保管原信再向守门人核实", "action": "岑月摊信，林舟挡风并约定天亮去问", "cost": "暂不出城", "outcome": "两人有了共同的下一步", "knowledge": "信件来源仍未知", "handoff": "天亮问守门人", "characters": [{"name": "岑月", "want": "查清来历", "knowledge": "知道日期", "response": "留下原信"}, {"name": "林舟", "want": "同行有准备", "knowledge": "知道路线", "response": "挡风并约定时间"}]}], "scene_notes": ["用核对日期与挡风的动作呈现熟悉关系"], "reveal_notes": ["信件来源仍属未知"]}, ensure_ascii=False)
+        elif "[Writing review stage]" in system:
+            text = json.dumps({"summary": "已分别核对连续性与阅读体验，以下为本地验收夹具的编辑意见。", "issues": [], "memories": [], "needs_revision": False}, ensure_ascii=False)
+        elif "[Writing prose stage]" in system or "[Writing prose stage]" in current or "写作流程验收" in current and ("依据本章构思" in system or "Continue the current chapter" in system):
+            text = "岑月先把行囊里的旧信摊开，核对驿站留下的日期。林舟替她挡住窗外的风，两人约好天亮后再去问守门人。"
+        elif "CHAT_STREAM" in current:
+            text = "第一段正在输出。\n\n" + "模型逐段返回正文，作者可以随时停止并保留已经读到的部分。" * 35 + "\n\n最后一段完成。"
+        elif "CHAT_MODEL" in current:
+            text = "本次模型选择已经生效，回答保留其实际模型身份。"
+        elif "Summarize this fiction-author conversation" in system:
             text = json.dumps({"goal": "完善北塔记忆交易故事", "constraints": ["交易有记忆代价"], "rejected": [], "pending": ["候选设定须确认"], "open_questions": ["主角下一步行动"], "next_steps": ["继续讨论并预览保存"]}, ensure_ascii=False)
-        elif "Use one JSON object per step" in system:
+        elif "use one JSON object per step" in system:
             boundary = max(index for index, item in enumerate(messages) if item.get("role") == "user" and not item.get("content", "").startswith("<tool_result "))
             current_request = messages[boundary].get("content", "")
             previous = []
@@ -128,14 +141,18 @@ class FixtureHandler(BaseHTTPRequestHandler):
                         previous.append(json.loads(item.get("content", "")).get("tool"))
                     except (ValueError, AttributeError):
                         pass
-            if "propose" in previous:
+            if "CHAT_AUTO_CHAPTER" in current_request:
+                response = {"tool": "finish", "text": "章纲对应的第一章已创建并保存。"} if "writer" in previous else {"tool": "writer", "plan_id": "ui-auto-chapter-plan", "query": "根据确认章纲写作第一章并保存"}
+            elif "propose" in previous or "propose_changes" in previous:
                 response = {"tool": "finish", "text": "我们先打磨人物欲望和记忆交易的代价，由你决定哪些设定值得采纳。"}
             elif "整理本章有原文依据" in current_request:
                 match = re.search(r"Active chapter \[C:([^\]]+)\]", current_request)
                 source = match.group(1) if match else ""
                 response = {"tool": "propose", "proposal": {"kind": "memory", "title": "铜钥匙转移", "content": "林舟把铜钥匙交给岑月。", "memory": {"kind": "fact", "title": "铜钥匙转移", "entity": "林舟", "content": "林舟把铜钥匙交给岑月。", "state": "active", "source_id": source, "quote": "林舟把铜钥匙交给岑月。"}}}
             elif "为第二章生成正文" in current_request:
-                response = {"tool": "propose", "proposal": {"kind": "chapter", "mode": "append", "title": "第二章正文候选", "content": "岑月握紧林舟交来的铜钥匙，沿山路走向旧驿站。"}}
+                match = re.search(r"Active chapter \[C:([^\]]+)\]", current_request)
+                chapter = match.group(1) if match else ""
+                response = {"tool": "propose_changes", "operations": [{"target_kind": "chapter", "target_id": chapter, "op_type": "append_prose", "title": "第二章正文候选", "after_value": {"body": "岑月握紧林舟交来的铜钥匙，沿山路走向旧驿站。"}}]}
             elif "recall" in previous:
                 response = {"tool": "propose", "proposal": {"kind": "decision", "title": "记忆交易的代价", "content": "每次交易都要放弃一段重要记忆。"}}
             else:
@@ -155,11 +172,17 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         try:
+            if "CHAT_STREAM" in current:
+                for thought in ["先核对人物当前处境。", "再检查已确认的大纲与知情范围。"]:
+                    event = {"choices": [{"delta": {"reasoning_content": thought}}]}
+                    self.wfile.write(("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
+                    self.wfile.flush()
+                    time.sleep(.2)
             for start in range(0, len(text), 35):
                 event = {"choices": [{"delta": {"content": text[start:start + 35]}, "finish_reason": None}]}
                 self.wfile.write(("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
                 self.wfile.flush()
-                time.sleep(.025)
+                time.sleep(.08 if "CHAT_STREAM" in current else .025)
             self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":1000,"cache_write_tokens":0}}}\n\ndata: [DONE]\n\n')
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):

@@ -49,7 +49,7 @@ func TestInterruptedProseCanContinueWithoutChangingTheDraft(t *testing.T) {
 	if err := engine.store.SaveRun(old.ID, p.ID, storedJob(&old)); err != nil {
 		t.Fatal(err)
 	}
-	server := staticModel(t, streamPayload("The remaining continuation."), 0)
+	server, _ := sequenceModel(t, []string{writingCompositionFixture(), "The remaining continuation.", `{"summary":"The recovered scene is consistent.","issues":[],"memories":[]}`})
 	config := defaultProvider()
 	config.Model = "fixture"
 	config.BaseURL = server.URL

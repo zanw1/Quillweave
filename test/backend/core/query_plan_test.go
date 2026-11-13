@@ -250,7 +250,7 @@ func TestDatabaseQueryPlans(t *testing.T) {
 	if err := store.db.QueryRow("SELECT sqlite_version()").Scan(&sqliteVersion); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
+	if version != 6 {
 		t.Fatal("An index-only update changed the document version")
 	}
 	t.Logf("SQLite %s; fixture tables: projects=2 project_parts=2000 runs=10000 search_runs=10000", sqliteVersion)

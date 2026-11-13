@@ -105,6 +105,7 @@ func (engine *Engine) commitTerminalLocked(current *Job) error {
 	current.Status, current.Error, current.Progress = desired.Status, desired.Error, desired.Progress
 	current.Text = desired.Text
 	current.ChangeSets = append([]ChangeSet{}, desired.ChangeSets...)
+	current.Proposals = append([]StudioProposal{}, desired.Proposals...)
 	current.pendingFinal = nil
 	_ = os.Remove(engine.owner.terminalPath(current.ID))
 	return nil
@@ -322,13 +323,34 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 		}
 		if len(job.ChangeSets) > 0 {
 			staged := append([]ChangeSet{}, job.ChangeSets...)
+			pending := []ChangeSet{}
 			for i := range staged {
+				var existing string
+				err := connection.QueryRowContext(context.Background(), "SELECT document FROM project_parts WHERE project_id=? AND kind='changeset' AND id=?", job.ProjectID, staged[i].ID).Scan(&existing)
+				if err == nil {
+					var published ChangeSet
+					if err := decodeJSON([]byte(existing), &published); err != nil {
+						return err
+					}
+					if published.JobID != job.ID {
+						return errors.New("This changeset already exists. Reload its saved state")
+					}
+					staged[i] = published
+					continue
+				}
+				if !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
 				staged[i].CommitPolicy, staged[i].Status = "review", ChangeSetStaged
+				pending = append(pending, staged[i])
 			}
-			if err := persistStagedChangeSetsInDB(connection, job.ProjectID, staged); err != nil {
+			if err := persistStagedChangeSetsInDB(connection, job.ProjectID, pending); err != nil {
 				return err
 			}
 			job.ChangeSets = staged
+		}
+		if err := commitAutomaticOutputIn(connection, job); err != nil {
+			return err
 		}
 		if _, err := connection.ExecContext(context.Background(), "UPDATE runs SET document=? WHERE id=? AND project_id=?", storedJob(job), job.ID, job.ProjectID); err != nil {
 			return err
@@ -376,6 +398,228 @@ func finishConversationIn(connection *sql.Conn, job *Job) error {
 		}
 	}
 	return nil
+}
+
+// automaticRecordChange selects records that can use the ordinary automatic-save path.
+// Prose stays with saveAutomaticChapter, which checks the exact reviewed candidate.
+func automaticRecordChange(cs ChangeSet) bool {
+	if cs.Status != ChangeSetStaged {
+		return false
+	}
+	for _, op := range cs.Operations {
+		if op.TargetKind == TargetChapter {
+			return false
+		}
+	}
+	return true
+}
+
+// commitAutomaticOutputIn publishes authorized records and their receipts together.
+// Conflicting batches and separately reviewed prose remain inspectable candidates.
+func commitAutomaticOutputIn(db documentDB, job *Job) error {
+	if !contains([]string{"running", "done"}, job.Status) || job.CommitPolicy != "auto" || len(job.ChangeSets) == 0 {
+		return nil
+	}
+	project, err := readProject(db, job.ProjectID)
+	if err != nil {
+		return err
+	}
+	project.requestLanguage = job.Language
+	staged := []int{}
+	for i, cs := range job.ChangeSets {
+		if automaticRecordChange(cs) {
+			staged = append(staged, i)
+		}
+	}
+	if len(staged) == 0 {
+		if job.Writing != nil && !job.Writing.Saved {
+			job.Progress = writingResultSummary(&project, job.Writing)
+			return nil
+		}
+		for _, cs := range job.ChangeSets {
+			if cs.Status == ChangeSetApplied {
+				job.Progress = localText(&project, "Output saved with an undoable receipt.", "创作结果已保存，可在回执中撤销。")
+				break
+			}
+		}
+		return nil
+	}
+	// All candidates from the same task share one revision boundary. Build them on
+	// a copy before any project write, so one invalid operation cannot partly save.
+	updated := cloneProject(project)
+	changes := append([]ChangeSet{}, job.ChangeSets...)
+	var conflict error
+	for _, i := range staged {
+		cs := &changes[i]
+		cs.Operations = append([]ChangeOperation{}, cs.Operations...)
+		if cs.BaseRevision != project.Revision {
+			conflict = errors.New("The story changed after generation")
+			break
+		}
+		if hasChapterDeletion(cs.Operations) {
+			conflict = errors.New("Chapter deletion requires its dedicated review")
+			break
+		}
+		cs.CommitPolicy = "auto"
+		cs.PreviewRevision = project.Revision
+		if err := applyChangeSetToProject(&updated, cs); err != nil {
+			conflict = err
+			break
+		}
+		cs.AppliedRevision = project.Revision + 1
+		cs.ReviewToken = changeSetReviewToken(*cs)
+		upsertChangeSetInProject(&updated, *cs)
+	}
+	if conflict != nil {
+		job.Progress = localText(&project, "Output retained for review; automatic save was not applied: ", "结果已保留供检查，自动保存未执行：") + conflict.Error()
+		return nil
+	}
+	if err := saveProject(db, &updated, project.Revision); err != nil {
+		return err
+	}
+	for _, i := range staged {
+		cs := changes[i]
+		if err := writeChangeSetRecord(db, project.ID, cs); err != nil {
+			return err
+		}
+		for n := range job.Proposals {
+			for _, op := range cs.Operations {
+				if op.ProposalID == job.Proposals[n].ID {
+					job.Proposals[n].Status = "accepted"
+					if op.TargetKind == TargetMemory {
+						if index := memoryIndex(&updated, op.TargetID); index >= 0 {
+							memory := updated.Studio.Memories[index]
+							job.Proposals[n].Memory = &memory
+						}
+					}
+				}
+			}
+		}
+	}
+	job.ChangeSets = changes
+	job.Progress = localText(&project, "Output saved with an undoable receipt.", "创作结果已保存，可在回执中撤销。")
+	return nil
+}
+
+// commitAutomaticStage makes explicitly authorized records available to later tools
+// in this task, committing the records, task snapshot and undoable receipts together.
+func (engine *Engine) commitAutomaticStage(jobID string, project *Project) (string, error) {
+	engine.jobsMu.Lock()
+	automatic := engine.jobs[jobID] != nil && engine.jobs[jobID].CommitPolicy == "auto"
+	engine.jobsMu.Unlock()
+	if !automatic {
+		return "", nil
+	}
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	engine.jobsMu.Lock()
+	defer engine.jobsMu.Unlock()
+	active := engine.jobs[jobID]
+	if active == nil || active.CommitPolicy != "auto" {
+		return "", nil
+	}
+	if project == nil || project.ID != active.ProjectID {
+		return "", errors.New("The automatic stage belongs to another project")
+	}
+	if active.Status != "running" || active.ctx.Err() != nil {
+		return "", errors.New("Task cancelled")
+	}
+	copy := active.snapshot()
+	var updated Project
+	applied := false
+	var stageFailure error
+	err := engine.store.withWriteTransaction(func(db *sql.Conn) error {
+		var raw string
+		if err := db.QueryRowContext(context.Background(), "SELECT document FROM runs WHERE id=? AND project_id=?", copy.ID, copy.ProjectID).Scan(&raw); err != nil {
+			return err
+		}
+		stored, err := decodeStoredJob(raw)
+		if err != nil || stored.Status != "running" || stored.ownerID != copy.ownerID {
+			return errors.New("Task ownership changed before the automatic stage could save")
+		}
+		pending := []ChangeSet{}
+		for i, cs := range copy.ChangeSets {
+			if cs.Status != ChangeSetStaged {
+				continue
+			}
+			var existing string
+			err := db.QueryRowContext(context.Background(), "SELECT document FROM project_parts WHERE project_id=? AND kind='changeset' AND id=?", copy.ProjectID, cs.ID).Scan(&existing)
+			if errors.Is(err, sql.ErrNoRows) {
+				pending = append(pending, cs)
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			var published ChangeSet
+			if decodeJSON([]byte(existing), &published) != nil || published.JobID != copy.ID {
+				return errors.New("The automatic stage receipt belongs to another task")
+			}
+			if published.Status == ChangeSetApplied {
+				copy.ChangeSets[i] = published
+			} else if jsonText(published) != jsonText(cs) {
+				return errors.New("The candidate was edited separately. Review the current version before saving")
+			}
+		}
+		if err := persistStagedChangeSetsInDB(db, copy.ProjectID, pending); err != nil {
+			return err
+		}
+		if err := commitAutomaticOutputIn(db, &copy); err != nil {
+			return err
+		}
+		updated, err = readProject(db, copy.ProjectID)
+		if err != nil {
+			return err
+		}
+		applied = true
+		for _, cs := range copy.ChangeSets {
+			if automaticRecordChange(cs) {
+				applied = false
+			}
+		}
+		if applied {
+			copy.BaseRevision = updated.Revision
+		} else {
+			stageFailure = errors.New(copy.Progress)
+			for i := range copy.ChangeSets {
+				cs := &copy.ChangeSets[i]
+				if !automaticRecordChange(*cs) {
+					continue
+				}
+				// Keep the unsuccessful attempt inspectable, but do not reapply it
+				// together with the model's corrected operation on its next call.
+				cs.Status, cs.UpdatedAt = ChangeSetConflicted, now()
+				cs.Summary += "\n" + copy.Progress
+				if err := writeChangeSetRecord(db, copy.ProjectID, *cs); err != nil {
+					return err
+				}
+			}
+		}
+		_, err = db.ExecContext(context.Background(), "UPDATE runs SET document=? WHERE id=? AND project_id=?", storedJob(&copy), copy.ID, copy.ProjectID)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	active.Proposals, active.ChangeSets, active.BaseRevision, active.Progress = copy.Proposals, copy.ChangeSets, copy.BaseRevision, copy.Progress
+	if !applied {
+		return "", stageFailure
+	}
+	updated.requestLanguage, updated.taskLanguage = project.requestLanguage, project.taskLanguage
+	*project = updated
+	receipts := []map[string]any{}
+	for _, cs := range copy.ChangeSets {
+		targets := []map[string]any{}
+		for _, op := range cs.Operations {
+			targets = append(targets, map[string]any{"kind": op.TargetKind, "id": op.TargetID, "title": op.Title})
+		}
+		receipts = append(receipts, map[string]any{"id": cs.ID, "status": cs.Status, "targets": targets})
+	}
+	status, next := "saved", "Later tools may now read these saved records. Receipts support undo."
+	if len(copy.ChangeSets) > 0 && copy.ChangeSets[len(copy.ChangeSets)-1].Status != ChangeSetApplied {
+		status, next = "candidate", "The prose candidate is retained for review and has not changed the chapter. Use writer for source-checked automatic chapter production."
+	}
+	return jsonText(map[string]any{"status": status, "revision": updated.Revision, "receipts": receipts, "next": next}), nil
 }
 
 // closeRuntime releases the process claim but preserves recovery intents that could not reach SQLite.

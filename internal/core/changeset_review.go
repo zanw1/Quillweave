@@ -5,12 +5,49 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 )
+
+// captureRenamedStoryReferences freezes only structured names touched by a compound rename.
+func captureRenamedStoryReferences(project *Project, cs *ChangeSet, name string) {
+	for _, memory := range project.Studio.Memories {
+		if memory.Entity != name && !slices.Contains(memory.KnownBy, name) {
+			continue
+		}
+		if !slices.ContainsFunc(cs.BeforeMemoryReferences, func(item MemoryReferenceSnapshot) bool { return item.MemoryID == memory.ID }) {
+			cs.BeforeMemoryReferences = append(cs.BeforeMemoryReferences, MemoryReferenceSnapshot{MemoryID: memory.ID, Entity: memory.Entity, KnownBy: slices.Clone(memory.KnownBy)})
+		}
+	}
+	for _, plan := range project.Studio.Plans {
+		if slices.Contains(plan.Characters, name) && !slices.ContainsFunc(cs.BeforePlanReferences, func(item PlanReferenceSnapshot) bool { return item.PlanID == plan.ID }) {
+			cs.BeforePlanReferences = append(cs.BeforePlanReferences, PlanReferenceSnapshot{PlanID: plan.ID, Characters: slices.Clone(plan.Characters)})
+		}
+	}
+}
+
+// restoreRenamedStoryReferences restores name fields while preserving source text and other edits.
+func restoreRenamedStoryReferences(project *Project, cs *ChangeSet) {
+	for _, previous := range cs.BeforeMemoryReferences {
+		if index := memoryIndex(project, previous.MemoryID); index >= 0 {
+			project.Studio.Memories[index].Entity = previous.Entity
+			project.Studio.Memories[index].KnownBy = slices.Clone(previous.KnownBy)
+		}
+	}
+	for _, previous := range cs.BeforePlanReferences {
+		for i := range project.Studio.Plans {
+			if project.Studio.Plans[i].ID == previous.PlanID {
+				project.Studio.Plans[i].Characters = slices.Clone(previous.Characters)
+			}
+		}
+	}
+}
 
 // changeTargetValue returns the public value shown in the author's final preview.
 func changeTargetValue(project *Project, op ChangeOperation) json.RawMessage {
 	switch op.TargetKind {
+	case TargetWiki:
+		return wikiTargetValue(project, op)
 	case TargetLocation:
 		for _, value := range project.Studio.Locations {
 			if value.ID == op.TargetID {
@@ -118,6 +155,7 @@ func previewChangeSet(project Project, cs ChangeSet, raw json.RawMessage) (Chang
 		op.PreviewValue = changeTargetValue(&copy, *op)
 	}
 	cs.Impacts = mapChangeImpacts(project, copy, cs.Operations)
+	cs.Impacts = append(cs.Impacts, chapterDeletionImpacts(&project, cs.Operations)...)
 	cs.Status = ChangeSetStaged
 	cs.PreviewRevision = project.Revision
 	cs.CommitPolicy = "review"
@@ -129,110 +167,175 @@ func previewChangeSet(project Project, cs ChangeSet, raw json.RawMessage) (Chang
 // reviewChangeSetCommand serializes preview, author confirmation, rejection and undo against current storage.
 func (engine *Engine) reviewChangeSetCommand(command, projectID string, args *arguments) (any, error) {
 	var result any
+	activeWriter := command == "apply_changeset" && engine.hasActiveCandidateWriter(projectID)
 	err := engine.store.withWriteTransaction(func(conn *sql.Conn) error {
-		project, err := readProject(conn, projectID)
-		if err != nil {
-			return err
-		}
-		id := args.text("changeset_id")
-		if args.err != nil {
-			return args.err
-		}
-		stored := findChangeSet(&project, id)
-		if stored == nil {
-			return errors.New("Changeset not found")
-		}
-		cs := *stored
-		cs.Operations = append([]ChangeOperation{}, cs.Operations...)
-		if command == "preview_changeset" {
-			cs, err = previewChangeSet(project, cs, args.fields["operations"])
-			if err != nil {
-				return err
-			}
-		} else if command == "reject_changeset" {
-			if !contains([]string{"staged", "conflicted", "rejected"}, string(cs.Status)) {
-				return errors.New("Only pending changes can be rejected")
-			}
-			cs.Status, cs.ReviewToken, cs.UpdatedAt = ChangeSetRejected, "", now()
-		} else {
-			if _, edited := args.fields["operations"]; edited {
-				return errors.New("Preview edited operations before confirming")
-			}
-			if command == "apply_changeset" {
-				token := args.optionalString("review_token")
-				if token == "" || token != cs.ReviewToken {
-					return errors.New("Preview these changes and confirm the reviewed version first")
-				}
-				if cs.Status == ChangeSetApplied {
-					result = changeSetReceipt(project, cs)
-					return nil
-				}
-				if cs.Status != ChangeSetStaged || cs.ReviewToken != changeSetReviewToken(cs) {
-					return errors.New("The reviewed changes changed. Refresh the preview")
-				}
-				expected, ok := unsigned(args.fields["revision"])
-				if !ok || expected != project.Revision {
-					return errors.New("The project changed. Refresh the preview before confirming")
-				}
-				if project.Revision != cs.PreviewRevision {
-					return errors.New("The project changed after this preview. Refresh the preview before confirming")
-				}
-				if err := syncChangeSetProposals(conn, &project, &cs, "validate"); err != nil {
-					return err
-				}
-				if err := applyChangeSetToProject(&project, &cs); err != nil {
-					return err
-				}
-				cs.AppliedRevision = project.Revision + 1
-				cs.Archived = false
-			} else {
-				if cs.Status == ChangeSetUndone {
-					result = changeSetReceipt(project, cs)
-					return nil
-				}
-				if cs.Archived {
-					return errors.New("This is an imported history record. Prepare a new reviewed change to restore its values")
-				}
-				expected, ok := unsigned(args.fields["revision"])
-				if !ok || expected != project.Revision {
-					return errors.New("The project changed. Refresh before undoing")
-				}
-				if project.Revision != cs.AppliedRevision {
-					return errors.New("The story has later edits. Review a new change before reverting")
-				}
-				if err := undoChangeSetOnProject(&project, &cs); err != nil {
-					return err
-				}
-			}
-			upsertChangeSetInProject(&project, cs)
-			if command == "apply_changeset" {
-				if err := syncChangeSetProposals(conn, &project, &cs, "accepted"); err != nil {
-					return err
-				}
-			} else if err := syncChangeSetProposals(conn, &project, &cs, "undone"); err != nil {
-				return err
-			}
-			if err := saveProject(conn, &project, project.Revision); err != nil {
-				return err
-			}
-		}
-		if command == "reject_changeset" {
-			if err := syncChangeSetProposals(conn, &project, &cs, "rejected"); err != nil {
-				return err
-			}
-		} else if command == "preview_changeset" {
-			if err := syncChangeSetProposals(conn, &project, &cs, "preview"); err != nil {
-				return err
-			}
-		}
-		if err := writeChangeSetRecord(conn, projectID, cs); err != nil {
-			return err
-		}
-		upsertChangeSetInProject(&project, cs)
-		result = changeSetReceipt(project, cs)
-		return nil
+		var err error
+		result, err = engine.reviewChangeSetInDB(conn, command, projectID, args, activeWriter)
+		return err
 	})
 	return result, err
+}
+
+// hasActiveCandidateWriter checks in-process work before entering the database transaction.
+func (engine *Engine) hasActiveCandidateWriter(projectID string) bool {
+	engine.jobsMu.Lock()
+	defer engine.jobsMu.Unlock()
+	for _, job := range engine.jobs {
+		if job.ProjectID == projectID && (job.Status == "running" || job.pendingFinal != nil) {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewChangeSetInDB shares exact desktop checks with externally confirmed, receipt-backed transactions.
+func (engine *Engine) reviewChangeSetInDB(conn *sql.Conn, command, projectID string, args *arguments, activeWriter bool) (any, error) {
+	var result any
+	project, err := readProject(conn, projectID)
+	if err != nil {
+		return nil, err
+	}
+	project.requestLanguage = args.optionalString("ui_language")
+	id := args.text("changeset_id")
+	if args.err != nil {
+		return nil, args.err
+	}
+	stored := findChangeSet(&project, id)
+	if stored == nil {
+		return nil, errors.New("Changeset not found")
+	}
+	cs := *stored
+	cs.Operations = append([]ChangeOperation{}, cs.Operations...)
+	if command == "preview_changeset" {
+		cs, err = previewChangeSet(project, cs, args.fields["operations"])
+		if err != nil {
+			return nil, err
+		}
+	} else if command == "reject_changeset" {
+		if !contains([]string{"staged", "conflicted", "rejected"}, string(cs.Status)) {
+			return nil, errors.New("Only pending changes can be rejected")
+		}
+		cs.Status, cs.ReviewToken, cs.UpdatedAt = ChangeSetRejected, "", now()
+	} else {
+		if _, edited := args.fields["operations"]; edited {
+			return nil, errors.New("Preview edited operations before confirming")
+		}
+		if command == "apply_changeset" {
+			token := args.optionalString("review_token")
+			if token == "" || token != cs.ReviewToken {
+				return nil, errors.New("Preview these changes and confirm the reviewed version first")
+			}
+			if cs.Status == ChangeSetApplied {
+				result = changeSetReceipt(project, cs)
+				return result, nil
+			}
+			if hasChapterDeletion(cs.Operations) {
+				var running int
+				if err := conn.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM runs WHERE project_id=? AND json_extract(document,'$.status')='running'", projectID).Scan(&running); err != nil {
+					return nil, err
+				}
+				if activeWriter || running > 0 {
+					return nil, errors.New("Stop the active writing task before deleting a chapter")
+				}
+			}
+			if cs.Status != ChangeSetStaged || cs.ReviewToken != changeSetReviewToken(cs) {
+				return nil, errors.New("The reviewed changes changed. Refresh the preview")
+			}
+			expected, ok := unsigned(args.fields["revision"])
+			if !ok || (expected != project.Revision && expected != cs.PreviewRevision) {
+				return nil, errors.New("The project changed. Refresh the preview before confirming")
+			}
+			if project.Revision != cs.PreviewRevision {
+				if cs, err = refreshStalePreview(project, cs); err != nil {
+					return nil, err
+				}
+			}
+			if err := validateRevertConfirmation(&cs); err != nil {
+				return nil, err
+			}
+			if err := syncChangeSetProposals(conn, &project, &cs, "validate"); err != nil {
+				return nil, err
+			}
+			if err := applyChangeSetToProject(&project, &cs); err != nil {
+				return nil, err
+			}
+			cs.AppliedRevision = project.Revision + 1
+			cs.Archived = false
+		} else {
+			if cs.Status == ChangeSetUndone {
+				result = changeSetReceipt(project, cs)
+				return result, nil
+			}
+			if cs.Archived {
+				return nil, errors.New("This is an imported history record. Prepare a new reviewed change to restore its values")
+			}
+			expected, ok := unsigned(args.fields["revision"])
+			if !ok || expected != project.Revision {
+				return nil, errors.New("The project changed. Refresh before undoing")
+			}
+			if project.Revision != cs.AppliedRevision {
+				return nil, errors.New("The story has later edits. Review a new change before reverting")
+			}
+			if err := undoChangeSetOnProject(&project, &cs); err != nil {
+				return nil, err
+			}
+		}
+		upsertChangeSetInProject(&project, cs)
+		if command == "apply_changeset" {
+			if err := syncChangeSetProposals(conn, &project, &cs, "accepted"); err != nil {
+				return nil, err
+			}
+		} else if err := syncChangeSetProposals(conn, &project, &cs, "undone"); err != nil {
+			return nil, err
+		}
+		if err := saveProject(conn, &project, project.Revision); err != nil {
+			return nil, err
+		}
+	}
+	if command == "reject_changeset" {
+		if err := syncChangeSetProposals(conn, &project, &cs, "rejected"); err != nil {
+			return nil, err
+		}
+	} else if command == "preview_changeset" {
+		if err := syncChangeSetProposals(conn, &project, &cs, "preview"); err != nil {
+			return nil, err
+		}
+	}
+	if err := writeChangeSetRecord(conn, projectID, cs); err != nil {
+		return nil, err
+	}
+	upsertChangeSetInProject(&project, cs)
+	if err := syncWikiCandidateState(conn, projectID, cs); err != nil {
+		return nil, err
+	}
+	result = changeSetReceipt(project, cs)
+	return result, nil
+}
+
+// refreshStalePreview re-previews a candidate whose preview predates the current revision. The author's
+// confirmation still holds when every target has the same before value as in the reviewed preview, so
+// saving another candidate or an unrelated record does not block it; a changed target needs a new review.
+func refreshStalePreview(project Project, cs ChangeSet) (ChangeSet, error) {
+	stale := errors.New("The project changed after this preview. Refresh the preview before confirming")
+	// Chapter deletions renumber later prose and recovery candidates restore exact effects, so any later save needs a new review.
+	if hasChapterDeletion(cs.Operations) || cs.RevertsChangeSetID != "" {
+		return cs, stale
+	}
+	// Previewing rewrites operations in place, so compare against a snapshot taken before it runs.
+	reviewed := append([]ChangeOperation{}, cs.Operations...)
+	next := cs
+	next.Operations = append([]ChangeOperation{}, cs.Operations...)
+	refreshed, err := previewChangeSet(project, next, nil)
+	if err != nil || len(refreshed.Operations) != len(reviewed) {
+		return cs, stale
+	}
+	for i, op := range refreshed.Operations {
+		old := reviewed[i]
+		if op.ID != old.ID || op.TargetKind != old.TargetKind || op.OpType != old.OpType || jsonText(op.BeforeValue) != jsonText(old.BeforeValue) {
+			return cs, stale
+		}
+	}
+	return refreshed, nil
 }
 
 // changeSetReceipt returns persisted state and stable target identifiers for both GUI and CLI.
