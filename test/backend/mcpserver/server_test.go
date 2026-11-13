@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"quillweave/internal/core"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -202,6 +203,10 @@ func connectMCP(t *testing.T, service *core.ExternalService, readOnly bool) *mcp
 func TestMCPStdioRestart(t *testing.T) {
 	_, _, path, projectID := mcpFixture(t, false)
 	binary := filepath.Join(t.TempDir(), "quillweave")
+	// Windows only executes a built file whose name has a PATHEXT suffix.
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, "./cmd/quillweave-cli")
 	build.Dir = filepath.Join("..", "..")
 	if output, err := build.CombinedOutput(); err != nil {

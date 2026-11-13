@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"quillweave/internal/platform"
 )
 
@@ -105,6 +106,17 @@ func OpenExternalService(path string, options ExternalOptions) (*ExternalService
 	return &ExternalService{engine: engine, options: options}, nil
 }
 
+// sqliteReadOnlyDSN returns a file URI so SQLite applies mode=ro.
+// A Windows path such as C:\work\db.sqlite3 must become file:///C:/work/db.sqlite3.
+// Without the slash before the drive letter, url.URL emits file://C: and SQLite rejects that authority.
+func sqliteReadOnlyDSN(path string) string {
+	slash := strings.ReplaceAll(path, `\`, "/")
+	if len(slash) >= 2 && slash[1] == ':' && slash[0] != '/' {
+		slash = "/" + slash
+	}
+	return (&url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro&_busy_timeout=5000&_query_only=1"}).String()
+}
+
 // openExternalReadStore uses SQLite read-only mode without migrations, runtime locks or credential access.
 func openExternalReadStore(path string) (*Store, error) {
 	canonical, err := filepath.EvalSymlinks(path)
@@ -115,8 +127,7 @@ func openExternalReadStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	location := &url.URL{Scheme: "file", Path: canonical}
-	database, err := sql.Open("sqlite", location.String()+"?mode=ro&_busy_timeout=5000&_query_only=1")
+	database, err := sql.Open("sqlite", sqliteReadOnlyDSN(canonical))
 	if err != nil {
 		return nil, err
 	}

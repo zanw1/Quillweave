@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,6 +141,10 @@ func TestExternalCLIAsyncOwner(t *testing.T) {
 	config.BaseURL, config.Model = server.URL, "async-fixture"
 	configureModel(t, engine, config)
 	binary := filepath.Join(t.TempDir(), "quillweave")
+	// Windows only executes a built file whose name has a PATHEXT suffix.
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, "./cmd/quillweave-cli")
 	build.Dir = filepath.Join("..", "..")
 	if output, err := build.CombinedOutput(); err != nil {

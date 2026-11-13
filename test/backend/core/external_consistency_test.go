@@ -118,6 +118,24 @@ func TestExternalReviewLimitsAndRequestIdentity(t *testing.T) {
 	assert(t, candidate.Provenance.Revisions == 2 && candidate.Provenance.Review.NeedsRevision, "Remaining review issues were lost")
 }
 
+// TestSQLiteReadOnlyDSN keeps Unix paths and Windows drive letters in a file URI SQLite can open.
+func TestSQLiteReadOnlyDSN(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{`/tmp/workspace.sqlite3`, `file:///tmp/workspace.sqlite3?mode=ro&_busy_timeout=5000&_query_only=1`},
+		{`/tmp/Data 资料/workspace.sqlite3`, `file:///tmp/Data%20%E8%B5%84%E6%96%99/workspace.sqlite3?mode=ro&_busy_timeout=5000&_query_only=1`},
+		{`C:\Users\runneradmin\AppData\Local\Temp\test.sqlite3`, `file:///C:/Users/runneradmin/AppData/Local/Temp/test.sqlite3?mode=ro&_busy_timeout=5000&_query_only=1`},
+		{`C:/Users/runner admin/test.sqlite3`, `file:///C:/Users/runner%20admin/test.sqlite3?mode=ro&_busy_timeout=5000&_query_only=1`},
+	}
+	for _, item := range cases {
+		if got := sqliteReadOnlyDSN(item.path); got != item.want {
+			t.Fatalf("%s: got %s", item.path, got)
+		}
+	}
+}
+
 // TestExternalReadOnlyDoesNotMigrate verifies startup and reads preserve a previous compatible schema version.
 func TestExternalReadOnlyDoesNotMigrate(t *testing.T) {
 	engine := testEngine(t)
