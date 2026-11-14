@@ -7,7 +7,27 @@ import { fileURLToPath } from "node:url";
 import { goEnv, companionFilename } from "./build.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+
+/** Verify package, workspace, lockfile and tag versions before any build dependency is needed. */
+export function checkReleaseVersion(directory = root, environment = process.env) {
+  const version = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")).version;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version))
+    throw new Error("The release version must contain three numeric components");
+  const frontend = JSON.parse(fs.readFileSync(path.join(directory, "frontend", "package.json"), "utf8"));
+  const lock = JSON.parse(fs.readFileSync(path.join(directory, "package-lock.json"), "utf8"));
+  const versions = [
+    ["frontend/package.json", frontend.version],
+    ["package-lock.json", lock.version],
+    ['package-lock.json packages[""]', lock.packages?.[""]?.version],
+    ['package-lock.json packages["frontend"]', lock.packages?.frontend?.version],
+  ];
+  for (const [file, actual] of versions)
+    if (actual !== version)
+      throw new Error(`${file} version ${actual} does not match package.json version ${version}`);
+  if (environment.GITHUB_REF_TYPE === "tag" && environment.GITHUB_REF_NAME !== `v${version}`)
+    throw new Error(`Release tag ${environment.GITHUB_REF_NAME} does not match package.json version ${version} (expected v${version})`);
+  return version;
+}
 
 /** Replace a completed release file atomically and clean partial copies on failure. */
 function publishFile(source, destination) {
@@ -22,14 +42,11 @@ function publishFile(source, destination) {
 
 /** Build the requested platform and package its application with distribution notices. */
 function release() {
+  const version = checkReleaseVersion();
   const target = process.argv[2] || goEnv("GOHOSTOS");
   const arch = process.argv[3] || (target === "windows" ? "amd64" : goEnv("GOHOSTARCH"));
   if (!["darwin", "windows"].includes(target) || !["amd64", "arm64"].includes(arch))
     throw new Error("Release archives support macOS and Windows on amd64 or arm64");
-  if (!/^\d+\.\d+\.\d+$/.test(version))
-    throw new Error("The release version must contain three numeric components");
-  if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME !== `v${version}`)
-    throw new Error("The release tag must match the version in package.json");
   for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.txt"])
     if (!fs.statSync(path.join(root, file)).isFile()) throw new Error(`Missing ${file}`);
 
@@ -105,9 +122,13 @@ function release() {
   }
 }
 
-try {
-  release();
-} catch (error) {
-  console.error(error.message);
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    if (process.argv[2] === "--check")
+      console.log(`Release version verified ${checkReleaseVersion()}`);
+    else release();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

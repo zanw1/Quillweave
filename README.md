@@ -2,7 +2,7 @@
 
 A local fiction-writing workspace for planning stories, writing chapters, and keeping characters and story knowledge consistent. Built with Go, Wails 3, React, and TypeScript. Supports English and 简体中文.
 
-**0.6.0 · Development preview**
+**0.6.1 · Development preview**
 
 [Releases](https://github.com/zanw1/Quillweave/releases) · [MCP and skills](#mcp-and-skills) · [CLI](#cli) · [Build from source](#build-from-source)
 
@@ -110,6 +110,7 @@ For a browser preview, run `npm run build` followed by `npm run backend` and ope
 
 ```sh
 npm run check
+node scripts/release.mjs --check
 npm test
 npm run check:go
 npm run test:ui
@@ -117,7 +118,7 @@ npm run bundle
 npm run bundle:windows
 ```
 
-Native apps and console companions are written to `build/bin/`. `npm run release -- darwin arm64` and `npm run release -- windows amd64` produce distribution packages in `build/releases/`. Pushing a matching `v0.6.0` tag runs the release workflow and prepares a GitHub draft. Maintained tests and runner instructions are in [test/README.md](test/README.md).
+Native apps and console companions are written to `build/bin/`. `npm run release -- darwin arm64` and `npm run release -- windows amd64` produce distribution packages in `build/releases/`. Commit matching root, frontend and lockfile versions before tagging `v0.6.1`. The release workflow checks these versions before installing dependencies, then builds packages and prepares a GitHub draft. Maintained tests and runner instructions are in [test/README.md](test/README.md).
 
 ## Data and license
 

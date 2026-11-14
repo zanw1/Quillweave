@@ -30,7 +30,7 @@ func printCLIChangePreview(stdout io.Writer, result any) error {
 }
 
 // ApplicationVersion is replaced with the release version when building the desktop and console companion together.
-var ApplicationVersion = "0.6.0"
+var ApplicationVersion = "0.6.1"
 
 // IsCLICommand reports whether the first CLI argument invokes the headless CLI mode rather than the desktop GUI.
 func IsCLICommand(arg string) bool {

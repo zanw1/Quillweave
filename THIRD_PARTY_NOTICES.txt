@@ -1,6 +1,6 @@
 THIRD-PARTY NOTICES
 
-License texts for dependencies declared by Quillweave 0.6.0.
+License texts for dependencies declared by Quillweave 0.6.1.
 The original notices below apply to their respective components.
 
 ========================================================================
